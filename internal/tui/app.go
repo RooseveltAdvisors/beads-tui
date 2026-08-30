@@ -110,8 +110,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		if m.detail != nil {
 			lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
-			if m.dOffset >= lines {
-				m.dOffset = lines - 1
+			_, maxOffset := m.detailContentBudget(lines)
+			if m.dOffset > maxOffset {
+				m.dOffset = maxOffset
 			}
 			if m.dOffset < 0 {
 				m.dOffset = 0
@@ -227,21 +228,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
-	vis := m.detailVisLines()
-	contentVis := vis
-	if m.detailErr != "" {
-		contentVis -= 2
-	}
-	if lines > vis {
-		contentVis--
-	}
-	if contentVis < 0 {
-		contentVis = 0
-	}
-	maxOffset := lines - contentVis
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
+	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
 	switch msg.String() {
 	case "j", "down":
@@ -550,24 +537,10 @@ func (m Model) renderDetailPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(l))
 		}
 	case m.detail != nil:
-		vis := h - 2
 		all := BuildDetail(m.vocab, m.detail, m.down, m.up, inner)
 		offset := m.dOffset
-		contentVis := vis
-		if m.detailErr != "" {
-			contentVis -= 2
-		}
-		if len(all) > vis {
-			contentVis--
-		}
-		if contentVis < 0 {
-			contentVis = 0
-		}
-		maxOffset := len(all) - contentVis
-		if maxOffset < 0 {
-			maxOffset = 0
-			offset = 0
-		} else if offset > maxOffset {
+		contentVis, maxOffset := m.detailContentBudget(len(all))
+		if offset > maxOffset {
 			offset = maxOffset
 		}
 		shown := 0
@@ -687,6 +660,25 @@ func (m Model) detailVisLines() int {
 		return 10
 	}
 	return m.height - 4
+}
+
+func (m Model) detailContentBudget(lines int) (contentVis, maxOffset int) {
+	vis := m.detailVisLines()
+	contentVis = vis
+	if m.detailErr != "" {
+		contentVis -= 2
+	}
+	if lines > vis {
+		contentVis--
+	}
+	if contentVis < 0 {
+		contentVis = 0
+	}
+	maxOffset = lines - contentVis
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	return
 }
 
 // pane frames content lines (which may carry ANSI) into a bordered pane of
