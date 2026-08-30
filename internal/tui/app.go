@@ -668,7 +668,7 @@ func (m Model) detailContentBudget(lines int) (contentVis, maxOffset int) {
 	if m.detailErr != "" {
 		contentVis -= 2
 	}
-	if lines > vis {
+	if lines > contentVis {
 		contentVis--
 	}
 	if contentVis < 0 {
@@ -727,17 +727,21 @@ func truncatePhys(s string, cells int) string {
 	return prefix + truncate(plain, cells) + "\x1b[0m"
 }
 
-// ansiPrefix extracts the leading ANSI SGR escape sequence from a styled string.
+// ansiPrefix extracts all leading consecutive ANSI SGR escape sequences from a styled string.
 func ansiPrefix(s string) string {
-	idx := strings.Index(s, "\x1b[")
-	if idx == -1 {
-		return ""
+	pos := 0
+	for {
+		idx := strings.Index(s[pos:], "\x1b[")
+		if idx != 0 {
+			break
+		}
+		end := strings.IndexByte(s[pos:], 'm')
+		if end == -1 {
+			break
+		}
+		pos += end + 1
 	}
-	end := strings.IndexByte(s[idx:], 'm')
-	if end == -1 {
-		return ""
-	}
-	return s[idx : idx+end+1]
+	return s[:pos]
 }
 
 // fitLine lays a left/right pair out on one line, dropping the right part
