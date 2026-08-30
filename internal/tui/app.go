@@ -108,6 +108,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		if m.detail != nil {
+			lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
+			if m.dOffset >= lines {
+				m.dOffset = lines - 1
+			}
+			if m.dOffset < 0 {
+				m.dOffset = 0
+			}
+		}
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	case boardMsg:
@@ -712,8 +721,8 @@ func padRight(s string, cells int) string {
 	return s + strings.Repeat(" ", cells-displayWidth(s))
 }
 
-// truncatePhys truncates an ANSI string to cells display width, keeping the
-// ellipsis inside the styled text.
+// truncatePhys truncates an ANSI string to cells display width, preserving
+// the leading ANSI styling in the result.
 func truncatePhys(s string, cells int) string {
 	if cells <= 0 {
 		return ""
@@ -722,7 +731,21 @@ func truncatePhys(s string, cells int) string {
 	if runewidth.StringWidth(plain) <= cells {
 		return s
 	}
-	return truncate(s, cells)
+	prefix := ansiPrefix(s)
+	return prefix + truncate(plain, cells) + "\x1b[0m"
+}
+
+// ansiPrefix extracts the leading ANSI SGR escape sequence from a styled string.
+func ansiPrefix(s string) string {
+	idx := strings.Index(s, "\x1b[")
+	if idx == -1 {
+		return ""
+	}
+	end := strings.IndexByte(s[idx:], 'm')
+	if end == -1 {
+		return ""
+	}
+	return s[:idx+end+1]
 }
 
 // fitLine lays a left/right pair out on one line, dropping the right part
