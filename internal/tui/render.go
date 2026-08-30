@@ -217,10 +217,11 @@ func depLine(v Vocab, dep bd.DepRecord, width int, prefix string) string {
 		suffix = " [" + dep.DependencyType + "]"
 	}
 	line := b.String()
-	line = truncate(line, width-1)
 	if suffix != "" {
-		line = truncate(line, width-displayWidth(suffix)-1)
+		line = truncate(line, width-displayWidth(suffix))
 		line += styleDim.Render(suffix)
+	} else {
+		line = truncate(line, width)
 	}
 	return v.statusStyle(dep.Status).Render(line)
 }
