@@ -573,9 +573,10 @@ func (m Model) renderDetailPane(w, h int) []string {
 			lines = append(lines, "")
 			lines = append(lines, styleDim.Render("ⓘ "+truncate(m.detailErr, inner)))
 		}
-		if len(all) > vis {
+		remaining := len(all) - offset - shown
+		if remaining > 0 {
 			lines = append(lines, styleDim.Render(truncate(
-				fmt.Sprintf("↓ %d more lines", len(all)-offset-shown), inner)))
+				fmt.Sprintf("↓ %d more lines", remaining), inner)))
 		}
 	default:
 		lines = append(lines, styleDim.Render("Select a bead for details."))
