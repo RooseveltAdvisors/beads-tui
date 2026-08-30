@@ -737,7 +737,7 @@ func ansiPrefix(s string) string {
 	if end == -1 {
 		return ""
 	}
-	return s[:idx+end+1]
+	return s[idx : idx+end+1]
 }
 
 // fitLine lays a left/right pair out on one line, dropping the right part

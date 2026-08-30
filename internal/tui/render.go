@@ -125,9 +125,10 @@ func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 	line = truncate(line, width)
 	if counts != "" {
 		rest := width - runewidth.StringWidth(stripANSI(line))
-		if rest > len(counts)+2 {
-			line = lipgloss.JoinHorizontal(lipgloss.Left, line,
-				styleDim.Render(strings.Repeat(" ", rest-len(counts)-1)+counts))
+		dw := displayWidth(counts)
+	if rest > dw+2 {
+		line = lipgloss.JoinHorizontal(lipgloss.Left, line,
+			styleDim.Render(strings.Repeat(" ", rest-dw-1)+counts))
 		}
 	}
 	if selected {
@@ -218,7 +219,7 @@ func depLine(v Vocab, dep bd.DepRecord, width int, prefix string) string {
 	line := b.String()
 	line = truncate(line, width-1)
 	if suffix != "" {
-		line = truncate(line, width-len(suffix)-1)
+		line = truncate(line, width-displayWidth(suffix)-1)
 		line += styleDim.Render(suffix)
 	}
 	return v.statusStyle(dep.Status).Render(line)
