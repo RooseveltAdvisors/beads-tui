@@ -37,7 +37,6 @@ var (
 	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("gray"))
 	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSection  = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true)
-	styleMarker   = lipgloss.NewStyle().Foreground(lipgloss.Color("gray"))
 	styleSelected = lipgloss.NewStyle().
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("252"))
@@ -47,16 +46,14 @@ var (
 // status name, falling back to the built-in vocabulary when bd never
 // answered.
 type Vocab struct {
-	icons    map[string]string
-	cats     map[string]string
-	fallback bool
+	icons map[string]string
+	cats  map[string]string
 }
 
 // NewVocab builds a Vocab from bd's status list.
 func NewVocab(statuses []bd.StatusInfo) Vocab {
 	v := Vocab{icons: map[string]string{}, cats: map[string]string{}}
 	if len(statuses) == 0 {
-		v.fallback = true
 		v.icons = map[string]string{
 			"open": "○", "in_progress": "◐", "blocked": "●",
 			"deferred": "❄", "closed": "✓", "pinned": "📌", "hooked": "◇",

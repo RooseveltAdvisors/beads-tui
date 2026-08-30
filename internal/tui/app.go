@@ -219,7 +219,17 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
 	vis := m.detailVisLines()
-	maxOffset := lines - vis
+	contentVis := vis
+	if m.detailErr != "" {
+		contentVis -= 2
+	}
+	if lines > vis {
+		contentVis--
+	}
+	if contentVis < 0 {
+		contentVis = 0
+	}
+	maxOffset := lines - contentVis
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
@@ -534,18 +544,30 @@ func (m Model) renderDetailPane(w, h int) []string {
 		vis := h - 2
 		all := BuildDetail(m.vocab, m.detail, m.down, m.up, inner)
 		offset := m.dOffset
-		maxOffset := len(all) - vis
+		contentVis := vis
+		if m.detailErr != "" {
+			contentVis -= 2
+		}
+		if len(all) > vis {
+			contentVis--
+		}
+		if contentVis < 0 {
+			contentVis = 0
+		}
+		maxOffset := len(all) - contentVis
 		if maxOffset < 0 {
 			maxOffset = 0
 			offset = 0
 		} else if offset > maxOffset {
 			offset = maxOffset
 		}
+		shown := 0
 		for _, l := range all[offset:] {
-			if len(lines) >= vis {
+			if shown >= contentVis {
 				break
 			}
 			lines = append(lines, l)
+			shown++
 		}
 		if m.detailErr != "" {
 			lines = append(lines, "")
@@ -553,7 +575,7 @@ func (m Model) renderDetailPane(w, h int) []string {
 		}
 		if len(all) > vis {
 			lines = append(lines, styleDim.Render(truncate(
-				fmt.Sprintf("↓ %d more lines", len(all)-offset-len(lines)), inner)))
+				fmt.Sprintf("↓ %d more lines", len(all)-offset-shown), inner)))
 		}
 	default:
 		lines = append(lines, styleDim.Render("Select a bead for details."))
@@ -667,8 +689,8 @@ func pane(title string, content []string, w, h int) []string {
 	}
 	topTitle := truncate(title, inner)
 	rest := inner - displayWidth(topTitle)
-	if rest < 1 {
-		rest = 1
+	if rest < 0 {
+		rest = 0
 	}
 	out := make([]string, 0, h)
 	out = append(out, "┌"+topTitle+strings.Repeat("─", rest)+"┐")

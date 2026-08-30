@@ -277,7 +277,18 @@ func TestDetailScrollBounds(t *testing.T) {
 	m = sendKey(t, m, "enter")
 
 	lines := len(BuildDetail(m.vocab, long, nil, nil, m.detailWidth()))
-	maxOffset := lines - m.detailVisLines()
+	vis := m.detailVisLines()
+	contentVis := vis
+	if m.detailErr != "" {
+		contentVis -= 2
+	}
+	if lines > vis {
+		contentVis--
+	}
+	if contentVis < 0 {
+		contentVis = 0
+	}
+	maxOffset := lines - contentVis
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
