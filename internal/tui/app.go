@@ -237,7 +237,7 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dOffset += page
 	case "b", "pgup", "ctrl+b":
 		m.dOffset -= page
-	case "h", "left", "esc":
+	case "h", "left":
 		m.focus = FocusList
 		m.dOffset = 0
 	default:
@@ -463,8 +463,14 @@ func (m Model) renderListPane(w, h int) []string {
 		lines = append(lines, styleDim.Render(m.emptyBoardText()))
 	default:
 		vis := h - 2
+		if m.loading {
+			vis--
+		}
 		if vis > len(m.rows) {
 			vis = len(m.rows)
+		}
+		if vis < 0 {
+			vis = 0
 		}
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
@@ -547,7 +553,7 @@ func (m Model) renderDetailPane(w, h int) []string {
 		}
 		if len(all) > vis {
 			lines = append(lines, styleDim.Render(truncate(
-				fmt.Sprintf("↓ %d more lines", len(all)-offset-len(lines)+1), inner)))
+				fmt.Sprintf("↓ %d more lines", len(all)-offset-len(lines)), inner)))
 		}
 	default:
 		lines = append(lines, styleDim.Render("Select a bead for details."))
@@ -641,7 +647,7 @@ func (m Model) detailWidth() int {
 	if w <= 0 {
 		w = 80
 	}
-	return w - 2 - listPaneWidth(w)
+	return w - 3 - listPaneWidth(w)
 }
 
 func (m Model) detailVisLines() int {

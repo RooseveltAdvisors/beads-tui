@@ -219,7 +219,7 @@ func depLine(v Vocab, dep bd.DepRecord, width int, prefix string) string {
 		suffix = " [" + dep.DependencyType + "]"
 	}
 	line := b.String()
-	line = truncate(stripANSI(v.statusStyle(dep.Status).Render(line)), width-1)
+	line = truncate(line, width-1)
 	if suffix != "" {
 		line = truncate(line, width-len(suffix)-1)
 		line += styleDim.Render(suffix)
@@ -277,9 +277,6 @@ func wrapText(s string, width int) []string {
 // hardBreak splits a word into width-sized pieces.
 func hardBreak(word string, width int) []string {
 	var pieces []string
-	for _, r := range word {
-		_ = r
-	}
 	runes := []rune(word)
 	for len(runes) > 0 {
 		take := 0
