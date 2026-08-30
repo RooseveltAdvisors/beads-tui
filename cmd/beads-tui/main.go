@@ -74,11 +74,11 @@ func runList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	view := fs.String("view", "ready", "board view: ready, open, all")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--view ready|open|all]\n\n")
-		fmt.Fprintf(fs.Output(), "Print a board as JSON (same data the TUI renders):\n")
-		fmt.Fprintf(fs.Output(), "  beads-tui list                  # ready work: open issues with no blockers\n")
-		fmt.Fprintf(fs.Output(), "  beads-tui list --view all       # every bead including closed\n")
-		fmt.Fprintf(fs.Output(), "  beads-tui list --view open      # open issues regardless of blockers\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--view ready|open|all]\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Print a board as JSON (same data the TUI renders):\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list                  # ready work: open issues with no blockers\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --view all       # every bead including closed\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --view open      # open issues regardless of blockers\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -103,9 +103,9 @@ func runList(args []string) error {
 func runShow(args []string) error {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: beads-tui show <id>\n\n")
-		fmt.Fprintf(fs.Output(), "Print one bead's detail (issue fields plus dependency counts) as JSON:\n")
-		fmt.Fprintf(fs.Output(), "  beads-tui show fm-ju3\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui show <id>\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Print one bead's detail (issue fields plus dependency counts) as JSON:\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui show fm-ju3\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -141,7 +141,7 @@ func isTTY(f *os.File) bool {
 }
 
 func printUsage(w *os.File) {
-	fmt.Fprintf(w, `beads-tui %s - read-only board for Beads (bd)
+	_, _ = fmt.Fprintf(w, `beads-tui %s - read-only board for Beads (bd)
 
 Usage:
   beads-tui                interactive board (ready work by default)

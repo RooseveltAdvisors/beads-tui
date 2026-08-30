@@ -126,9 +126,9 @@ func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 	if counts != "" {
 		rest := width - runewidth.StringWidth(stripANSI(line))
 		dw := displayWidth(counts)
-	if rest > dw+2 {
-		line = lipgloss.JoinHorizontal(lipgloss.Left, line,
-			styleDim.Render(strings.Repeat(" ", rest-dw-1)+counts))
+		if rest > dw+2 {
+			line = lipgloss.JoinHorizontal(lipgloss.Left, line,
+				styleDim.Render(strings.Repeat(" ", rest-dw-1)+counts))
 		}
 	}
 	if selected {
@@ -141,10 +141,10 @@ func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 // formatPriority renders the P0-P4 marker, emphasizing P0/P1.
 func formatPriority(p int) string {
 	s := "P" + itoa(p)
-	switch {
-	case p == 0:
+	switch p {
+	case 0:
 		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render(s)
-	case p == 1:
+	case 1:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Render(s)
 	default:
 		return styleDim.Render(s)
@@ -253,9 +253,7 @@ func wrapText(s string, width int) []string {
 			if w > width {
 				// Hard-break the word itself.
 				flush()
-				for _, piece := range hardBreak(word, width) {
-					lines = append(lines, piece)
-				}
+				lines = append(lines, hardBreak(word, width)...)
 				continue
 			}
 			if curW > 0 && curW+1+w > width {
