@@ -17,6 +17,7 @@ const (
 	SortCreated
 	SortUpdated
 	SortAlphabetical
+	SortLeverage
 )
 
 // String returns the short name shown in the status bar.
@@ -28,13 +29,15 @@ func (s SortMode) String() string {
 		return "updated"
 	case SortAlphabetical:
 		return "alphabetical"
+	case SortLeverage:
+		return "leverage"
 	default:
 		return "priority"
 	}
 }
 
-// Next cycles through the board's four sort modes.
-func (s SortMode) Next() SortMode { return SortMode((int(s) + 1) % 4) }
+// Next cycles through the board's five sort modes.
+func (s SortMode) Next() SortMode { return SortMode((int(s) + 1) % 5) }
 
 // FilterKind describes how a filter query is matched.
 type FilterKind uint8
@@ -182,25 +185,19 @@ func SortIssues(issues []bd.Issue, mode SortMode) []bd.Issue {
 			if c := strings.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title)); c != 0 {
 				return c < 0
 			}
+		case SortLeverage:
+			if a.DependentCount != b.DependentCount {
+				return a.DependentCount > b.DependentCount
+			}
+			if c := compareTimestamp(a.CreatedAt, b.CreatedAt); c != 0 {
+				return c < 0
+			}
 		default:
 			if a.Priority != b.Priority {
 				return a.Priority < b.Priority
 			}
 		}
 		return strings.ToLower(a.ID) < strings.ToLower(b.ID)
-	})
-	return sorted
-}
-
-// SortReadyByLeverage orders actionable work by how many downstream beads it
-// unblocks, then uses the created-descending order for deterministic ties.
-func SortReadyByLeverage(issues []bd.Issue) []bd.Issue {
-	sorted := SortIssues(issues, SortCreated)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].DependentCount != sorted[j].DependentCount {
-			return sorted[i].DependentCount > sorted[j].DependentCount
-		}
-		return false
 	})
 	return sorted
 }

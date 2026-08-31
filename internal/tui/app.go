@@ -121,8 +121,7 @@ func New(backend Backend) Model {
 	return Model{
 		backend: backend,
 		view:    bd.ViewReady,
-		// Created is newest-first by default; s cycles through the remaining
-		// modes. Ready additionally promotes work with the highest leverage.
+		// Created is newest-first by default; s cycles through the remaining modes.
 		sortMode:    SortCreated,
 		focus:       FocusList,
 		vocab:       NewVocab(nil),
@@ -353,9 +352,6 @@ func (m Model) selectedID() string {
 // by bead id. It also requests detail if the selected row changed.
 func (m *Model) rebuildRows(previousID string) tea.Cmd {
 	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
-	if m.view == bd.ViewReady && !m.filter.Active() {
-		projected = SortReadyByLeverage(projected)
-	}
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
 	}
@@ -1066,7 +1062,7 @@ func (m Model) helpLines(width int) []string {
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear filter",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
-		"  Sort:          s cycle priority · created · updated · alphabetical",
+		"  Sort:          s cycle priority · created · updated · alphabetical · leverage",
 		"  Filter:        f prompt · Enter apply · status:open · priority:P1 · label:frontend · text",
 		"  Search:        / incremental id/title/description · Enter commit · Esc cancel",
 		"  Tags:          t filter by the selected bead's labels",

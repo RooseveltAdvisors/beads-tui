@@ -13,7 +13,7 @@ func TestReadyLeverageSortPutsLargestUnblockFirst(t *testing.T) {
 		{ID: "root", CreatedAt: "2026-09-01T00:00:00Z", DependentCount: 7},
 		{ID: "tie", CreatedAt: "2026-09-02T00:00:00Z", DependentCount: 1},
 	}
-	got := SortReadyByLeverage(issues)
+	got := SortIssues(issues, SortLeverage)
 	if got[0].ID != "root" || got[1].ID != "new" || got[2].ID != "tie" {
 		t.Fatalf("leverage order = %v, want root/new/tie", []string{got[0].ID, got[1].ID, got[2].ID})
 	}

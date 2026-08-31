@@ -10,9 +10,9 @@ import (
 
 func TestSortIssuesModes(t *testing.T) {
 	issues := []bd.Issue{
-		{ID: "c", Title: "Charlie", Priority: 2, CreatedAt: "2026-08-01T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z"},
-		{ID: "a", Title: "alpha", Priority: 0, CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-01T00:00:00Z"},
-		{ID: "b", Title: "Bravo", Priority: 1, CreatedAt: "2026-08-02T00:00:00Z", UpdatedAt: "2026-08-04T00:00:00Z"},
+		{ID: "c", Title: "Charlie", Priority: 2, CreatedAt: "2026-08-01T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z", DependentCount: 3},
+		{ID: "a", Title: "alpha", Priority: 0, CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-01T00:00:00Z", DependentCount: 1},
+		{ID: "b", Title: "Bravo", Priority: 1, CreatedAt: "2026-08-02T00:00:00Z", UpdatedAt: "2026-08-04T00:00:00Z", DependentCount: 3},
 	}
 	for _, tc := range []struct {
 		name string
@@ -23,6 +23,7 @@ func TestSortIssuesModes(t *testing.T) {
 		{"created newest first", SortCreated, []string{"a", "b", "c"}},
 		{"updated newest first", SortUpdated, []string{"b", "c", "a"}},
 		{"alphabetical", SortAlphabetical, []string{"a", "b", "c"}},
+		{"leverage with created tie-break", SortLeverage, []string{"b", "c", "a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SortIssues(issues, tc.mode)
