@@ -16,7 +16,7 @@ statuses configured in the store):
 
 | Key | View     | bd invocation            | Shows |
 |-----|----------|--------------------------|-------|
-| `1` | Ready    | `bd list --ready`        | Work claimable now (no active blockers) |
+| `1` | Ready (actionable) | `bd list --ready` | Work claimable now (no active blockers) |
 | `2` | Open     | `bd list`                | Open issues regardless of blockers |
 | `3` | All      | `bd list --all`          | Everything, including closed |
 
@@ -56,11 +56,16 @@ The TUI is keyboard-driven:
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
 - `s` cycles priority, created, updated, and alphabetical sorting
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
+- `/` opens a flat, incremental result list across bead id, title, and
+  description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels
+  and restores the previous filter, selection, and detail context.
 - `t` filters to the selected bead's labels.
 
-Each list row carries a status icon, priority (`P0`-`P4`), id, title, and
-colored label tags, plus `⇣N`/`⇡N` dependency counts. At normal terminal
-widths, the persistent bottom bar shows the view, sort, active filter,
+Each list row carries its native bd status (never the computed `ready` view
+bucket), priority (`P0`-`P4`), id, title, and colored label tags, plus
+`⇣N`/`⇡N` dependency counts. Deferred rows include their `defer_until` date.
+In-progress status is yellow, closed is dim, and deferred is orange. At normal
+terminal widths, the persistent bottom bar shows the view, sort, active filter,
 selection, and total count; below 48 columns it compacts to the view, filter
 indicator, and scroll position. The detail pane shows the full issue: status
 pill, Markdown-rendered description, notes, and the dependency edges in both

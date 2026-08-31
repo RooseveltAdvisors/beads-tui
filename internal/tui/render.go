@@ -29,7 +29,7 @@ var statusColors = map[string]string{
 var statusOverrides = map[string]string{
 	"blocked":     "red",
 	"in_progress": "yellow",
-	"deferred":    "gray",
+	"deferred":    "208",
 	"closed":      "gray",
 	"pinned":      "magenta",
 	"hooked":      "cyan",
@@ -143,7 +143,11 @@ func (v Vocab) statusStyle(status string) lipgloss.Style {
 	if c, ok := statusOverrides[status]; ok {
 		color = c
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	if strings.EqualFold(strings.TrimSpace(status), "closed") {
+		style = style.Faint(true)
+	}
+	return style
 }
 
 // StatusPill renders "○ open" colored for the given status.
@@ -178,24 +182,6 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		usable = 1
 	}
 	icon := v.Icon(issue.Status)
-	rowPrefix := func() string {
-		return treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
-	}
-	prefix := rowPrefix()
-
-	var body strings.Builder
-	if issue.ID != "" {
-		body.WriteString(" ")
-		body.WriteString(issue.ID)
-	}
-	if issue.Title != "" && issue.ID != "" {
-		body.WriteString(" ")
-		body.WriteString(issue.Title)
-	} else if issue.Title != "" {
-		body.WriteString(" ")
-		body.WriteString(issue.Title)
-	}
-	tags := renderTags(issue.Labels)
 	counts := ""
 	compactCounts := ""
 	if issue.DependencyCount > 0 {
@@ -210,24 +196,46 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		counts += "⇡" + itoa(issue.DependentCount)
 		compactCounts += itoa(issue.DependentCount)
 	}
-	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 	reservedCounts := 0
+	compactCountReserve := 0
 	if issue.DependencyCount > 0 || issue.DependentCount > 0 {
-		reservedCounts = 2
+		reservedCounts = displayWidth(counts) + 1
+		compactCountReserve = 2
 		if issue.DependencyCount > 0 && issue.DependentCount > 0 {
-			reservedCounts = 4
+			compactCountReserve = 4
 		}
 	}
-	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-reservedCounts))
-	prefix = rowPrefix()
+	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-compactCountReserve))
+	statusBudget := max(0, usable-displayWidth(treePrefix)-displayWidth(corePrefix)-reservedCounts-1)
+	status := compactRowStatus(issue, statusBudget)
+	prefixWithStatus := func() string {
+		prefix := treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+		if status != "" {
+			prefix += " " + v.statusStyle(issue.Status).Render(status)
+		}
+		return prefix
+	}
+	prefix := prefixWithStatus()
 	if issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
 		icon = compactStatusIcon(issue.Status)
-		prefix = rowPrefix()
+		prefix = prefixWithStatus()
 	}
+
+	var body strings.Builder
+	if issue.ID != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.ID)
+	}
+	if issue.Title != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.Title)
+	}
+	tags := renderTags(issue.Labels)
 
 	// Status and priority stay present; extreme rows reduce wide status icons
 	// to one cell before compressing count digits for both dependency directions.
-	minimumBody := displayWidth(prefix) + 20
+	minimumBody := displayWidth(prefix)
 	fullCountBudget := displayWidth(counts)
 	if counts != "" && usable-fullCountBudget-1 < minimumBody && displayWidth(compactCounts) < fullCountBudget {
 		counts = compactCounts
@@ -272,6 +280,43 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+// rowStatus renders the native bd status. Ready is deliberately never used
+// here: it is a computed board view, not an issue status.
+func rowStatusText(issue bd.Issue) string {
+	status := strings.TrimSpace(issue.Status)
+	if status == "" {
+		return ""
+	}
+	if strings.EqualFold(status, "deferred") && strings.TrimSpace(issue.DeferUntil) != "" {
+		until := strings.TrimSpace(issue.DeferUntil)
+		if date, _, ok := strings.Cut(until, "T"); ok {
+			until = date
+		}
+		status += " until " + until
+	}
+	return status
+}
+
+func compactRowStatus(issue bd.Issue, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	status := rowStatusText(issue)
+	if displayWidth(status) <= width {
+		return status
+	}
+	short := map[string]string{
+		"open": "open", "in_progress": "prog", "closed": "clsd", "deferred": "defr",
+	}[strings.ToLower(strings.TrimSpace(issue.Status))]
+	if short != "" && displayWidth(short) <= width {
+		return short
+	}
+	if width < 2 {
+		return ""
+	}
+	return truncate(status, width)
 }
 
 func compactDependencyCounts(down, up, width int) string {
