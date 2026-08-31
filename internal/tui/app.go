@@ -339,8 +339,8 @@ func (m Model) buildDetail(width int) []string {
 func (m Model) loadBoardCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
-		defer cancel()
 		issues, err := m.backend.List(ctx, m.view)
+		cancel()
 		if err != nil {
 			return boardMsg{view: m.view, err: err}
 		}
@@ -352,7 +352,9 @@ func (m Model) loadBoardCmd() tea.Cmd {
 			if issue.DependencyCount == 0 {
 				continue
 			}
+			ctx, cancel = context.WithTimeout(context.Background(), bdTimeout)
 			records, depErr := m.backend.Deps(ctx, issue.ID, false)
+			cancel()
 			if depErr != nil {
 				return boardMsg{view: m.view, err: depErr}
 			}

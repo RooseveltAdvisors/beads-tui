@@ -93,6 +93,17 @@ func TestFlattenDependencyTreeEmitsSharedNodesOnce(t *testing.T) {
 	}
 }
 
+func TestFlattenDependencyTreeUsesActualVisibleSiblings(t *testing.T) {
+	shared := &TreeNode{Issue: bd.Issue{ID: "shared"}}
+	child := &TreeNode{Issue: bd.Issue{ID: "child"}, Children: []*TreeNode{shared}}
+	root := &TreeNode{Issue: bd.Issue{ID: "root"}, Children: []*TreeNode{child, shared}}
+
+	rows := FlattenDependencyTree([]*TreeNode{root}, nil)
+	if len(rows) != 3 || rows[1].Prefix != "└── " || rows[2].Prefix != "    └── " {
+		t.Fatalf("rows = %+v, want connectors for one actual child branch", rows)
+	}
+}
+
 func treeIDs(nodes []*TreeNode) []string {
 	ids := make([]string, len(nodes))
 	for i, node := range nodes {

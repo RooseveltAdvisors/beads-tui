@@ -142,22 +142,20 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 // state. Missing expansion entries default to expanded, which makes newly
 // loaded branches immediately visible.
 func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRow {
-	rows := make([]TreeRow, 0)
+	type visibleNode struct {
+		node        *TreeNode
+		children    []*visibleNode
+		hasChildren bool
+		expanded    bool
+	}
+
 	emitted := make(map[string]bool)
-	var walk func(*TreeNode, string, []bool, bool, map[string]bool)
-	walk = func(node *TreeNode, ancestorPrefix string, ancestorLast []bool, last bool, path map[string]bool) {
+	var project func(*TreeNode, map[string]bool) *visibleNode
+	project = func(node *TreeNode, path map[string]bool) *visibleNode {
 		if node == nil || path[node.Issue.ID] || emitted[node.Issue.ID] {
-			return
+			return nil
 		}
 		emitted[node.Issue.ID] = true
-		prefix := ancestorPrefix
-		if len(ancestorLast) > 0 {
-			if last {
-				prefix += "└── "
-			} else {
-				prefix += "├── "
-			}
-		}
 		isExpanded := true
 		if value, ok := expanded[node.Issue.ID]; ok {
 			isExpanded = value
@@ -168,21 +166,47 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 				visibleChildren = append(visibleChildren, child)
 			}
 		}
-		rows = append(rows, TreeRow{
-			Issue:       node.Issue,
-			Prefix:      prefix,
-			HasChildren: len(visibleChildren) > 0,
-			Expanded:    isExpanded,
-		})
+		visible := &visibleNode{node: node, hasChildren: len(visibleChildren) > 0, expanded: isExpanded}
 		if !isExpanded {
-			return
+			return visible
 		}
 		nextPath := make(map[string]bool, len(path)+1)
 		for id := range path {
 			nextPath[id] = true
 		}
 		nextPath[node.Issue.ID] = true
-		for i, child := range visibleChildren {
+		for _, child := range visibleChildren {
+			if projected := project(child, nextPath); projected != nil {
+				visible.children = append(visible.children, projected)
+			}
+		}
+		return visible
+	}
+	visibleRoots := make([]*visibleNode, 0, len(roots))
+	for _, root := range roots {
+		if projected := project(root, nil); projected != nil {
+			visibleRoots = append(visibleRoots, projected)
+		}
+	}
+
+	rows := make([]TreeRow, 0)
+	var walk func(*visibleNode, string, []bool, bool)
+	walk = func(visible *visibleNode, ancestorPrefix string, ancestorLast []bool, last bool) {
+		prefix := ancestorPrefix
+		if len(ancestorLast) > 0 {
+			if last {
+				prefix += "└── "
+			} else {
+				prefix += "├── "
+			}
+		}
+		rows = append(rows, TreeRow{
+			Issue:       visible.node.Issue,
+			Prefix:      prefix,
+			HasChildren: visible.hasChildren,
+			Expanded:    visible.expanded,
+		})
+		for i, child := range visible.children {
 			childPrefix := ancestorPrefix
 			if len(ancestorLast) > 0 {
 				if last {
@@ -191,11 +215,11 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 					childPrefix += "│   "
 				}
 			}
-			walk(child, childPrefix, append(ancestorLast, last), i == len(visibleChildren)-1, nextPath)
+			walk(child, childPrefix, append(ancestorLast, last), i == len(visible.children)-1)
 		}
 	}
-	for i, root := range roots {
-		walk(root, "", nil, i == len(roots)-1, nil)
+	for i, root := range visibleRoots {
+		walk(root, "", nil, i == len(visibleRoots)-1)
 	}
 	return rows
 }
