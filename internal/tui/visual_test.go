@@ -1,11 +1,35 @@
 package tui
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 )
+
+type concurrentDepsClient struct {
+	*fakeClient
+	mu     sync.Mutex
+	active int
+	max    int
+}
+
+func (f *concurrentDepsClient) Deps(ctx context.Context, id string, up bool) ([]bd.DepRecord, error) {
+	f.mu.Lock()
+	f.active++
+	if f.active > f.max {
+		f.max = f.active
+	}
+	f.mu.Unlock()
+	time.Sleep(10 * time.Millisecond)
+	f.mu.Lock()
+	f.active--
+	f.mu.Unlock()
+	return f.fakeClient.Deps(ctx, id, up)
+}
 
 func TestReadyLeverageSortPutsLargestUnblockFirst(t *testing.T) {
 	issues := []bd.Issue{
@@ -44,6 +68,26 @@ func TestBoardLeverageUsesReverseDependencyGraph(t *testing.T) {
 	}
 	if m.rows[0].DependentCount != 7 {
 		t.Fatalf("reverse dependency count = %d, want 7", m.rows[0].DependentCount)
+	}
+}
+
+func TestBoardGraphLoadsWithBoundedConcurrency(t *testing.T) {
+	issues := make([]bd.Issue, boardGraphWorkers+2)
+	for i := range issues {
+		issues[i].ID = "issue-" + itoa(i)
+	}
+	f := &concurrentDepsClient{fakeClient: &fakeClient{
+		issues: map[bd.View][]bd.Issue{bd.ViewAll: issues},
+	}}
+	m := newTestModel(f.fakeClient)
+	m.backend = f
+	m.view = bd.ViewAll
+	msg := m.loadBoardCmd()()
+	if got := msg.(boardMsg).err; got != nil {
+		t.Fatalf("load board: %v", got)
+	}
+	if f.max <= 1 || f.max > boardGraphWorkers {
+		t.Fatalf("peak dependency calls = %d, want 2..%d", f.max, boardGraphWorkers)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -17,6 +18,8 @@ import (
 // bdTimeout caps every bd call so a wedged store (or lock contention) shows
 // an error instead of freezing the UI.
 const bdTimeout = 8 * time.Second
+
+const boardGraphWorkers = 8
 
 // Focus tracks which pane receives the navigation keys.
 type Focus int
@@ -577,29 +580,53 @@ func (m Model) loadBoardCmd() tea.Cmd {
 			return boardMsg{view: m.view, err: err}
 		}
 		deps := make(map[string][]bd.DepRecord)
-		for i := range issues {
-			issue := issues[i]
-			if issue.ID == "" {
-				continue
-			}
-			if issue.DependencyCount > 0 {
-				ctx, cancel = context.WithTimeout(context.Background(), bdTimeout)
-				records, depErr := m.backend.Deps(ctx, issue.ID, false)
-				cancel()
-				if depErr != nil {
-					return boardMsg{view: m.view, err: depErr}
+		type graphResult struct {
+			deps           []bd.DepRecord
+			dependentCount int
+			err            error
+		}
+		results := make([]graphResult, len(issues))
+		jobs := make(chan int)
+		var workers sync.WaitGroup
+		workerCount := min(boardGraphWorkers, len(issues))
+		workers.Add(workerCount)
+		for range workerCount {
+			go func() {
+				defer workers.Done()
+				for i := range jobs {
+					issue := issues[i]
+					if issue.ID == "" {
+						continue
+					}
+					if issue.DependencyCount > 0 {
+						callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
+						results[i].deps, results[i].err = m.backend.Deps(callCtx, issue.ID, false)
+						callCancel()
+						if results[i].err != nil {
+							continue
+						}
+					}
+					callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
+					dependents, depErr := m.backend.Deps(callCtx, issue.ID, true)
+					callCancel()
+					results[i].dependentCount = len(dependents)
+					results[i].err = depErr
 				}
-				deps[issue.ID] = records
+			}()
+		}
+		for i := range issues {
+			jobs <- i
+		}
+		close(jobs)
+		workers.Wait()
+		for i, result := range results {
+			if result.err != nil {
+				return boardMsg{view: m.view, err: result.err}
 			}
-			// bd list's dependent_count can be stale or zeroed. The reverse
-			// dependency query is the source of truth for leverage and ⇡N.
-			ctx, cancel = context.WithTimeout(context.Background(), bdTimeout)
-			dependents, depErr := m.backend.Deps(ctx, issue.ID, true)
-			cancel()
-			if depErr != nil {
-				return boardMsg{view: m.view, err: depErr}
+			if len(result.deps) > 0 {
+				deps[issues[i].ID] = result.deps
 			}
-			issues[i].DependentCount = len(dependents)
+			issues[i].DependentCount = result.dependentCount
 		}
 		return boardMsg{view: m.view, issues: issues, deps: deps}
 	}
