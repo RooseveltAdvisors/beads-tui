@@ -133,6 +133,41 @@ func TestListRowsRenderNativeStatusColumn(t *testing.T) {
 	}
 }
 
+func TestListRowsRenderNativeStatusAtStandardPaneWidth(t *testing.T) {
+	vocab := NewVocab(nil)
+	for _, issue := range []bd.Issue{
+		{ID: "open", Title: "Open", Status: "open"},
+		{ID: "progress", Title: "Progress", Status: "in_progress"},
+		{ID: "closed", Title: "Closed", Status: "closed"},
+		{ID: "deferred", Title: "Deferred", Status: "deferred", DeferUntil: "2026-09-04T12:00:00Z"},
+	} {
+		row := stripANSI(vocab.ListRow(issue, 38, false))
+		if !strings.Contains(row, issue.Status) {
+			t.Errorf("row for %q missing native status at standard width: %q", issue.ID, row)
+		}
+		if displayWidth(row) > 38 {
+			t.Errorf("row for %q overflowed standard width: %q", issue.ID, row)
+		}
+	}
+}
+
+func TestLongNativeStatusPreservesDependencyDirections(t *testing.T) {
+	vocab := NewVocab([]bd.StatusInfo{{Name: "awaiting_external_approval", Icon: "○", Category: "active"}})
+	row := vocab.ListRow(bd.Issue{
+		ID: "fm-x", Title: strings.Repeat("long title ", 4), Status: "awaiting_external_approval",
+		Priority: 1, DependencyCount: 123, DependentCount: 456,
+	}, 40, false)
+	plain := stripANSI(row)
+	if displayWidth(row) > 40 {
+		t.Fatalf("custom-status row overflowed: %q", plain)
+	}
+	for _, want := range []string{"awaiting", "⇣123", "⇡456"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("custom-status row missing %q: %q", want, plain)
+		}
+	}
+}
+
 func TestReadyTabNamesComputedView(t *testing.T) {
 	m := New(nil)
 	m.width, m.height = 80, 24
