@@ -56,6 +56,7 @@ The TUI is keyboard-driven:
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
 - `s` cycles priority, created, updated, and alphabetical sorting
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
+- `/` opens incremental search across bead id, title, and description; `enter` commits and `esc` cancels.
 - `t` filters to the selected bead's labels.
 
 Each list row carries a status icon, priority (`P0`-`P4`), id, title, and

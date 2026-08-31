@@ -45,6 +45,7 @@ const (
 	FilterPriority
 	FilterLabel
 	FilterText
+	FilterSearch
 )
 
 // Filter is the parsed form of the filter prompt. Prefixes are optional for
@@ -105,6 +106,16 @@ func ParseFilter(input string) Filter {
 	}
 }
 
+// SearchFilter builds the slash-search variant. Unlike the filter prompt,
+// slash search includes bead IDs so users can jump directly to a known bead.
+func SearchFilter(input string) Filter {
+	query := strings.ToLower(strings.TrimSpace(input))
+	if query == "" {
+		return Filter{}
+	}
+	return Filter{Kind: FilterSearch, Query: query}
+}
+
 // Matches reports whether issue satisfies f. Text searches intentionally use
 // only title and description so metadata does not create surprising hits.
 func (f Filter) Matches(issue bd.Issue) bool {
@@ -130,6 +141,11 @@ func (f Filter) Matches(issue bd.Issue) bool {
 			}
 		}
 		return false
+	case FilterSearch:
+		needle := strings.ToLower(f.Query)
+		return strings.Contains(strings.ToLower(issue.Title), needle) ||
+			strings.Contains(strings.ToLower(issue.Description), needle) ||
+			strings.Contains(strings.ToLower(issue.ID), needle)
 	default:
 		needle := strings.ToLower(f.Query)
 		return strings.Contains(strings.ToLower(issue.Title), needle) ||

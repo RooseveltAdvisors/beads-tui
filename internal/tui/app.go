@@ -67,6 +67,8 @@ type Model struct {
 	help        bool
 	helpOffset  int
 	filtering   bool
+	searching   bool
+	searchBase  Filter
 	filterInput textinput.Model
 	quitting    bool
 	markdown    *markdownRenderer
@@ -183,16 +185,37 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.filtering = false
 			m.filterInput.Blur()
-			m.filter = Filter{}
+			if m.searching {
+				m.filter = m.searchBase
+			} else {
+				m.filter = Filter{}
+			}
+			m.searching = false
 			return m, m.rebuildRows(m.selectedID())
 		case "enter":
 			m.filtering = false
 			m.filterInput.Blur()
-			m.filter = ParseFilter(m.filterInput.Value())
+			if m.searching {
+				m.filter = SearchFilter(m.filterInput.Value())
+			} else {
+				m.filter = ParseFilter(m.filterInput.Value())
+			}
+			m.searching = false
 			return m, m.rebuildRows(m.selectedID())
 		}
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
+		if m.searching {
+			previousID := m.selectedID()
+			m.filter = SearchFilter(m.filterInput.Value())
+			filterCmd := m.rebuildRows(previousID)
+			if cmd != nil && filterCmd != nil {
+				return m, tea.Batch(cmd, filterCmd)
+			}
+			if filterCmd != nil {
+				return m, filterCmd
+			}
+		}
 		return m, cmd
 	}
 	switch msg.String() {
@@ -223,10 +246,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sortMode = m.sortMode.Next()
 		return m, m.rebuildRows(m.selectedID())
 	case "f":
-		m.filtering = true
-		m.filterInput.SetValue("")
-		m.filterInput.Focus()
-		return m, textinput.Blink
+		return m, m.openPrompt(false)
+	case "/":
+		m.searchBase = m.filter
+		return m, m.openPrompt(true)
 	case "t":
 		if id := m.selectedID(); id != "" {
 			for _, issue := range m.rows {
@@ -257,6 +280,19 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.listKey(msg)
 	}
 	return m.detailKey(msg)
+}
+
+func (m *Model) openPrompt(search bool) tea.Cmd {
+	m.filtering = true
+	m.searching = search
+	if search {
+		m.filterInput.Prompt = "Search / › "
+	} else {
+		m.filterInput.Prompt = "Filter › "
+	}
+	m.filterInput.SetValue("")
+	m.filterInput.Focus()
+	return textinput.Blink
 }
 
 // switchView changes the board view, keeping the selection stable by id when
@@ -607,14 +643,14 @@ func (m Model) View() string {
 	var sb strings.Builder
 	sb.WriteString(m.renderHeader(w))
 	sb.WriteString("\n")
-	if m.filtering {
-		sb.WriteString(m.renderFilterPrompt(w))
-		sb.WriteString("\n")
-	}
 	for i := 0; i < contentH; i++ {
 		sb.WriteString(listPane[i])
 		sb.WriteString(" ")
 		sb.WriteString(detailPane[i])
+		sb.WriteString("\n")
+	}
+	if m.filtering {
+		sb.WriteString(m.renderFilterPrompt(w))
 		sb.WriteString("\n")
 	}
 	sb.WriteString(m.renderFooter(w))
@@ -622,9 +658,12 @@ func (m Model) View() string {
 }
 
 func (m Model) renderFilterPrompt(w int) string {
-	label := styleDim.Render("FILTER")
+	label := "FILTER"
+	if m.searching {
+		label = "SEARCH"
+	}
 	input := m.filterInput.View()
-	return truncatePhys(label+"  "+input, w)
+	return truncatePhys(styleDim.Render(label)+"  "+input, w)
 }
 
 // renderHeader paints the title bar: view name and tabs.
@@ -881,6 +920,7 @@ func (m Model) helpLines(width int) []string {
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Sort:          s cycle priority · created · updated · alphabetical",
 		"  Filter:        f prompt · Enter apply · status:open · priority:P1 · label:frontend · text",
+		"  Search:        / incremental id/title/description · Enter commit · Esc cancel",
 		"  Tags:          t filter by the selected bead's labels",
 		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
