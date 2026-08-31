@@ -152,7 +152,7 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 	for _, want := range []string{
 		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
 		"enter/l/→", "h/←", "1 Ready", "2 Open", "3 All", "s cycle",
-		"f prompt", "Enter apply", "Esc cancel/clear", "status:open",
+		"esc close detail / clear filter", "f prompt", "Enter apply", "status:open",
 		"priority:P1", "label:frontend", "t filter", "r ·", "Help: ?", "q/Ctrl+C",
 	} {
 		if !strings.Contains(view, want) {
@@ -163,6 +163,33 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 		if displayWidth(line) > 80 {
 			t.Errorf("help line %d overflowed: %q", i, line)
 		}
+	}
+}
+
+func TestNarrowHelpScrollMakesEveryBindingReachable(t *testing.T) {
+	m := New(nil)
+	m.width, m.height = 40, 10
+	m = sendKey(t, m, "?")
+	var seen strings.Builder
+	for i := 0; i <= m.helpMaxOffset(); i++ {
+		seen.WriteString(stripANSI(m.View()))
+		seen.WriteByte('\n')
+		m = sendKey(t, m, "j")
+	}
+	all := strings.Join(strings.Fields(seen.String()), " ")
+	for _, want := range []string{
+		"esc close detail /", "clear filter", "space/PgDn/Ctrl+F", "label:frontend", "q/Ctrl+C", "Read-only:",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("scrollable help never exposed %q", want)
+		}
+	}
+	if !m.help || m.helpOffset != m.helpMaxOffset() {
+		t.Fatalf("j closed or overscrolled help: open=%v offset=%d max=%d", m.help, m.helpOffset, m.helpMaxOffset())
+	}
+	m = sendKey(t, m, "k")
+	if !m.help || m.helpOffset != m.helpMaxOffset()-1 {
+		t.Fatalf("k did not scroll help upward: open=%v offset=%d", m.help, m.helpOffset)
 	}
 }
 

@@ -65,6 +65,7 @@ type Model struct {
 	checking  bool
 
 	help        bool
+	helpOffset  int
 	filtering   bool
 	filterInput textinput.Model
 	quitting    bool
@@ -165,7 +166,16 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.help {
+		switch msg.String() {
+		case "j", "down":
+			m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
+			return m, nil
+		case "k", "up":
+			m.helpOffset = max(m.helpOffset-1, 0)
+			return m, nil
+		}
 		m.help = false
+		m.helpOffset = 0
 		return m, nil
 	}
 	if m.filtering {
@@ -188,6 +198,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "?":
 		m.help = true
+		m.helpOffset = 0
 		return m, nil
 	case "q":
 		m.quitting = true
@@ -834,14 +845,36 @@ func footerStatus(w int, view, sortMode, filter, selected string, total int) str
 
 // renderHelp overlays the key reference.
 func (m Model) renderHelp() string {
-	w := m.width
+	w, width, height := m.helpDimensions()
+	lines := m.helpLines(width)
+	vis := max(1, height-2)
+	offset := min(m.helpOffset, max(0, len(lines)-vis))
+	end := min(len(lines), offset+vis)
+	title := fmt.Sprintf("Help · j/k scroll · %d/%d", offset+1, max(1, len(lines)-vis+1))
+	box := pane(title, lines[offset:end], width, height)
+	out := make([]string, 0, height)
+	for _, line := range box {
+		out = append(out, strings.Repeat(" ", max(0, (w-displayWidth(line))/2))+line)
+	}
+	return strings.Join(out, "\n")
+}
+
+func (m Model) helpDimensions() (w, width, height int) {
+	w, height = m.width, m.height
 	if w <= 0 {
 		w = 80
 	}
-	width := w - 4
+	if height <= 0 {
+		height = 24
+	}
+	width = w - 4
 	if width > 72 {
 		width = 72
 	}
+	return w, max(3, width), max(3, height)
+}
+
+func (m Model) helpLines(width int) []string {
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
@@ -849,9 +882,10 @@ func (m Model) renderHelp() string {
 		"  Half-page:     ctrl-u/d in list and detail",
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree",
 		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
+		"  Navigation:    esc close detail / clear filter",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Sort:          s cycle priority · created · updated · alphabetical",
-		"  Filter:        f prompt · Enter apply · Esc cancel/clear · status:open · priority:P1 · label:frontend · text",
+		"  Filter:        f prompt · Enter apply · status:open · priority:P1 · label:frontend · text",
 		"  Tags:          t filter by the selected bead's labels",
 		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
@@ -871,16 +905,12 @@ func (m Model) renderHelp() string {
 			lines[i] = styleDim.Render(lines[i])
 		}
 	}
-	box := pane("Help", lines, width, len(lines)+2)
-	out := make([]string, 0, m.height)
-	for i := 0; i < m.height; i++ {
-		if i < len(box) {
-			out = append(out, strings.Repeat(" ", (w-displayWidth(box[i]))/2)+box[i])
-		} else {
-			out = append(out, "")
-		}
-	}
-	return strings.Join(out, "\n")
+	return lines
+}
+
+func (m Model) helpMaxOffset() int {
+	_, width, height := m.helpDimensions()
+	return max(0, len(m.helpLines(width))-max(1, height-2))
 }
 
 // listPaneWidth splits the width between board and detail.
