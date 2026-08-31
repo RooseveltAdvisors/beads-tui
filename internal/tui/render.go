@@ -143,7 +143,11 @@ func (v Vocab) statusStyle(status string) lipgloss.Style {
 	if c, ok := statusOverrides[status]; ok {
 		color = c
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	if strings.EqualFold(strings.TrimSpace(status), "closed") {
+		style = style.Faint(true)
+	}
+	return style
 }
 
 // StatusPill renders "○ open" colored for the given status.

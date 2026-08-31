@@ -151,6 +151,16 @@ func TestListRowsRenderNativeStatusAtStandardPaneWidth(t *testing.T) {
 	}
 }
 
+func TestClosedNativeStatusIsFaint(t *testing.T) {
+	vocab := NewVocab(nil)
+	if !vocab.statusStyle("closed").GetFaint() {
+		t.Fatal("closed native status style is not faint")
+	}
+	if vocab.statusStyle("open").GetFaint() {
+		t.Fatal("open native status style is unexpectedly faint")
+	}
+}
+
 func TestLongNativeStatusPreservesDependencyDirections(t *testing.T) {
 	vocab := NewVocab([]bd.StatusInfo{{Name: "awaiting_external_approval", Icon: "○", Category: "active"}})
 	row := vocab.ListRow(bd.Issue{
