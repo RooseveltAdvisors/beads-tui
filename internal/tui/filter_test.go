@@ -238,3 +238,27 @@ func TestTruncatedTaggedRowsReserveDependencyMarkers(t *testing.T) {
 		}
 	}
 }
+
+func TestNarrowRowsCompressButRetainDependencyCounts(t *testing.T) {
+	issue := bd.Issue{
+		ID: "fm-x", Title: strings.Repeat("long title ", 4), Status: "blocked", Priority: 1,
+		Labels: []string{"frontend"}, DependencyCount: 123, DependentCount: 456,
+	}
+	for _, selected := range []bool{false, true} {
+		width := 10
+		if selected {
+			width = 12
+		}
+		row := NewVocab(nil).ListRow(issue, width, selected)
+		plain := stripANSI(row)
+		if displayWidth(row) > width {
+			t.Fatalf("selected=%v narrow row overflowed: %q", selected, plain)
+		}
+		if !strings.Contains(plain, "123/456") {
+			t.Errorf("selected=%v narrow row lost dependency counts: %q", selected, plain)
+		}
+		if strings.Contains(plain, "frontend") {
+			t.Errorf("selected=%v labels did not collapse first: %q", selected, plain)
+		}
+	}
+}

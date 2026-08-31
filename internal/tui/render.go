@@ -200,23 +200,44 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	}
 	tags := renderTags(issue.Labels)
 	counts := ""
+	compactCounts := ""
 	if issue.DependencyCount > 0 {
 		counts += "⇣" + itoa(issue.DependencyCount)
+		compactCounts += itoa(issue.DependencyCount)
 	}
 	if issue.DependentCount > 0 {
 		if counts != "" {
 			counts += " "
+			compactCounts += "/"
 		}
 		counts += "⇡" + itoa(issue.DependentCount)
+		compactCounts += itoa(issue.DependentCount)
 	}
-	countBudget := displayWidth(counts)
+
+	// Narrow rows collapse labels first, preserve roughly 20 body cells next,
+	// then compress dependency markers to bare counts while retaining digits.
+	minimumBody := displayWidth(header) + 20
+	fullCountBudget := displayWidth(counts)
+	if counts != "" && usable-fullCountBudget-1 < minimumBody && displayWidth(compactCounts) < fullCountBudget {
+		counts = compactCounts
+	}
+	countWidth := displayWidth(counts)
+	contentBudget := usable
 	if counts != "" {
-		countBudget++
+		contentBudget -= countWidth + 1
 	}
-	contentBudget := max(1, usable-countBudget)
+	if contentBudget <= 0 {
+		line := styleDim.Render(strings.Repeat(" ", max(0, usable-countWidth)) + truncate(counts, usable))
+		if selected {
+			return styleSelected.Render("▸ " + line)
+		}
+		return line
+	}
+
 	line := header + body.String()
-	if tags != "" && contentBudget > displayWidth(header)+2 {
-		tagBudget := min(displayWidth(tags), max(3, contentBudget/2))
+	maxTagBudget := contentBudget - minimumBody - 1
+	if tags != "" && maxTagBudget >= 3 {
+		tagBudget := min(displayWidth(tags), maxTagBudget)
 		line = truncatePhys(line, contentBudget-tagBudget-1) + " " + truncatePhys(tags, tagBudget)
 	} else {
 		line = truncatePhys(line, contentBudget)
