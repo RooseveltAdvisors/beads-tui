@@ -58,10 +58,12 @@ The TUI is keyboard-driven:
 - `t` filters to the selected bead's labels.
 
 Each list row carries a status icon, priority (`P0`-`P4`), id, title, and
-colored label tags, plus `⇣N`/`⇡N` dependency counts. The persistent bottom
-bar shows the view, sort, active filter, selection, and total count. The detail
-pane shows the full issue: status pill, Markdown-rendered description, notes,
-and the dependency edges in both directions with
+colored label tags, plus `⇣N`/`⇡N` dependency counts. At normal terminal
+widths, the persistent bottom bar shows the view, sort, active filter,
+selection, and total count; below 48 columns it compacts to the view, filter
+indicator, and scroll position. The detail pane shows the full issue: status
+pill, Markdown-rendered description, notes, and the dependency edges in both
+directions with
 their edge type (`blocks`, `tracks`, `parent-child`, ...).
 
 Rows and markers:

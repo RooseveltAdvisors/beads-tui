@@ -814,12 +814,7 @@ func (m Model) renderFooter(w int) string {
 		left = styleDim.Render(status)
 		hints = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
 	default:
-		mode := "tree"
-		if !m.treeMode {
-			mode = "flat"
-		}
 		left = styleDim.Render(status)
-		hints = styleDim.Render("j/k move · ^u/d half · enter/tab fold · h collapse · l detail · v " + mode + " · ? · q quit")
 	}
 	if displayWidth(left)+1+displayWidth(hints) <= w {
 		return fitLine(left, hints, w)
@@ -881,7 +876,7 @@ func (m Model) helpLines(width int) []string {
 		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree",
-		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
+		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear filter",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Sort:          s cycle priority · created · updated · alphabetical",
