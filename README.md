@@ -16,7 +16,7 @@ statuses configured in the store):
 
 | Key | View     | bd invocation            | Shows |
 |-----|----------|--------------------------|-------|
-| `1` | Ready    | `bd list --ready`        | Work claimable now (no active blockers) |
+| `1` | Ready (actionable) | `bd list --ready` | Work claimable now (no active blockers) |
 | `2` | Open     | `bd list`                | Open issues regardless of blockers |
 | `3` | All      | `bd list --all`          | Everything, including closed |
 
@@ -60,8 +60,10 @@ The TUI is keyboard-driven:
   description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels.
 - `t` filters to the selected bead's labels.
 
-Each list row carries a status icon, priority (`P0`-`P4`), id, title, and
-colored label tags, plus `⇣N`/`⇡N` dependency counts. At normal terminal
+Each list row carries its native bd status (never the computed `ready` view
+bucket), priority (`P0`-`P4`), id, title, and colored label tags, plus
+`⇣N`/`⇡N` dependency counts. Deferred rows include their `defer_until` date.
+At normal terminal
 widths, the persistent bottom bar shows the view, sort, active filter,
 selection, and total count; below 48 columns it compacts to the view, filter
 indicator, and scroll position. The detail pane shows the full issue: status
