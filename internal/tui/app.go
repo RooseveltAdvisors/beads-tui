@@ -320,7 +320,7 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
 	}
-	if m.treeMode {
+	if m.treeMode && m.filter.Kind != FilterSearch {
 		roots := BuildDependencyTree(projected, m.deps, m.sortMode)
 		m.treeRows = FlattenDependencyTree(roots, m.expanded)
 		m.rows = make([]bd.Issue, len(m.treeRows))
@@ -340,6 +340,9 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 			}
 		}
 	}
+	if m.filter.Kind == FilterSearch && len(m.rows) > 0 {
+		m.expandAncestors(m.rows[m.selected].ID)
+	}
 	if len(m.rows) == 0 {
 		m.detail, m.down, m.up = nil, nil, nil
 		m.detailErr = ""
@@ -351,6 +354,33 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 		return m.loadDetailCmd(m.rows[m.selected].ID)
 	}
 	return nil
+}
+
+func (m *Model) expandAncestors(id string) {
+	var visit func(*TreeNode, []string) bool
+	visit = func(node *TreeNode, path []string) bool {
+		if node == nil {
+			return false
+		}
+		if node.Issue.ID == id {
+			for _, ancestor := range path {
+				m.expanded[ancestor] = true
+			}
+			return true
+		}
+		path = append(path, node.Issue.ID)
+		for _, child := range node.Children {
+			if visit(child, path) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, root := range BuildDependencyTree(m.allRows, m.deps, m.sortMode) {
+		if visit(root, nil) {
+			return
+		}
+	}
 }
 
 // navIndexes returns the wrapped step for list navigation (no-op on empty).
@@ -404,6 +434,9 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m = m.clampSelection()
 	if m.selected != before {
+		if m.filter.Kind == FilterSearch {
+			m.expandAncestors(m.rows[m.selected].ID)
+		}
 		m.checking = true
 		return m, m.loadDetailCmd(m.rows[m.selected].ID)
 	}

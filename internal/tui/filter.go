@@ -226,5 +226,5 @@ func isPriority(value string) bool {
 		return false
 	}
 	p, err := strconv.Atoi(value[1:])
-	return err == nil && p >= 0 && p <= 3
+	return err == nil && p >= 0 && p <= 4
 }

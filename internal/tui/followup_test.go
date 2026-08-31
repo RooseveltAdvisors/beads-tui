@@ -62,3 +62,30 @@ func TestSlashSearchNavigationUsesMatches(t *testing.T) {
 		t.Fatalf("j did not move through search matches: selected=%d rows=%+v", m.selected, m.rows)
 	}
 }
+
+func TestSlashSearchFlattensMatchesAndRevealsSelectedTreePath(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "parent", Title: "Matching parent", Status: "open"},
+		{ID: "child", Title: "Matching child", Status: "open", ParentID: "parent"},
+	}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	m := newTestModel(f)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues})
+	m.expanded["parent"] = false
+	m.rebuildRows("parent")
+
+	m = sendKey(t, m, "/")
+	m = sendKey(t, m, "matching")
+	m = sendKey(t, m, "enter")
+	if len(m.rows) != 2 || len(m.treeRows) != 0 {
+		t.Fatalf("search results were not flat: rows=%+v treeRows=%+v", m.rows, m.treeRows)
+	}
+	m = sendKey(t, m, "k")
+	if m.rows[m.selected].ID != "child" || !m.expanded["parent"] {
+		t.Fatalf("child navigation did not reveal ancestor path: selected=%s expanded=%v", m.rows[m.selected].ID, m.expanded)
+	}
+	m = sendKey(t, m, "esc")
+	if len(m.rows) != 2 || m.rows[m.selected].ID != "child" {
+		t.Fatalf("cleared search hid selected child: selected=%d rows=%+v", m.selected, m.rows)
+	}
+}
