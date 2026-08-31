@@ -58,6 +58,7 @@ type Model struct {
 	lastSync string
 	help     bool
 	quitting bool
+	markdown *markdownRenderer
 
 	width  int
 	height int
@@ -89,12 +90,13 @@ type detailMsg struct {
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
 	return Model{
-		backend: backend,
-		view:    bd.ViewReady,
-		focus:   FocusList,
-		vocab:   NewVocab(nil),
-		width:   80,
-		height:  24,
+		backend:  backend,
+		view:     bd.ViewReady,
+		focus:    FocusList,
+		vocab:    NewVocab(nil),
+		width:    80,
+		height:   24,
+		markdown: &markdownRenderer{},
 	}
 }
 
@@ -109,7 +111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.detail != nil {
-			lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
+			lines := len(m.buildDetail(m.detailWidth()))
 			_, maxOffset := m.detailContentBudget(lines)
 			if m.dOffset > maxOffset {
 				m.dOffset = maxOffset
@@ -209,10 +211,14 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected += page
 	case "b", "pgup", "ctrl+b":
 		m.selected -= page
+	case "ctrl+d":
+		m.selected += m.halfPageStep()
+	case "ctrl+u":
+		m.selected -= m.halfPageStep()
 	case "enter":
 		m.focus = FocusDetail
 		m.dOffset = 0
-	case "l", "right":
+	case "l", "L", "right":
 		m.focus = FocusDetail
 		m.dOffset = 0
 	default:
@@ -227,7 +233,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
+	lines := len(m.buildDetail(m.detailWidth()))
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
 	switch msg.String() {
@@ -243,9 +249,15 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dOffset += page
 	case "b", "pgup", "ctrl+b":
 		m.dOffset -= page
-	case "h", "left":
+	case "ctrl+d":
+		m.dOffset += m.halfPageStep()
+	case "ctrl+u":
+		m.dOffset -= m.halfPageStep()
+	case "h", "H", "left":
 		m.focus = FocusList
 		m.dOffset = 0
+	case "l", "L", "right":
+		m.focus = FocusDetail
 	default:
 		return m, nil
 	}
@@ -280,6 +292,23 @@ func (m Model) pageStep() int {
 		return s
 	}
 	return 10
+}
+
+// halfPageStep is the distance used by ctrl-u/ctrl-d, matching the terminal's
+// usual half-page navigation convention.
+func (m Model) halfPageStep() int {
+	step := m.pageStep() / 2
+	if step < 1 {
+		return 1
+	}
+	return step
+}
+
+func (m Model) buildDetail(width int) []string {
+	if m.markdown == nil {
+		m.markdown = &markdownRenderer{}
+	}
+	return buildDetail(m.vocab, m.detail, m.down, m.up, width, m.markdown)
 }
 
 func (m Model) loadBoardCmd() tea.Cmd {
@@ -537,7 +566,7 @@ func (m Model) renderDetailPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(l))
 		}
 	case m.detail != nil:
-		all := BuildDetail(m.vocab, m.detail, m.down, m.up, inner)
+		all := m.buildDetail(inner)
 		offset := m.dOffset
 		contentVis, maxOffset := m.detailContentBudget(len(all))
 		if offset > maxOffset {
@@ -581,9 +610,9 @@ func (m Model) renderFooter(w int) string {
 	case m.loading:
 		left = styleDim.Render("loading…")
 	case m.focus == FocusDetail:
-		left = styleDim.Render("j·k/↑↓ scroll · space/page pg · g/G · esc back · q quit")
+		left = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
 	default:
-		left = styleDim.Render("↑↓/j·k select · enter detail · 1/2/3 view · r refresh · ? help · q quit")
+		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter detail · 1/2/3 view · r refresh · ? help · q quit")
 	}
 	right := ""
 	if m.lastSync != "" {
@@ -598,6 +627,8 @@ func (m Model) renderHelp() string {
 		styleBold.Render("beads-tui - read-only board for Beads (bd)"),
 		"",
 		"  Nav list:      j/k or ↑/↓ move · g/G top/bottom · f/b page",
+		"  Half-page:     ctrl-u/d in list and detail",
+		"  Panes:         h/l or ←/→ shift focus",
 		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Refresh:       r  ·  Quit: q or ctrl+c  ·  Close this: any key",

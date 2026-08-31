@@ -4,10 +4,12 @@
 package tui
 
 import (
+	"log"
 	"strconv"
 	"strings"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -48,6 +50,54 @@ var (
 type Vocab struct {
 	icons map[string]string
 	cats  map[string]string
+}
+
+// markdownRenderer owns the width-specific Glamour renderer used by a model.
+// The TUI renders detail content for both scrolling and painting, so reusing
+// this renderer avoids rebuilding it on every keypress and frame.
+type markdownRenderer struct {
+	renderer *glamour.TermRenderer
+	width    int
+	err      error
+}
+
+func (r *markdownRenderer) render(markdown string, width int) []string {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return nil
+	}
+	if width < 1 {
+		width = 1
+	}
+	if r.width != width {
+		if r.renderer != nil {
+			if err := r.renderer.Close(); err != nil {
+				log.Printf("tui: close markdown renderer: %v", err)
+			}
+		}
+		r.renderer, r.err, r.width = nil, nil, width
+		r.renderer, r.err = glamour.NewTermRenderer(glamour.WithWordWrap(width))
+		if r.err != nil {
+			log.Printf("tui: initialize markdown renderer: %v", r.err)
+		}
+	}
+	if r.err != nil {
+		return wrapText(markdown, width)
+	}
+	rendered, err := r.renderer.Render(markdown)
+	if err != nil {
+		log.Printf("tui: render markdown: %v", err)
+		return wrapText(markdown, width)
+	}
+	rendered = strings.TrimRight(rendered, "\n")
+	if rendered == "" {
+		return nil
+	}
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \r")
+	}
+	return lines
 }
 
 // NewVocab builds a Vocab from bd's status list.
@@ -154,6 +204,10 @@ func formatPriority(p int) string {
 // BuildDetail renders the detail pane for a bead as wrapped, optionally
 // truncated lines. Every line fits `width` cells.
 func BuildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int) []string {
+	return buildDetail(v, d, down, up, width, nil)
+}
+
+func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markdown *markdownRenderer) []string {
 	if d == nil {
 		return []string{styleDim.Render("No selection.")}
 	}
@@ -177,7 +231,10 @@ func BuildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int) []str
 
 	if d.Description != "" {
 		lines = append(lines, styleSection.Render("Description"))
-		lines = append(lines, wrapText(strings.TrimSpace(d.Description), width)...)
+		if markdown == nil {
+			markdown = &markdownRenderer{}
+		}
+		lines = append(lines, markdown.render(d.Description, width)...)
 		lines = append(lines, "")
 	}
 	if d.Notes != "" {
