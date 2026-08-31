@@ -183,6 +183,10 @@ func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selec
 		b.WriteString(" ")
 		b.WriteString(issue.Title)
 	}
+	if tags := renderTags(issue.Labels); tags != "" {
+		b.WriteString(" ")
+		b.WriteString(tags)
+	}
 	counts := ""
 	if issue.DependencyCount > 0 {
 		counts += " ⇣" + itoa(issue.DependencyCount)
@@ -191,7 +195,7 @@ func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selec
 		counts += " ⇡" + itoa(issue.DependentCount)
 	}
 	line := b.String()
-	line = truncate(line, width)
+	line = truncatePhys(line, width)
 	if counts != "" {
 		rest := width - runewidth.StringWidth(stripANSI(line))
 		dw := displayWidth(counts)
@@ -201,10 +205,25 @@ func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selec
 		}
 	}
 	if selected {
-		line = truncate(line, width-2)
+		line = truncatePhys(line, width-2)
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+var tagColors = []lipgloss.Color{"39", "141", "42", "208", "81", "177"}
+
+// renderTags keeps labels compact while giving each tag a distinct accent.
+func renderTags(labels []string) string {
+	var tags []string
+	for i, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		style := lipgloss.NewStyle().Foreground(tagColors[i%len(tagColors)]).Bold(true)
+		tags = append(tags, style.Render("["+label+"]"))
+	}
+	return strings.Join(tags, " ")
 }
 
 // formatPriority renders the P0-P4 marker, emphasizing P0/P1.

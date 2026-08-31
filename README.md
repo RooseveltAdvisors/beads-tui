@@ -46,18 +46,23 @@ beads-tui --version
 
 The TUI is keyboard-driven:
 
-- `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `f`/`b` page
+- `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `space`/`b` page
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
 - The default board is an indented dependency tree: `enter`/`tab` toggles a
   parent subtree, `enter` opens a leaf's detail, `h` collapses, and `v` toggles
   the flat list
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` back
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
+- `s` cycles priority, created, updated, and alphabetical sorting
+- `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
+- `t` filters to the selected bead's labels.
 
-Each list row carries a status icon, priority (`P0`-`P4`), id and title, plus
-`⇣N`/`⇡N` dependency counts. The detail pane shows the full issue: status
-pill, Markdown-rendered description, notes, and the dependency edges in both
-directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).
+Each list row carries a status icon, priority (`P0`-`P4`), id, title, and
+colored label tags, plus `⇣N`/`⇡N` dependency counts. The persistent bottom
+bar shows the view, sort, active filter, selection, and total count. The detail
+pane shows the full issue: status pill, Markdown-rendered description, notes,
+and the dependency edges in both directions with
+their edge type (`blocks`, `tracks`, `parent-child`, ...).
 
 Rows and markers:
 

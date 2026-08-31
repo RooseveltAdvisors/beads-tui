@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -40,7 +41,9 @@ type Model struct {
 	backend Backend
 
 	view     bd.View
-	issues   []bd.Issue // complete snapshot; rows is the visible projection
+	sortMode SortMode
+	filter   Filter
+	allRows  []bd.Issue
 	deps     map[string][]bd.DepRecord
 	rows     []bd.Issue
 	treeRows []TreeRow
@@ -60,10 +63,11 @@ type Model struct {
 	detailErr string
 	checking  bool
 
-	lastSync string
-	help     bool
-	quitting bool
-	markdown *markdownRenderer
+	help        bool
+	filtering   bool
+	filterInput textinput.Model
+	quitting    bool
+	markdown    *markdownRenderer
 
 	width  int
 	height int
@@ -95,16 +99,25 @@ type detailMsg struct {
 
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
+	input := textinput.New()
+	input.Prompt = "Filter › "
+	input.Placeholder = "status:open  priority:P1  label:frontend  text"
+	input.CharLimit = 120
+	input.Width = 60
 	return Model{
-		backend:  backend,
-		view:     bd.ViewReady,
-		focus:    FocusList,
-		vocab:    NewVocab(nil),
-		width:    80,
-		height:   24,
-		markdown: &markdownRenderer{},
-		expanded: map[string]bool{},
-		treeMode: true,
+		backend: backend,
+		view:    bd.ViewReady,
+		// Alphabetical is a stable, unsurprising initial view; s cycles to
+		// priority, then created and updated timestamps.
+		sortMode:    SortAlphabetical,
+		focus:       FocusList,
+		vocab:       NewVocab(nil),
+		filterInput: input,
+		width:       80,
+		height:      24,
+		markdown:    &markdownRenderer{},
+		expanded:    map[string]bool{},
+		treeMode:    true,
 	}
 }
 
@@ -154,6 +167,23 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help = false
 		return m, nil
 	}
+	if m.filtering {
+		switch msg.String() {
+		case "esc":
+			m.filtering = false
+			m.filterInput.Blur()
+			m.filter = Filter{}
+			return m, m.rebuildRows(m.selectedID())
+		case "enter":
+			m.filtering = false
+			m.filterInput.Blur()
+			m.filter = ParseFilter(m.filterInput.Value())
+			return m, m.rebuildRows(m.selectedID())
+		}
+		var cmd tea.Cmd
+		m.filterInput, cmd = m.filterInput.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "?":
 		m.help = true
@@ -162,6 +192,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "esc":
+		if m.filter.Active() {
+			m.filter = Filter{}
+			return m, m.rebuildRows(m.selectedID())
+		}
 		if m.focus == FocusDetail {
 			m.focus = FocusList
 			m.dOffset = 0
@@ -173,6 +207,32 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchView(bd.ViewOpen)
 	case "3":
 		return m.switchView(bd.ViewAll)
+	case "s":
+		m.sortMode = m.sortMode.Next()
+		return m, m.rebuildRows(m.selectedID())
+	case "f":
+		m.filtering = true
+		m.filterInput.SetValue("")
+		m.filterInput.Focus()
+		return m, textinput.Blink
+	case "t":
+		if id := m.selectedID(); id != "" {
+			for _, issue := range m.rows {
+				if issue.ID == id && len(issue.Labels) > 0 {
+					labels := make([]string, 0, len(issue.Labels))
+					for _, label := range issue.Labels {
+						if label = strings.TrimSpace(label); label != "" {
+							labels = append(labels, strings.ToLower(label))
+						}
+					}
+					if len(labels) == 0 {
+						return m, nil
+					}
+					m.filter = Filter{Kind: FilterLabel, Query: strings.Join(labels, ",")}
+					return m, m.rebuildRows(id)
+				}
+			}
+		}
 	case "r":
 		m.loading = true
 		if len(m.rows) > 0 {
@@ -198,6 +258,53 @@ func (m Model) switchView(view bd.View) (tea.Model, tea.Cmd) {
 	return m, m.loadBoardCmd()
 }
 
+func (m Model) selectedID() string {
+	if m.selected >= 0 && m.selected < len(m.rows) {
+		return m.rows[m.selected].ID
+	}
+	return ""
+}
+
+// rebuildRows applies the current filter and sort while preserving selection
+// by bead id. It also requests detail if the selected row changed.
+func (m *Model) rebuildRows(previousID string) tea.Cmd {
+	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
+	if m.expanded == nil {
+		m.expanded = map[string]bool{}
+	}
+	if m.treeMode {
+		roots := BuildDependencyTree(projected, m.deps)
+		m.treeRows = FlattenDependencyTree(roots, m.expanded)
+		m.rows = make([]bd.Issue, len(m.treeRows))
+		for i, row := range m.treeRows {
+			m.rows[i] = row.Issue
+		}
+	} else {
+		m.treeRows = nil
+		m.rows = projected
+	}
+	m.selected = 0
+	if previousID != "" {
+		for i := range m.rows {
+			if m.rows[i].ID == previousID {
+				m.selected = i
+				break
+			}
+		}
+	}
+	if len(m.rows) == 0 {
+		m.detail, m.down, m.up = nil, nil, nil
+		m.detailErr = ""
+		m.checking = false
+		return nil
+	}
+	if m.detail == nil || m.detail.ID != m.rows[m.selected].ID {
+		m.checking = true
+		return m.loadDetailCmd(m.rows[m.selected].ID)
+	}
+	return nil
+}
+
 // navIndexes returns the wrapped step for list navigation (no-op on empty).
 func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	n := len(m.rows)
@@ -217,12 +324,10 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected = n - 1
 	case "v":
 		m.treeMode = !m.treeMode
-		m.rebuildRows(m.rows[m.selected].ID)
-		return m, nil
+		return m, m.rebuildRows(m.rows[m.selected].ID)
 	case "enter", "tab":
 		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.toggleSelectedTreeRow()
-			return m, nil
+			return m, m.toggleSelectedTreeRow()
 		}
 		if msg.String() == "tab" {
 			return m, nil
@@ -232,13 +337,13 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h", "left":
 		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
 			m.expanded[m.treeRows[m.selected].Issue.ID] = false
-			m.rebuildRows(m.treeRows[m.selected].Issue.ID)
+			return m, m.rebuildRows(m.treeRows[m.selected].Issue.ID)
 		}
 		return m, nil
 	case "l", "L", "right":
 		m.focus = FocusDetail
 		m.dOffset = 0
-	case "f", " ", "pgdown", "ctrl+f":
+	case " ", "pgdown", "ctrl+f":
 		m.selected += page
 	case "b", "pgup", "ctrl+b":
 		m.selected -= page
@@ -270,7 +375,7 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dOffset = 0
 	case "G":
 		m.dOffset = maxOffset
-	case "f", " ", "pgdown", "ctrl+f":
+	case " ", "pgdown", "ctrl+f":
 		m.dOffset += page
 	case "b", "pgup", "ctrl+b":
 		m.dOffset -= page
@@ -405,54 +510,10 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	m.boardErr = ""
 	// Capture the previous selection from the OLD board before rows are
 	// replaced, then restore it by id if the bead is still present.
-	prev := ""
-	if m.selected < len(m.rows) {
-		prev = m.rows[m.selected].ID
-	}
-	m.issues = msg.issues
+	prev := m.selectedID()
+	m.allRows = append([]bd.Issue(nil), msg.issues...)
 	m.deps = msg.deps
-	m.rebuildRows(prev)
-	m.lastSync = time.Now().Format("15:04:05")
-	if len(m.rows) == 0 {
-		m.detail, m.down, m.up = nil, nil, nil
-		m.detailErr = ""
-		m.checking = false
-		return nil
-	}
-	if cur := m.rows[m.selected].ID; m.detail == nil || m.detail.ID != cur {
-		m.checking = true
-		return m.loadDetailCmd(cur)
-	}
-	return nil
-}
-
-// rebuildRows projects the complete board snapshot into the active flat or
-// expanded tree view, preserving selection by bead ID where possible.
-func (m *Model) rebuildRows(selectedID string) {
-	if m.expanded == nil {
-		m.expanded = map[string]bool{}
-	}
-	if !m.treeMode {
-		m.rows = append([]bd.Issue(nil), m.issues...)
-		m.treeRows = nil
-		m.selected = m.indexOfRow(selectedID)
-		return
-	}
-	roots := BuildDependencyTree(m.issues, m.deps)
-	m.treeRows = FlattenDependencyTree(roots, m.expanded)
-	m.rows = make([]bd.Issue, len(m.treeRows))
-	for i, row := range m.treeRows {
-		m.rows[i] = row.Issue
-	}
-	if selectedID != "" {
-		for i := range m.rows {
-			if m.rows[i].ID == selectedID {
-				m.selected = i
-				return
-			}
-		}
-	}
-	m.selected = 0
+	return m.rebuildRows(prev)
 }
 
 func (m Model) indexOfRow(id string) int {
@@ -467,14 +528,15 @@ func (m Model) indexOfRow(id string) int {
 	return 0
 }
 
-func (m *Model) toggleSelectedTreeRow() {
+func (m *Model) toggleSelectedTreeRow() tea.Cmd {
 	if m.selected >= len(m.treeRows) {
-		return
+		return nil
 	}
 	id := m.treeRows[m.selected].Issue.ID
 	m.expanded[id] = !m.treeRows[m.selected].Expanded
-	m.rebuildRows(id)
+	cmd := m.rebuildRows(id)
 	m.selected = m.indexOfRow(id)
+	return cmd
 }
 
 // applyDetail installs a detail snapshot, discarding stale responses.
@@ -516,6 +578,9 @@ func (m Model) View() string {
 		h = 24
 	}
 	contentH := h - 2
+	if m.filtering {
+		contentH--
+	}
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -530,6 +595,10 @@ func (m Model) View() string {
 	var sb strings.Builder
 	sb.WriteString(m.renderHeader(w))
 	sb.WriteString("\n")
+	if m.filtering {
+		sb.WriteString(m.renderFilterPrompt(w))
+		sb.WriteString("\n")
+	}
 	for i := 0; i < contentH; i++ {
 		sb.WriteString(listPane[i])
 		sb.WriteString(" ")
@@ -538,6 +607,12 @@ func (m Model) View() string {
 	}
 	sb.WriteString(m.renderFooter(w))
 	return sb.String()
+}
+
+func (m Model) renderFilterPrompt(w int) string {
+	label := styleDim.Render("FILTER")
+	input := m.filterInput.View()
+	return truncatePhys(label+"  "+input, w)
 }
 
 // renderHeader paints the title bar: view name and tabs.
@@ -693,28 +768,32 @@ func (m Model) renderDetailPane(w, h int) []string {
 
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
+	selected := m.selectedID()
+	if selected == "" {
+		selected = "-"
+	}
+	filter := m.filter.String()
+	status := styleDim.Render(fmt.Sprintf("%s sort:%s filter:%s sel:%s total:%d",
+		m.view.Label(), m.sortMode.String(), filter, selected, len(m.rows)))
+	hints := styleDim.Render("s sort f filter t tag ? help q quit")
 	var left string
 	switch {
 	case m.boardErr != "":
-		left = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error - check bd") +
-			styleDim.Render(" · q quit")
-		m.lastSync = ""
+		left = status + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error - check bd")
 	case m.loading:
-		left = styleDim.Render("loading…")
+		left = status + " · " + styleDim.Render("loading…")
 	case m.focus == FocusDetail:
-		left = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
+		left = status
+		hints = "j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit"
 	default:
 		mode := "tree"
 		if !m.treeMode {
 			mode = "flat"
 		}
-		left = styleDim.Render("j/k move · ^u/d half · enter/tab fold · h collapse · l detail · v " + mode + " · ? · q quit")
+		left = status
+		hints = "j/k move · ^u/d half · enter/tab fold · h collapse · l detail · v " + mode + " · ? · q quit"
 	}
-	right := ""
-	if m.lastSync != "" {
-		right = styleDim.Render("sync " + m.lastSync)
-	}
-	return fitLine(left, right, w)
+	return fitLine(left, hints, w)
 }
 
 // renderHelp overlays the key reference.
@@ -722,11 +801,14 @@ func (m Model) renderHelp() string {
 	lines := []string{
 		styleBold.Render("beads-tui - read-only board for Beads (bd)"),
 		"",
-		"  Nav tree:      j/k or ↑/↓ move · g/G top/bottom · f/b page",
+		"  Nav tree:      j/k or ↑/↓ move · g/G top/bottom · space/b page",
 		"  Half-page:     ctrl-u/d in list and detail",
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree",
 		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
+		"  Sort:          s cycle priority · created · updated · alphabetical",
+		"  Filter:        f prompt · Enter apply · Esc clear · status:open · priority:P1 · label:frontend · text",
+		"  Tags:          t filter by the selected bead's labels",
 		"  Refresh:       r  ·  Quit: q or ctrl+c  ·  Close this: any key",
 		"",
 		styleDim.Render("Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked"),
@@ -871,17 +953,17 @@ func ansiPrefix(s string) string {
 	return s[:pos]
 }
 
-// fitLine lays a left/right pair out on one line, dropping the right part
-// (decoration) before truncating the left when the line cannot fit.
+// fitLine lays a left/right pair out on one line, preserving the right-side
+// shortcuts and truncating the status text when the line cannot fit.
 func fitLine(left, right string, w int) string {
 	lw, rw := displayWidth(left), displayWidth(right)
 	if lw+rw <= w {
 		return left + strings.Repeat(" ", w-lw-rw) + right
 	}
-	if lw > w {
-		return truncatePhys(left, w)
+	if rw >= w {
+		return truncatePhys(right, w)
 	}
-	return left
+	return truncatePhys(left, w-rw-1) + " " + right
 }
 
 // displayWidth reports the cell width of ANSI-styled text.
