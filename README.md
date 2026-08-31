@@ -49,8 +49,8 @@ The TUI is keyboard-driven:
 - `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `f`/`b` page
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
 - The default board is an indented dependency tree: `enter`/`tab` folds a
-  subtree, `h`/`l` collapse/expand, and `v` toggles the flat list
-- `enter` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` back
+  subtree, `h` collapses, and `v` toggles the flat list
+- `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` back
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
 
 Each list row carries a status icon, priority (`P0`-`P4`), id and title, plus

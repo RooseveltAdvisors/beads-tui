@@ -72,15 +72,24 @@ func TestFlattenDependencyTreeGuardsCycles(t *testing.T) {
 func TestFlattenDependencyTreeEmitsSharedNodesOnce(t *testing.T) {
 	shared := &TreeNode{Issue: bd.Issue{ID: "shared"}}
 	a := &TreeNode{Issue: bd.Issue{ID: "a"}, Children: []*TreeNode{shared}}
-	b := &TreeNode{Issue: bd.Issue{ID: "b"}, Children: []*TreeNode{shared}}
+	unique := &TreeNode{Issue: bd.Issue{ID: "unique"}}
+	b := &TreeNode{Issue: bd.Issue{ID: "b"}, Children: []*TreeNode{unique, shared}}
 
 	rows := FlattenDependencyTree([]*TreeNode{a, b}, nil)
 	got := make([]string, len(rows))
 	for i, row := range rows {
 		got[i] = row.Issue.ID
 	}
-	if strings.Join(got, ",") != "a,shared,b" {
+	if strings.Join(got, ",") != "a,shared,b,unique" {
 		t.Fatalf("rows = %v, want shared node only at first location", got)
+	}
+	if !rows[2].HasChildren || rows[3].Prefix != "└── " {
+		t.Fatalf("filtered child metadata = %+v, want one final visible child", rows[2:])
+	}
+
+	rows = FlattenDependencyTree([]*TreeNode{a, {Issue: bd.Issue{ID: "empty"}, Children: []*TreeNode{shared}}}, nil)
+	if rows[2].HasChildren {
+		t.Fatalf("duplicate-only parent = %+v, want no visible children", rows[2])
 	}
 }
 

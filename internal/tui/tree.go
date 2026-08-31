@@ -162,10 +162,16 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 		if value, ok := expanded[node.Issue.ID]; ok {
 			isExpanded = value
 		}
+		visibleChildren := make([]*TreeNode, 0, len(node.Children))
+		for _, child := range node.Children {
+			if child != nil && !path[child.Issue.ID] && !emitted[child.Issue.ID] {
+				visibleChildren = append(visibleChildren, child)
+			}
+		}
 		rows = append(rows, TreeRow{
 			Issue:       node.Issue,
 			Prefix:      prefix,
-			HasChildren: len(node.Children) > 0,
+			HasChildren: len(visibleChildren) > 0,
 			Expanded:    isExpanded,
 		})
 		if !isExpanded {
@@ -176,7 +182,7 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 			nextPath[id] = true
 		}
 		nextPath[node.Issue.ID] = true
-		for i, child := range node.Children {
+		for i, child := range visibleChildren {
 			childPrefix := ancestorPrefix
 			if len(ancestorLast) > 0 {
 				if last {
@@ -185,7 +191,7 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 					childPrefix += "│   "
 				}
 			}
-			walk(child, childPrefix, append(ancestorLast, last), i == len(node.Children)-1, nextPath)
+			walk(child, childPrefix, append(ancestorLast, last), i == len(visibleChildren)-1, nextPath)
 		}
 	}
 	for i, root := range roots {

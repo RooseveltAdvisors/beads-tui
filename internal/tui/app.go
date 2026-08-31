@@ -706,7 +706,7 @@ func (m Model) renderFooter(w int) string {
 		if !m.treeMode {
 			mode = "flat"
 		}
-		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter/tab toggle · h/l collapse/expand · v " + mode + " · 1/2/3 view · r refresh · ? help · q quit")
+		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter/tab toggle · h collapse · l expand/detail · v " + mode + " · 1/2/3 view · r refresh · ? help · q quit")
 	}
 	right := ""
 	if m.lastSync != "" {
@@ -722,7 +722,7 @@ func (m Model) renderHelp() string {
 		"",
 		"  Nav tree:      j/k or ↑/↓ move · g/G top/bottom · f/b page",
 		"  Half-page:     ctrl-u/d in list and detail",
-		"  Tree:          enter/tab toggle · h/l collapse/expand · v flat/tree",
+		"  Tree:          enter/tab toggle · h collapse · l expand/detail · v flat/tree",
 		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Refresh:       r  ·  Quit: q or ctrl+c  ·  Close this: any key",
