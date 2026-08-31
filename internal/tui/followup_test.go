@@ -119,8 +119,8 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 		id: "b", generation: staleGeneration, issue: testDetailOf("b"),
 		down: []bd.DepRecord{{ID: "late-down"}}, up: []bd.DepRecord{{ID: "late-up"}},
 	})
-	if m.dOffset != 7 || m.down[0].ID != "saved-down" || m.up[0].ID != "saved-up" {
-		t.Fatalf("late response overwrote restored context: offset=%d down=%+v up=%+v", m.dOffset, m.down, m.up)
+	if m.dOffset != 7 || m.down[0].ID != "saved-down" || m.up[0].ID != "saved-up" || m.checking {
+		t.Fatalf("late response overwrote restored context: offset=%d down=%+v up=%+v checking=%v", m.dOffset, m.down, m.up, m.checking)
 	}
 }
 

@@ -77,7 +77,6 @@ type Model struct {
 	searchDown   []bd.DepRecord
 	searchUp     []bd.DepRecord
 	searchDErr   string
-	searchCheck  bool
 	filterInput  textinput.Model
 	quitting     bool
 	markdown     *markdownRenderer
@@ -202,7 +201,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.down = m.searchDown
 				m.up = m.searchUp
 				m.detailErr = m.searchDErr
-				m.checking = m.searchCheck
+				m.checking = false
 				m.detailGen++
 				cmd := m.rebuildRows(m.searchID)
 				m.focus = m.searchFocus
@@ -314,7 +313,6 @@ func (m *Model) openPrompt(search bool) tea.Cmd {
 		m.searchDown = m.down
 		m.searchUp = m.up
 		m.searchDErr = m.detailErr
-		m.searchCheck = m.checking
 		m.focus = FocusList
 		m.filterInput.Prompt = "Search / › "
 	} else {
