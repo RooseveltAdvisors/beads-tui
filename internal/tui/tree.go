@@ -109,7 +109,7 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 	seen := make(map[string]bool, len(nodes))
 	var mark func(*TreeNode, map[string]bool)
 	mark = func(node *TreeNode, path map[string]bool) {
-		if node == nil || path[node.Issue.ID] {
+		if node == nil || path[node.Issue.ID] || seen[node.Issue.ID] {
 			return
 		}
 		seen[node.Issue.ID] = true
