@@ -52,9 +52,9 @@ func (f *fakeClient) Statuses(context.Context) ([]bd.StatusInfo, error) {
 
 func testIssues() []bd.Issue {
 	return []bd.Issue{
-		{ID: "fm-aaa", Title: "Alpha task", Status: "open", Priority: 1, IssueType: "task"},
-		{ID: "fm-bbb", Title: "Beta blocked task", Status: "blocked", Priority: 2, IssueType: "bug", DependencyCount: 1},
-		{ID: "fm-ccc", Title: "Gamma done task", Status: "closed", Priority: 0, IssueType: "task"},
+		{ID: "fm-aaa", Title: "Alpha task", Status: "open", Priority: 0, IssueType: "task"},
+		{ID: "fm-bbb", Title: "Beta blocked task", Status: "blocked", Priority: 1, IssueType: "bug", DependencyCount: 1},
+		{ID: "fm-ccc", Title: "Gamma done task", Status: "closed", Priority: 2, IssueType: "task"},
 	}
 }
 
@@ -226,9 +226,11 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 		t.Fatalf("after collapse rows=%d expanded=%v", len(m.rows), m.expanded)
 	}
 	m = sendKey(t, m, "l")
-	if len(m.rows) != 2 || !m.expanded["root"] {
-		t.Fatalf("l should expand root: rows=%d expanded=%v", len(m.rows), m.expanded)
+	if m.focus != FocusDetail || len(m.rows) != 1 || m.expanded["root"] {
+		t.Fatalf("l should focus detail without expanding: focus=%v rows=%d expanded=%v", m.focus, len(m.rows), m.expanded)
 	}
+	m = sendKey(t, m, "esc")
+	m = sendKey(t, m, "enter")
 	plain := stripANSI(m.View())
 	if !strings.Contains(plain, "└──") {
 		t.Errorf("tree view missing connector:\n%s", plain)
@@ -236,6 +238,15 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 	m = sendKey(t, m, "v")
 	if m.treeMode || len(m.treeRows) != 0 || len(m.rows) != 2 {
 		t.Fatalf("v should switch to flat view: tree=%v treeRows=%d rows=%d", m.treeMode, len(m.treeRows), len(m.rows))
+	}
+}
+
+func TestTreeEnterOpensLeafDetail(t *testing.T) {
+	m := newTestModel(nil)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: []bd.Issue{{ID: "leaf", Status: "open"}}})
+	m = sendKey(t, m, "enter")
+	if m.focus != FocusDetail {
+		t.Fatalf("leaf enter focus = %v, want detail", m.focus)
 	}
 }
 

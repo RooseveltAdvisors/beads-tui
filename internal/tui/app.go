@@ -236,11 +236,6 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "l", "right":
-		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.expanded[m.treeRows[m.selected].Issue.ID] = true
-			m.rebuildRows(m.treeRows[m.selected].Issue.ID)
-			return m, nil
-		}
 		m.focus = FocusDetail
 		m.dOffset = 0
 	case "f", " ", "pgdown", "ctrl+f":

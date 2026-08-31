@@ -104,13 +104,9 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 			roots = append(roots, nodes[id])
 		}
 	}
-	// Preserve bd's ordering when the snapshot has no relationships at all;
-	// once a graph exists, the forest roots are a sibling group too.
-	if len(children) > 0 {
-		sort.SliceStable(roots, func(i, j int) bool {
-			return lessID(roots[i].Issue.ID, roots[j].Issue.ID)
-		})
-	}
+	sort.SliceStable(roots, func(i, j int) bool {
+		return lessID(roots[i].Issue.ID, roots[j].Issue.ID)
+	})
 
 	// A malformed graph can have no root (for example, a dependency cycle).
 	// Add its nodes in stable order; flattening still prevents recursion loops.
@@ -147,11 +143,13 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 // loaded branches immediately visible.
 func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRow {
 	rows := make([]TreeRow, 0)
+	emitted := make(map[string]bool)
 	var walk func(*TreeNode, string, []bool, bool, map[string]bool)
 	walk = func(node *TreeNode, ancestorPrefix string, ancestorLast []bool, last bool, path map[string]bool) {
-		if node == nil || path[node.Issue.ID] {
+		if node == nil || path[node.Issue.ID] || emitted[node.Issue.ID] {
 			return
 		}
+		emitted[node.Issue.ID] = true
 		prefix := ancestorPrefix
 		if len(ancestorLast) > 0 {
 			if last {

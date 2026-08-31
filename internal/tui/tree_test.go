@@ -27,6 +27,17 @@ func TestBuildDependencyTreeSortsSiblingGroups(t *testing.T) {
 	}
 }
 
+func TestBuildDependencyTreeSortsUnrelatedRoots(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "later", Priority: 3},
+		{ID: "urgent", Priority: 0},
+	}
+
+	if got := treeIDs(BuildDependencyTree(issues, nil)); strings.Join(got, ",") != "urgent,later" {
+		t.Fatalf("roots = %v, want priority order", got)
+	}
+}
+
 func TestFlattenDependencyTreeDrawsEdgesAndCollapses(t *testing.T) {
 	issues := []bd.Issue{
 		{ID: "root", Title: "Root"},
@@ -55,6 +66,21 @@ func TestFlattenDependencyTreeGuardsCycles(t *testing.T) {
 	rows := FlattenDependencyTree([]*TreeNode{a}, nil)
 	if len(rows) != 2 || rows[0].Issue.ID != "a" || rows[1].Issue.ID != "b" {
 		t.Fatalf("cycle rows = %+v, want each node once along the path", rows)
+	}
+}
+
+func TestFlattenDependencyTreeEmitsSharedNodesOnce(t *testing.T) {
+	shared := &TreeNode{Issue: bd.Issue{ID: "shared"}}
+	a := &TreeNode{Issue: bd.Issue{ID: "a"}, Children: []*TreeNode{shared}}
+	b := &TreeNode{Issue: bd.Issue{ID: "b"}, Children: []*TreeNode{shared}}
+
+	rows := FlattenDependencyTree([]*TreeNode{a, b}, nil)
+	got := make([]string, len(rows))
+	for i, row := range rows {
+		got[i] = row.Issue.ID
+	}
+	if strings.Join(got, ",") != "a,shared,b" {
+		t.Fatalf("rows = %v, want shared node only at first location", got)
 	}
 }
 
