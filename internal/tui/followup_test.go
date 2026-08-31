@@ -97,7 +97,7 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 	m = sendKey(t, m, "/")
 	m = sendKey(t, m, "alpha")
 	m = applyMsg(t, m, detailMsg{
-		id: "a", issue: testDetailOf("a"),
+		id: "a", generation: m.detailGen, issue: testDetailOf("a"),
 		down: []bd.DepRecord{{ID: "search-down"}}, up: []bd.DepRecord{{ID: "search-up"}},
 	})
 	m = sendKey(t, m, "esc")
@@ -106,6 +106,21 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 	}
 	if m.detail == nil || m.detail.ID != "b" || m.down[0].ID != "saved-down" || m.up[0].ID != "saved-up" {
 		t.Fatalf("cancel restored detail=%+v down=%+v up=%+v", m.detail, m.down, m.up)
+	}
+
+	m.focus = FocusDetail
+	m.dOffset = 7
+	m.selected = 1
+	_ = m.loadDetailCmd("b")
+	staleGeneration := m.detailGen
+	m = sendKey(t, m, "/")
+	m = sendKey(t, m, "esc")
+	m = applyMsg(t, m, detailMsg{
+		id: "b", generation: staleGeneration, issue: testDetailOf("b"),
+		down: []bd.DepRecord{{ID: "late-down"}}, up: []bd.DepRecord{{ID: "late-up"}},
+	})
+	if m.dOffset != 7 || m.down[0].ID != "saved-down" || m.up[0].ID != "saved-up" {
+		t.Fatalf("late response overwrote restored context: offset=%d down=%+v up=%+v", m.dOffset, m.down, m.up)
 	}
 }
 

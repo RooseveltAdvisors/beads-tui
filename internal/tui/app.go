@@ -63,6 +63,7 @@ type Model struct {
 	up        []bd.DepRecord
 	detailErr string
 	checking  bool
+	detailGen uint64
 
 	help         bool
 	helpOffset   int
@@ -102,11 +103,12 @@ type statusMsg struct {
 // detailMsg carries the detail snapshot for one bead: the issue plus both
 // dependency directions.
 type detailMsg struct {
-	id    string
-	issue *bd.Issue
-	down  []bd.DepRecord
-	up    []bd.DepRecord
-	err   error
+	id         string
+	generation uint64
+	issue      *bd.Issue
+	down       []bd.DepRecord
+	up         []bd.DepRecord
+	err        error
 }
 
 // New builds the board model backed by the given read-only data source.
@@ -201,6 +203,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.up = m.searchUp
 				m.detailErr = m.searchDErr
 				m.checking = m.searchCheck
+				m.detailGen++
 				cmd := m.rebuildRows(m.searchID)
 				m.focus = m.searchFocus
 				m.dOffset = m.searchDOff
@@ -591,7 +594,9 @@ func (m Model) loadStatusesCmd() tea.Cmd {
 
 // loadDetailCmd fetches issue detail plus both dependency directions. The
 // first failure short-circuits the rest so a dead store yields one error.
-func (m Model) loadDetailCmd(id string) tea.Cmd {
+func (m *Model) loadDetailCmd(id string) tea.Cmd {
+	m.detailGen++
+	generation := m.detailGen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
 		defer cancel()
@@ -603,7 +608,7 @@ func (m Model) loadDetailCmd(id string) tea.Cmd {
 		if err == nil {
 			up, err = m.backend.Deps(ctx, id, true)
 		}
-		return detailMsg{id: id, issue: issue, down: down, up: up, err: err}
+		return detailMsg{id: id, generation: generation, issue: issue, down: down, up: up, err: err}
 	}
 }
 
@@ -652,7 +657,7 @@ func (m *Model) toggleSelectedTreeRow() tea.Cmd {
 
 // applyDetail installs a detail snapshot, discarding stale responses.
 func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
-	if m.selected >= len(m.rows) || msg.id != m.rows[m.selected].ID {
+	if msg.generation != m.detailGen || m.selected >= len(m.rows) || msg.id != m.rows[m.selected].ID {
 		return nil
 	}
 	m.checking = false
