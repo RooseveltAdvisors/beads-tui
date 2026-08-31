@@ -52,9 +52,9 @@ func (f *fakeClient) Statuses(context.Context) ([]bd.StatusInfo, error) {
 
 func testIssues() []bd.Issue {
 	return []bd.Issue{
-		{ID: "fm-aaa", Title: "Alpha task", Status: "open", Priority: 1, IssueType: "task"},
-		{ID: "fm-bbb", Title: "Beta blocked task", Status: "blocked", Priority: 2, IssueType: "bug", DependencyCount: 1},
-		{ID: "fm-ccc", Title: "Gamma done task", Status: "closed", Priority: 0, IssueType: "task"},
+		{ID: "fm-aaa", Title: "Alpha task", Status: "open", Priority: 0, IssueType: "task"},
+		{ID: "fm-bbb", Title: "Beta blocked task", Status: "blocked", Priority: 1, IssueType: "bug", DependencyCount: 1},
+		{ID: "fm-ccc", Title: "Gamma done task", Status: "closed", Priority: 2, IssueType: "task"},
 	}
 }
 
@@ -207,6 +207,46 @@ func TestSelectionMovesAndLoadsDetail(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "Depends on (1)") || !strings.Contains(view, "Alpha task") {
 		t.Errorf("detail pane missing dependency edges:\n%s", view)
+	}
+}
+
+func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
+	f := &fakeClient{issue: testDetail()}
+	m := newTestModel(f)
+	issues := []bd.Issue{
+		{ID: "root", Title: "Root", Status: "open", Priority: 1},
+		{ID: "child", Title: "Child", Status: "open", Priority: 2, ParentID: "root"},
+	}
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues, deps: map[string][]bd.DepRecord{}})
+	if !m.treeMode || len(m.rows) != 2 {
+		t.Fatalf("initial tree = %v rows, want expanded tree", m.rows)
+	}
+	m = sendKey(t, m, "enter")
+	if len(m.rows) != 1 || m.expanded["root"] {
+		t.Fatalf("after collapse rows=%d expanded=%v", len(m.rows), m.expanded)
+	}
+	m = sendKey(t, m, "l")
+	if m.focus != FocusDetail || len(m.rows) != 1 || m.expanded["root"] {
+		t.Fatalf("l should focus detail without expanding: focus=%v rows=%d expanded=%v", m.focus, len(m.rows), m.expanded)
+	}
+	m = sendKey(t, m, "esc")
+	m = sendKey(t, m, "enter")
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "└──") {
+		t.Errorf("tree view missing connector:\n%s", plain)
+	}
+	m = sendKey(t, m, "v")
+	if m.treeMode || len(m.treeRows) != 0 || len(m.rows) != 2 {
+		t.Fatalf("v should switch to flat view: tree=%v treeRows=%d rows=%d", m.treeMode, len(m.treeRows), len(m.rows))
+	}
+}
+
+func TestTreeEnterOpensLeafDetail(t *testing.T) {
+	m := newTestModel(nil)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: []bd.Issue{{ID: "leaf", Status: "open"}}})
+	m = sendKey(t, m, "enter")
+	if m.focus != FocusDetail {
+		t.Fatalf("leaf enter focus = %v, want detail", m.focus)
 	}
 }
 

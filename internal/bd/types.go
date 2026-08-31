@@ -51,7 +51,7 @@ func (v View) Label() string {
 // command that produced the record:
 //
 //   - `bd list ... --json` fills id, title, status, priority, issue_type,
-//     assignee/owner, timestamps and the three counters. The ready view also
+//     assignee/owner, parent_id, timestamps and the three counters. The ready view also
 //     carries labels; the all view carries the description.
 //   - `bd show ID --json` additionally fills description and notes.
 type Issue struct {
@@ -62,6 +62,7 @@ type Issue struct {
 	Status          string   `json:"status"`
 	Priority        int      `json:"priority"`
 	IssueType       string   `json:"issue_type"`
+	ParentID        string   `json:"parent_id"`
 	Assignee        string   `json:"assignee"`
 	Owner           string   `json:"owner"`
 	Labels          []string `json:"labels"`
