@@ -1,0 +1,35 @@
+name: Deploy beads-tui
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check Go toolchain
+        run: go version
+
+      - name: Build and install
+        env:
+          BUILD_VERSION: ${{ github.sha }}
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=${BUILD_VERSION}" \
+            -o /home/jon/.local/bin/beads-tui ./cmd/beads-tui
+
+      - name: Verify deployed binary
+        run: |
+          beads-tui --version
+          beads-tui --help | grep -Ei 'sort|filter'
