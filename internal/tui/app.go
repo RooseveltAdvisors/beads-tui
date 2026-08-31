@@ -231,14 +231,14 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dOffset = 0
 	case "h", "left":
 		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.expanded[m.rows[m.selected].ID] = false
-			m.rebuildRows(m.rows[m.selected].ID)
+			m.expanded[m.treeRows[m.selected].Issue.ID] = false
+			m.rebuildRows(m.treeRows[m.selected].Issue.ID)
 		}
 		return m, nil
 	case "l", "right":
 		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.expanded[m.rows[m.selected].ID] = true
-			m.rebuildRows(m.rows[m.selected].ID)
+			m.expanded[m.treeRows[m.selected].Issue.ID] = true
+			m.rebuildRows(m.treeRows[m.selected].Issue.ID)
 			return m, nil
 		}
 		m.focus = FocusDetail
@@ -354,6 +354,9 @@ func (m Model) loadBoardCmd() tea.Cmd {
 			if issue.ID == "" {
 				continue
 			}
+			if issue.DependencyCount == 0 {
+				continue
+			}
 			records, depErr := m.backend.Deps(ctx, issue.ID, false)
 			if depErr != nil {
 				return boardMsg{view: m.view, err: depErr}
@@ -413,7 +416,6 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	m.deps = msg.deps
 	m.rebuildRows(prev)
 	m.lastSync = time.Now().Format("15:04:05")
-	m.selected = m.indexOfRow(prev)
 	if len(m.rows) == 0 {
 		m.detail, m.down, m.up = nil, nil, nil
 		m.detailErr = ""
@@ -709,7 +711,7 @@ func (m Model) renderFooter(w int) string {
 		if !m.treeMode {
 			mode = "flat"
 		}
-		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter/tab fold · h/l fold · v " + mode + " · 1/2/3 view · r refresh · ? help · q quit")
+		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter/tab toggle · h/l collapse/expand · v " + mode + " · 1/2/3 view · r refresh · ? help · q quit")
 	}
 	right := ""
 	if m.lastSync != "" {
