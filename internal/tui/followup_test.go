@@ -76,6 +76,9 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 	m.selected = 1
 	m.focus = FocusDetail
 	m.dOffset = 7
+	m.detail = testDetailOf("b")
+	m.down = []bd.DepRecord{{ID: "saved-down"}}
+	m.up = []bd.DepRecord{{ID: "saved-up"}}
 
 	m = sendKey(t, m, "/")
 	if m.focus != FocusList {
@@ -93,9 +96,16 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 	m.selected = 1
 	m = sendKey(t, m, "/")
 	m = sendKey(t, m, "alpha")
+	m = applyMsg(t, m, detailMsg{
+		id: "a", issue: testDetailOf("a"),
+		down: []bd.DepRecord{{ID: "search-down"}}, up: []bd.DepRecord{{ID: "search-up"}},
+	})
 	m = sendKey(t, m, "esc")
 	if m.focus != FocusDetail || m.rows[m.selected].ID != "b" || m.dOffset != 7 {
 		t.Fatalf("cancel restored focus=%v selected=%s offset=%d", m.focus, m.rows[m.selected].ID, m.dOffset)
+	}
+	if m.detail == nil || m.detail.ID != "b" || m.down[0].ID != "saved-down" || m.up[0].ID != "saved-up" {
+		t.Fatalf("cancel restored detail=%+v down=%+v up=%+v", m.detail, m.down, m.up)
 	}
 }
 
