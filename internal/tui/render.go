@@ -69,9 +69,9 @@ func viewStyle(view bd.View) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
 
-// Vocab carries the status vocabulary into rendering: icon + category per
-// status name, falling back to the built-in vocabulary when bd never
-// answered.
+// Vocab carries status categories and custom icons into rendering, falling
+// back to the built-in vocabulary when bd never answered. Core work-state
+// icons are fixed by Icon so rows and the help legend cannot diverge.
 type Vocab struct {
 	icons map[string]string
 	cats  map[string]string
