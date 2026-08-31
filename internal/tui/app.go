@@ -858,9 +858,17 @@ func (m Model) renderListPane(w, h int) []string {
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
 			if m.treeMode && i < len(m.treeRows) {
-				lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
+				if m.view == bd.ViewReady {
+					lines = append(lines, m.vocab.ReadyTreeRow(m.treeRows[i], inner, i == m.selected))
+				} else {
+					lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
+				}
 			} else {
-				lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
+				if m.view == bd.ViewReady {
+					lines = append(lines, m.vocab.ReadyRow(m.rows[i], inner, i == m.selected))
+				} else {
+					lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
+				}
 			}
 		}
 		if m.loading {
