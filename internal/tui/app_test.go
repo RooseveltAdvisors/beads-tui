@@ -272,18 +272,18 @@ func TestSelectionClampedAtEdges(t *testing.T) {
 
 func TestStaleDetailIsDiscarded(t *testing.T) {
 	m := drive(t, nil)
-	m = applyMsg(t, m, detailMsg{id: "fm-aaa", issue: testDetailOf("fm-aaa"), err: nil})
+	m = applyMsg(t, m, detailMsg{id: "fm-aaa", generation: m.detailGen, issue: testDetailOf("fm-aaa"), err: nil})
 	m = sendKey(t, m, "j") // now on fm-bbb; its request is in flight
 	if m.rows[m.selected].ID != "fm-bbb" {
 		t.Fatalf("selection = %q, want fm-bbb", m.rows[m.selected].ID)
 	}
 	// A response for a bead that is not the current selection must be dropped.
-	nm := applyMsg(t, m, detailMsg{id: "fm-ccc", issue: testDetailOf("fm-ccc"), err: nil})
+	nm := applyMsg(t, m, detailMsg{id: "fm-ccc", generation: m.detailGen, issue: testDetailOf("fm-ccc"), err: nil})
 	if nm.detail != nil && nm.detail.ID == "fm-ccc" {
 		t.Errorf("stale detail (fm-ccc) applied while selection is fm-bbb")
 	}
 	// The real response lands normally.
-	nm = applyMsg(t, nm, detailMsg{id: "fm-bbb", issue: testDetail(), err: nil})
+	nm = applyMsg(t, nm, detailMsg{id: "fm-bbb", generation: nm.detailGen, issue: testDetail(), err: nil})
 	if nm.detail == nil || nm.detail.ID != "fm-bbb" {
 		t.Errorf("current selection's detail not applied: %+v", nm.detail)
 	}
@@ -294,7 +294,7 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 
 func TestFocusEnterAndEsc(t *testing.T) {
 	m := drive(t, nil)
-	m = applyMsg(t, m, detailMsg{id: "fm-aaa", issue: testDetail(), err: nil})
+	m = applyMsg(t, m, detailMsg{id: "fm-aaa", generation: m.detailGen, issue: testDetail(), err: nil})
 	if m.focus != FocusList {
 		t.Fatalf("initial focus = %v, want list", m.focus)
 	}
@@ -350,7 +350,7 @@ func TestHalfPageScrollingInListAndDetail(t *testing.T) {
 
 	long := testDetailOf(issues[0].ID)
 	long.Description = strings.Repeat("word ", 300)
-	m = applyMsg(t, m, detailMsg{id: issues[0].ID, issue: long, err: nil})
+	m = applyMsg(t, m, detailMsg{id: issues[0].ID, generation: m.detailGen, issue: long, err: nil})
 	m = sendKey(t, m, "enter")
 	m = sendKey(t, m, "ctrl+d")
 	if m.dOffset != half {
@@ -383,7 +383,7 @@ func TestDetailScrollBounds(t *testing.T) {
 	long.Description = strings.Repeat("word ", 200)
 	f := &fakeClient{issue: long}
 	m := drive(t, f)
-	m = applyMsg(t, m, detailMsg{id: "fm-aaa", issue: long, err: nil})
+	m = applyMsg(t, m, detailMsg{id: "fm-aaa", generation: m.detailGen, issue: long, err: nil})
 	m = sendKey(t, m, "enter")
 
 	lines := len(BuildDetail(m.vocab, long, nil, nil, m.detailWidth()))
