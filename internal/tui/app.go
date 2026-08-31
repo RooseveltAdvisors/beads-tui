@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -658,7 +659,11 @@ func (m Model) renderListPane(w, h int) []string {
 	case m.loading && len(m.rows) == 0:
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
-		lines = append(lines, styleDim.Render(m.emptyBoardText()))
+		if m.filter.Active() {
+			lines = append(lines, styleDim.Render("No matches for filter: "+m.filter.String()))
+		} else {
+			lines = append(lines, styleDim.Render(m.emptyBoardText()))
+		}
 	default:
 		vis := h - 2
 		if m.loading {
@@ -772,28 +777,46 @@ func (m Model) renderFooter(w int) string {
 	if selected == "" {
 		selected = "-"
 	}
-	filter := m.filter.String()
-	status := styleDim.Render(fmt.Sprintf("%s sort:%s filter:%s sel:%s total:%d",
-		m.view.Label(), m.sortMode.String(), filter, selected, len(m.rows)))
+	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows))
 	hints := styleDim.Render("s sort f filter t tag ? help q quit")
 	var left string
 	switch {
 	case m.boardErr != "":
-		left = status + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error - check bd")
+		left = styleDim.Render(status) + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
+		hints = styleDim.Render("q quit")
 	case m.loading:
-		left = status + " · " + styleDim.Render("loading…")
+		left = styleDim.Render(status) + " · " + styleDim.Render("loading…")
 	case m.focus == FocusDetail:
-		left = status
-		hints = "j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit"
+		left = styleDim.Render(status)
+		hints = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
 	default:
 		mode := "tree"
 		if !m.treeMode {
 			mode = "flat"
 		}
-		left = status
-		hints = "j/k move · ^u/d half · enter/tab fold · h collapse · l detail · v " + mode + " · ? · q quit"
+		left = styleDim.Render(status)
+		hints = styleDim.Render("j/k move · ^u/d half · enter/tab fold · h collapse · l detail · v " + mode + " · ? · q quit")
 	}
-	return fitLine(left, hints, w)
+	if displayWidth(left)+1+displayWidth(hints) <= w {
+		return fitLine(left, hints, w)
+	}
+	return truncatePhys(left, w)
+}
+
+func footerStatus(w int, view, sortMode, filter, selected string, total int) string {
+	if filter == "" {
+		filter = "-"
+	}
+	if w < 64 {
+		view = truncate(view, 3)
+		sortMode = truncate(sortMode, 3)
+	}
+	fixed := fmt.Sprintf("view:%s sort:%s filter: sel: total:%d", view, sortMode, total)
+	available := max(2, w-runewidth.StringWidth(fixed))
+	filterWidth := max(1, available*2/3)
+	selectedWidth := max(1, available-filterWidth)
+	return fmt.Sprintf("view:%s sort:%s filter:%s sel:%s total:%d",
+		view, sortMode, truncate(filter, filterWidth), truncate(selected, selectedWidth), total)
 }
 
 // renderHelp overlays the key reference.
@@ -801,15 +824,15 @@ func (m Model) renderHelp() string {
 	lines := []string{
 		styleBold.Render("beads-tui - read-only board for Beads (bd)"),
 		"",
-		"  Nav tree:      j/k or ↑/↓ move · g/G top/bottom · space/b page",
+		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree",
 		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Sort:          s cycle priority · created · updated · alphabetical",
-		"  Filter:        f prompt · Enter apply · Esc clear · status:open · priority:P1 · label:frontend · text",
+		"  Filter:        f prompt · Enter apply · Esc cancel/clear · status:open · priority:P1 · label:frontend · text",
 		"  Tags:          t filter by the selected bead's labels",
-		"  Refresh:       r  ·  Quit: q or ctrl+c  ·  Close this: any key",
+		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
 		styleDim.Render("Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked"),
 		styleDim.Render("Markers: ⇣N depends on N · ⇡N has N dependents"),
@@ -922,8 +945,7 @@ func padRight(s string, cells int) string {
 	return s + strings.Repeat(" ", cells-displayWidth(s))
 }
 
-// truncatePhys truncates an ANSI string to cells display width, preserving
-// the leading ANSI styling in the result.
+// truncatePhys truncates an ANSI string without discarding embedded styles.
 func truncatePhys(s string, cells int) string {
 	if cells <= 0 {
 		return ""
@@ -932,25 +954,31 @@ func truncatePhys(s string, cells int) string {
 	if runewidth.StringWidth(plain) <= cells {
 		return s
 	}
-	prefix := ansiPrefix(s)
-	return prefix + truncate(plain, cells) + "\x1b[0m"
-}
-
-// ansiPrefix extracts all leading consecutive ANSI SGR escape sequences from a styled string.
-func ansiPrefix(s string) string {
-	pos := 0
-	for {
-		idx := strings.Index(s[pos:], "\x1b[")
-		if idx != 0 {
+	limit := cells - 1
+	var b strings.Builder
+	width := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			end := strings.IndexByte(s[i:], 'm')
+			if end < 0 {
+				break
+			}
+			end += i + 1
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		rw := runewidth.RuneWidth(r)
+		if width+rw > limit {
 			break
 		}
-		end := strings.IndexByte(s[pos:], 'm')
-		if end == -1 {
-			break
-		}
-		pos += end + 1
+		b.WriteRune(r)
+		width += rw
+		i += size
 	}
-	return s[:pos]
+	b.WriteString("…\x1b[0m")
+	return b.String()
 }
 
 // fitLine lays a left/right pair out on one line, preserving the right-side

@@ -183,10 +183,7 @@ func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selec
 		b.WriteString(" ")
 		b.WriteString(issue.Title)
 	}
-	if tags := renderTags(issue.Labels); tags != "" {
-		b.WriteString(" ")
-		b.WriteString(tags)
-	}
+	tags := renderTags(issue.Labels)
 	counts := ""
 	if issue.DependencyCount > 0 {
 		counts += " ⇣" + itoa(issue.DependencyCount)
@@ -195,7 +192,12 @@ func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selec
 		counts += " ⇡" + itoa(issue.DependentCount)
 	}
 	line := b.String()
-	line = truncatePhys(line, width)
+	if tags != "" && width > 4 {
+		tagBudget := min(displayWidth(tags), max(3, width/2))
+		line = truncatePhys(line, width-tagBudget-1) + " " + truncatePhys(tags, tagBudget)
+	} else {
+		line = truncatePhys(line, width)
+	}
 	if counts != "" {
 		rest := width - runewidth.StringWidth(stripANSI(line))
 		dw := displayWidth(counts)

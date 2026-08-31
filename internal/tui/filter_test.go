@@ -111,3 +111,44 @@ func TestListRowsRenderColoredLabels(t *testing.T) {
 		t.Fatalf("labels missing from row: %q", plain)
 	}
 }
+
+func TestRequiredFooterFieldsSurviveNarrowWidths(t *testing.T) {
+	m := New(nil)
+	m.rows = []bd.Issue{{ID: "fm-long-selected-id"}}
+	m.filter = ParseFilter("label:extraordinarily-long-label")
+	for _, width := range []int{80, 48} {
+		footer := stripANSI(m.renderFooter(width))
+		if displayWidth(footer) > width {
+			t.Fatalf("width %d footer overflowed: %q", width, footer)
+		}
+		for _, field := range []string{"view:", "sort:", "filter:", "sel:", "total:"} {
+			if !strings.Contains(footer, field) {
+				t.Errorf("width %d footer missing %q: %q", width, field, footer)
+			}
+		}
+	}
+}
+
+func TestFilteredEmptyStateNamesActiveFilter(t *testing.T) {
+	m := New(nil)
+	m.allRows = []bd.Issue{{ID: "fm-a", Status: "open"}}
+	m.filter = ParseFilter("status:closed")
+	m.rebuildRows("")
+	got := stripANSI(strings.Join(m.renderListPane(60, 8), "\n"))
+	if !strings.Contains(got, "No matches for filter: status:closed") {
+		t.Fatalf("filtered empty state = %q", got)
+	}
+}
+
+func TestTruncatedRowKeepsTagStyleAndSpace(t *testing.T) {
+	row := NewVocab(nil).ListRow(bd.Issue{
+		ID: "fm-x", Title: strings.Repeat("long title ", 8), Status: "open", Labels: []string{"frontend"},
+	}, 32, false)
+	if displayWidth(row) > 32 || !strings.Contains(stripANSI(row), "[f") {
+		t.Fatalf("truncated row lost reserved tag: %q", stripANSI(row))
+	}
+	tag := strings.Index(row, "[f")
+	if tag < 0 || !strings.Contains(row[:tag], "\x1b[") {
+		t.Fatalf("truncated tag lost ANSI style: %q", row)
+	}
+}
