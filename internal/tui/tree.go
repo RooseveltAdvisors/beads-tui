@@ -104,10 +104,6 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 			roots = append(roots, nodes[id])
 		}
 	}
-	sort.SliceStable(roots, func(i, j int) bool {
-		return lessID(roots[i].Issue.ID, roots[j].Issue.ID)
-	})
-
 	// A malformed graph can have no root (for example, a dependency cycle).
 	// Add its nodes in stable order; flattening still prevents recursion loops.
 	seen := make(map[string]bool, len(nodes))
@@ -135,6 +131,9 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 			mark(nodes[id], nil)
 		}
 	}
+	sort.SliceStable(roots, func(i, j int) bool {
+		return lessID(roots[i].Issue.ID, roots[j].Issue.ID)
+	})
 	return roots
 }
 
