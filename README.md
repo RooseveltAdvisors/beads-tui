@@ -20,8 +20,9 @@ statuses configured in the store):
 | `2` | Open     | `bd list`                | Open issues regardless of blockers |
 | `3` | All      | `bd list --all`          | Everything, including closed |
 
-The status vocabulary (icons, colors, categories) is loaded live from
+The status vocabulary (colors and categories) is loaded live from
 `bd statuses --json`; if that call fails the built-in vocabulary is used.
+Core work-state glyphs remain fixed so rows and the help legend agree.
 
 ## Install / build
 
@@ -56,9 +57,9 @@ The TUI is keyboard-driven:
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active filter first, then returns from the detail pane when pressed again
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
-- `s` cycles priority, created, updated, and alphabetical sorting; created is
-  the default newest-first order, while Ready promotes the highest leverage
-  (unblock-count) work
+- `s` cycles priority, created, updated, alphabetical, and leverage sorting;
+  created is the default newest-first order, while leverage ranks the work
+  with the most dependents first
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
 - `/` opens a flat, incremental result list across bead id, title, and
   description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels
@@ -66,10 +67,13 @@ The TUI is keyboard-driven:
 - `t` filters to the selected bead's labels.
 
 Each list row carries its native bd status (never the computed `ready` view
-bucket), priority (`P0`-`P4`), id, title, and colored label tags, plus
+bucket), priority (`P0`-`P4`), id, title, and subdued dim-gray labels, plus
 `⇣N blocked-by`/`⇡N blocks` dependency chips. Deferred rows include their `defer_until` date.
-In-progress status is yellow, closed is dim, and deferred is orange. At normal
-terminal widths, the persistent bottom bar shows the view, sort, active filter,
+Ready rows use the hollow glyph alone for claimable open work and include the
+owner beside `in_progress` when available. Blocked status is red, closed is
+dim, and deferred is orange. Priority colors are red,
+orange, yellow, and gray for P0 through P3. At normal terminal widths, the
+persistent bottom bar shows the view, sort, active filter,
 selection, total count, and scroll position; below 48 columns it compacts to the view, filter
 indicator, and scroll position. The detail pane shows the full issue: status
 pill, Markdown-rendered description, notes, and the dependency edges in both
@@ -78,7 +82,7 @@ directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).
 Rows and markers:
 
 ```
-○ open   ◐ in_progress   ● blocked   ✓ closed   ❄ deferred   📌 pinned   ◇ hooked
+○ claimable   ● in_progress   ⊘ blocked   ✓ closed   ◷ deferred   📌 hold
 ⇣N depends on N   ⇡N has N dependents
 ```
 

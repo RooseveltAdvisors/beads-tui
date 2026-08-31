@@ -55,6 +55,23 @@ func TestBuildDependencyTreeUsesActiveSortWithinHierarchy(t *testing.T) {
 	}
 }
 
+func TestBuildDependencyTreeUsesLeverageSortWithinHierarchy(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root-low", CreatedAt: "2026-08-03T00:00:00Z", DependentCount: 1},
+		{ID: "root-high", CreatedAt: "2026-08-01T00:00:00Z", DependentCount: 4},
+		{ID: "parent", CreatedAt: "2026-08-02T00:00:00Z", DependentCount: 2},
+		{ID: "child-old", ParentID: "parent", CreatedAt: "2026-08-01T00:00:00Z", DependentCount: 3},
+		{ID: "child-new", ParentID: "parent", CreatedAt: "2026-08-03T00:00:00Z", DependentCount: 3},
+	}
+	roots := BuildDependencyTree(issues, nil, SortLeverage)
+	if got := strings.Join(treeIDs(roots), ","); got != "root-high,parent,root-low" {
+		t.Fatalf("leverage roots = %s", got)
+	}
+	if got := strings.Join(treeIDs(roots[1].Children), ","); got != "child-new,child-old" {
+		t.Fatalf("leverage children = %s", got)
+	}
+}
+
 func TestFlattenDependencyTreeDrawsEdgesAndCollapses(t *testing.T) {
 	issues := []bd.Issue{
 		{ID: "root", Title: "Root"},

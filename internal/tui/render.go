@@ -38,6 +38,17 @@ var statusOverrides = map[string]string{
 	"hooked":      "cyan",
 }
 
+var workStateIcons = map[string]string{
+	"open":        "○",
+	"in_progress": "●",
+	"blocked":     "⊘",
+	"closed":      "✓",
+	"deferred":    "◷",
+	"hold":        "📌",
+	"on_hold":     "📌",
+	"pinned":      "📌",
+}
+
 var (
 	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("gray"))
 	styleBold     = lipgloss.NewStyle().Bold(true)
@@ -58,9 +69,9 @@ func viewStyle(view bd.View) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
 
-// Vocab carries the status vocabulary into rendering: icon + category per
-// status name, falling back to the built-in vocabulary when bd never
-// answered.
+// Vocab carries status categories and custom icons into rendering, falling
+// back to the built-in vocabulary when bd never answered. Core work-state
+// icons are fixed by Icon so rows and the help legend cannot diverge.
 type Vocab struct {
 	icons map[string]string
 	cats  map[string]string
@@ -119,8 +130,8 @@ func NewVocab(statuses []bd.StatusInfo) Vocab {
 	v := Vocab{icons: map[string]string{}, cats: map[string]string{}}
 	if len(statuses) == 0 {
 		v.icons = map[string]string{
-			"open": "○", "in_progress": "◐", "blocked": "●",
-			"deferred": "❄", "closed": "✓", "pinned": "📌", "hooked": "◇",
+			"open": "○", "in_progress": "●", "blocked": "⊘",
+			"deferred": "◷", "closed": "✓", "hold": "📌", "on_hold": "📌", "pinned": "📌", "hooked": "◇",
 		}
 		v.cats = map[string]string{
 			"open": "active", "in_progress": "wip", "blocked": "wip",
@@ -136,6 +147,15 @@ func NewVocab(statuses []bd.StatusInfo) Vocab {
 
 // Icon returns the glyph for a status name.
 func (v Vocab) Icon(status string) string {
+	// Keep the high-signal built-in work states visually consistent even when
+	// bd supplies a custom icon in its live vocabulary.
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	if normalized == "" {
+		normalized = "open"
+	}
+	if icon, ok := workStateIcons[normalized]; ok {
+		return icon
+	}
 	if icon, ok := v.icons[status]; ok {
 		return icon
 	}
@@ -177,12 +197,27 @@ func (v Vocab) StatusPillIssue(issue bd.Issue) string {
 
 // ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
-	return v.renderRow(issue, "", "", width, selected)
+	return v.renderRow(issue, "", "", width, selected, false)
+}
+
+// ReadyRow renders a row in the computed Ready view. Claimable open beads
+// intentionally have no text status; their hollow glyph is the status signal.
+func (v Vocab) ReadyRow(issue bd.Issue, width int, selected bool) string {
+	return v.renderRow(issue, "", "", width, selected, true)
 }
 
 // TreeRow renders one dependency-tree row, including its branch connector
 // and expand/collapse marker.
 func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
+	return v.treeRow(row, width, selected, false)
+}
+
+// ReadyTreeRow is the Ready-view variant of TreeRow.
+func (v Vocab) ReadyTreeRow(row TreeRow, width int, selected bool) string {
+	return v.treeRow(row, width, selected, true)
+}
+
+func (v Vocab) treeRow(row TreeRow, width int, selected, readyView bool) string {
 	marker := "  "
 	if row.HasChildren {
 		marker = "▾ "
@@ -190,10 +225,10 @@ func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
 			marker = "▸ "
 		}
 	}
-	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
+	return v.renderRow(row.Issue, row.Prefix, marker, width, selected, readyView)
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected bool) string {
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected, readyView bool) string {
 	usable := width
 	if selected {
 		usable -= 2
@@ -231,7 +266,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-compactCountReserve))
 	statusBudget := max(0, usable-displayWidth(treePrefix)-displayWidth(corePrefix)-reservedCounts-1)
-	status := compactRowStatus(issue, statusBudget)
+	status := compactRowStatus(issue, statusBudget, readyView)
 	prefixWithStatus := func() string {
 		prefix := treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 		if status != "" {
@@ -322,11 +357,12 @@ func rowStatusText(issue bd.Issue) string {
 	return status
 }
 
-func compactRowStatus(issue bd.Issue, width int) string {
+func compactRowStatus(issue bd.Issue, width int, readyView ...bool) string {
 	if width <= 0 {
 		return ""
 	}
-	status := rowStatusText(issue)
+	ready := len(readyView) > 0 && readyView[0]
+	status := rowStatusTextForView(issue, ready)
 	if displayWidth(status) <= width {
 		return status
 	}
@@ -340,6 +376,23 @@ func compactRowStatus(issue bd.Issue, width int) string {
 		return ""
 	}
 	return truncate(status, width)
+}
+
+func rowStatusTextForView(issue bd.Issue, readyView bool) string {
+	status := strings.TrimSpace(issue.Status)
+	if readyView && strings.EqualFold(status, "open") {
+		return ""
+	}
+	if readyView && strings.EqualFold(status, "in_progress") {
+		owner := strings.TrimSpace(issue.Assignee)
+		if owner == "" {
+			owner = strings.TrimSpace(issue.Owner)
+		}
+		if owner != "" {
+			return status + " · " + owner
+		}
+	}
+	return rowStatusText(issue)
 }
 
 func compactDependencyCounts(down, up, width int) string {
@@ -383,32 +436,35 @@ func compactStatusIcon(status string) string {
 	return "•"
 }
 
-var tagColors = []lipgloss.Color{"39", "141", "42", "208", "81", "177"}
-
-// renderTags keeps labels compact while giving each tag a distinct accent.
+// renderTags keeps labels compact and deliberately low-contrast: labels are
+// useful metadata, while status and priority carry the visual meaning.
 func renderTags(labels []string) string {
 	var tags []string
-	for i, label := range labels {
+	for _, label := range labels {
 		if strings.TrimSpace(label) == "" {
 			continue
 		}
-		style := lipgloss.NewStyle().Foreground(tagColors[i%len(tagColors)]).Bold(true)
-		tags = append(tags, style.Render("["+label+"]"))
+		tags = append(tags, styleDim.Render("["+label+"]"))
 	}
 	return strings.Join(tags, " ")
 }
 
-// formatPriority renders the P0-P4 marker, emphasizing P0/P1.
-func formatPriority(p int) string {
-	s := "P" + itoa(p)
+func priorityStyle(p int) lipgloss.Style {
 	switch p {
 	case 0:
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render(s)
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red"))
 	case 1:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Render(s)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
+	case 2:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("yellow"))
 	default:
-		return styleDim.Render(s)
+		return styleDim
 	}
+}
+
+// formatPriority renders the P0-P4 marker with a clear urgency scale.
+func formatPriority(p int) string {
+	return priorityStyle(p).Render("P" + itoa(p))
 }
 
 // BuildDetail renders the detail pane for a bead as wrapped, optionally
