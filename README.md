@@ -57,14 +57,15 @@ The TUI is keyboard-driven:
 - `s` cycles priority, created, updated, and alphabetical sorting
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
 - `/` opens a flat, incremental result list across bead id, title, and
-  description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels.
+  description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels
+  and restores the previous filter, selection, and detail context.
 - `t` filters to the selected bead's labels.
 
 Each list row carries its native bd status (never the computed `ready` view
 bucket), priority (`P0`-`P4`), id, title, and colored label tags, plus
 `⇣N`/`⇡N` dependency counts. Deferred rows include their `defer_until` date.
-At normal terminal
-widths, the persistent bottom bar shows the view, sort, active filter,
+In-progress status is yellow, closed is dim, and deferred is orange. At normal
+terminal widths, the persistent bottom bar shows the view, sort, active filter,
 selection, and total count; below 48 columns it compacts to the view, filter
 indicator, and scroll position. The detail pane shows the full issue: status
 pill, Markdown-rendered description, notes, and the dependency edges in both
