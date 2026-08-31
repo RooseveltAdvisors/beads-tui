@@ -357,9 +357,9 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 }
 
 func (m *Model) expandAncestors(id string) {
-	var visit func(*TreeNode, []string) bool
-	visit = func(node *TreeNode, path []string) bool {
-		if node == nil {
+	var visit func(*TreeNode, []string, map[string]bool) bool
+	visit = func(node *TreeNode, path []string, inPath map[string]bool) bool {
+		if node == nil || inPath[node.Issue.ID] {
 			return false
 		}
 		if node.Issue.ID == id {
@@ -368,16 +368,19 @@ func (m *Model) expandAncestors(id string) {
 			}
 			return true
 		}
+		inPath[node.Issue.ID] = true
 		path = append(path, node.Issue.ID)
 		for _, child := range node.Children {
-			if visit(child, path) {
+			if visit(child, path, inPath) {
+				delete(inPath, node.Issue.ID)
 				return true
 			}
 		}
+		delete(inPath, node.Issue.ID)
 		return false
 	}
 	for _, root := range BuildDependencyTree(m.allRows, m.deps, m.sortMode) {
-		if visit(root, nil) {
+		if visit(root, nil, map[string]bool{}) {
 			return
 		}
 	}

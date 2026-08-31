@@ -89,3 +89,21 @@ func TestSlashSearchFlattensMatchesAndRevealsSelectedTreePath(t *testing.T) {
 		t.Fatalf("cleared search hid selected child: selected=%d rows=%+v", m.selected, m.rows)
 	}
 }
+
+func TestSearchAncestorExpansionGuardsDependencyCycles(t *testing.T) {
+	m := New(nil)
+	m.allRows = []bd.Issue{
+		{ID: "a", Status: "open"},
+		{ID: "b", Status: "open"},
+		{ID: "c", Status: "open"},
+		{ID: "root", Status: "open"},
+	}
+	m.deps = map[string][]bd.DepRecord{
+		"a": {{ID: "root"}, {ID: "b"}},
+		"b": {{ID: "a"}},
+	}
+	m.expandAncestors("c")
+	if len(m.expanded) != 0 {
+		t.Fatalf("unrelated cycle changed expansion state: %v", m.expanded)
+	}
+}
