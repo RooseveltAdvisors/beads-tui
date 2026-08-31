@@ -15,7 +15,7 @@ type graphEdge struct {
 // graphLines renders a compact, deterministic two-hop neighborhood for the
 // focused bead. Edges retain their direction so the graph is useful even when
 // the dependency tree is collapsed.
-func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus string, vocab Vocab) []string {
+func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus string, vocab Vocab) ([]string, bool) {
 	issues := make(map[string]bd.Issue, len(all)+len(rows))
 	for _, issue := range all {
 		issues[issue.ID] = issue
@@ -24,7 +24,7 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 		issues[issue.ID] = issue
 	}
 	if focus == "" {
-		return []string{"No focused bead."}
+		return []string{"No focused bead."}, false
 	}
 	adj := make(map[string][]graphEdge)
 	directed := make(map[string][]string)
@@ -108,13 +108,10 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 			}
 		}
 	}
-	if hasDirectedCycle(directed, distance) {
-		lines = append(lines, "", styleSection.Render("⚠ cycle detected in this neighborhood"))
-	}
 	if len(lines) == 3 {
 		lines = append(lines, styleDim.Render("No dependency edges."))
 	}
-	return lines
+	return lines, hasDirectedCycle(directed, distance)
 }
 
 func hasDirectedCycle(graph map[string][]string, included map[string]int) bool {

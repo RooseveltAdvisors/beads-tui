@@ -794,8 +794,12 @@ func (m Model) renderGraph() string {
 	if h <= 0 {
 		h = 24
 	}
-	lines := graphLines(m.rows, m.allRows, m.deps, m.selectedID(), m.vocab)
-	return strings.Join(pane("Graph · G/esc close", lines, w, h), "\n")
+	lines, cycle := graphLines(m.rows, m.allRows, m.deps, m.selectedID(), m.vocab)
+	title := "Graph · G/esc close"
+	if cycle {
+		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render("⚠ CYCLE") + " · " + title
+	}
+	return strings.Join(pane(title, lines, w, h), "\n")
 }
 
 func (m Model) vocabViewLabel() string {
@@ -1146,7 +1150,7 @@ func pane(title string, content []string, w, h int) []string {
 	if inner < 1 {
 		inner = 1
 	}
-	topTitle := truncate(title, inner)
+	topTitle := truncatePhys(title, inner)
 	rest := inner - displayWidth(topTitle)
 	if rest < 0 {
 		rest = 0

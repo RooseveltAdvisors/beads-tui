@@ -38,22 +38,38 @@ func TestGraphLinesShowsTwoHopsAndCycleCallout(t *testing.T) {
 		"middle": {{ID: "root", Title: "Root", Status: "open"}},
 		"leaf":   {{ID: "middle", Title: "Middle", Status: "blocked"}},
 	}
-	lines := graphLines(issues, issues, deps, "leaf", NewVocab(nil))
+	lines, hasCycle := graphLines(issues, issues, deps, "leaf", NewVocab(nil))
 	plain := stripANSI(strings.Join(lines, "\n"))
 	for _, want := range []string{"leaf · Leaf", "blocked-by: middle · Middle", "blocked-by: root · Root"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("graph missing %q: %q", want, plain)
 		}
 	}
-	if strings.Contains(plain, "cycle detected") {
+	if hasCycle {
 		t.Fatalf("acyclic dependency chain reported a cycle: %q", plain)
 	}
-	cycle := graphLines(issues, issues, map[string][]bd.DepRecord{
+	_, hasCycle = graphLines(issues, issues, map[string][]bd.DepRecord{
 		"middle": {{ID: "root", Title: "Root"}},
 		"root":   {{ID: "middle", Title: "Middle"}},
 	}, "root", NewVocab(nil))
-	if !strings.Contains(stripANSI(strings.Join(cycle, "\n")), "cycle detected") {
-		t.Fatalf("graph missing cycle callout: %v", cycle)
+	if !hasCycle {
+		t.Fatal("graph did not report dependency cycle")
+	}
+}
+
+func TestGraphCycleCalloutRemainsVisibleInShortModal(t *testing.T) {
+	m := New(nil)
+	m.width, m.height = 50, 4
+	m.rows = []bd.Issue{{ID: "root", Title: "Root"}, {ID: "middle", Title: "Middle"}}
+	m.allRows = m.rows
+	m.deps = map[string][]bd.DepRecord{
+		"root":   {{ID: "middle"}},
+		"middle": {{ID: "root"}},
+	}
+	m.selected = 0
+	view := stripANSI(m.renderGraph())
+	if !strings.Contains(strings.Split(view, "\n")[0], "⚠ CYCLE") {
+		t.Fatalf("graph modal header missing cycle callout: %q", view)
 	}
 }
 
