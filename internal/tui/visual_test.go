@@ -45,6 +45,9 @@ func TestGraphLinesShowsTwoHopsAndCycleCallout(t *testing.T) {
 			t.Errorf("graph missing %q: %q", want, plain)
 		}
 	}
+	if strings.Contains(plain, "cycle detected") {
+		t.Fatalf("acyclic dependency chain reported a cycle: %q", plain)
+	}
 	cycle := graphLines(issues, issues, map[string][]bd.DepRecord{
 		"middle": {{ID: "root", Title: "Root"}},
 		"root":   {{ID: "middle", Title: "Middle"}},

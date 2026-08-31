@@ -28,7 +28,7 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 	}
 	adj := make(map[string][]graphEdge)
 	directed := make(map[string][]string)
-	add := func(from, to, kind string) {
+	addAdj := func(from, to, kind string) {
 		if from == "" || to == "" || from == to {
 			return
 		}
@@ -38,19 +38,31 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 			}
 		}
 		adj[from] = append(adj[from], graphEdge{to: to, kind: kind})
+	}
+	addDirected := func(from, to string) {
+		if from == "" || to == "" || from == to {
+			return
+		}
+		for _, next := range directed[from] {
+			if next == to {
+				return
+			}
+		}
 		directed[from] = append(directed[from], to)
 	}
 	for _, issue := range all {
-		add(issue.ID, issue.ParentID, "child-of")
+		addAdj(issue.ID, issue.ParentID, "child-of")
 		if issue.ParentID != "" {
-			add(issue.ParentID, issue.ID, "parent-of")
+			addAdj(issue.ParentID, issue.ID, "parent-of")
+			addDirected(issue.ID, issue.ParentID)
 		}
 		for _, dep := range deps[issue.ID] {
 			if _, exists := issues[dep.ID]; !exists {
 				issues[dep.ID] = bd.Issue{ID: dep.ID, Title: dep.Title, Status: dep.Status, Priority: dep.Priority}
 			}
-			add(issue.ID, dep.ID, "blocked-by")
-			add(dep.ID, issue.ID, "blocks")
+			addAdj(issue.ID, dep.ID, "blocked-by")
+			addAdj(dep.ID, issue.ID, "blocks")
+			addDirected(issue.ID, dep.ID)
 		}
 	}
 	for id := range adj {
