@@ -51,7 +51,8 @@ The TUI is keyboard-driven:
 - The default board is an indented dependency tree: `enter`/`tab` toggles a
   parent subtree, `enter` opens a leaf's detail, `h` collapses, and `v` toggles
   the flat list
-- `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` back
+- `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
+  active filter first, then returns from the detail pane when pressed again
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
 - `s` cycles priority, created, updated, and alphabetical sorting
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
@@ -63,8 +64,7 @@ widths, the persistent bottom bar shows the view, sort, active filter,
 selection, and total count; below 48 columns it compacts to the view, filter
 indicator, and scroll position. The detail pane shows the full issue: status
 pill, Markdown-rendered description, notes, and the dependency edges in both
-directions with
-their edge type (`blocks`, `tracks`, `parent-child`, ...).
+directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).
 
 Rows and markers:
 
