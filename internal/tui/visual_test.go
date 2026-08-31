@@ -1,11 +1,35 @@
 package tui
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 )
+
+type concurrentDepsClient struct {
+	*fakeClient
+	mu     sync.Mutex
+	active int
+	max    int
+}
+
+func (f *concurrentDepsClient) Deps(ctx context.Context, id string, up bool) ([]bd.DepRecord, error) {
+	f.mu.Lock()
+	f.active++
+	if f.active > f.max {
+		f.max = f.active
+	}
+	f.mu.Unlock()
+	time.Sleep(10 * time.Millisecond)
+	f.mu.Lock()
+	f.active--
+	f.mu.Unlock()
+	return f.fakeClient.Deps(ctx, id, up)
+}
 
 func TestReadyLeverageSortPutsLargestUnblockFirst(t *testing.T) {
 	issues := []bd.Issue{
@@ -16,6 +40,54 @@ func TestReadyLeverageSortPutsLargestUnblockFirst(t *testing.T) {
 	got := SortIssues(issues, SortLeverage)
 	if got[0].ID != "root" || got[1].ID != "new" || got[2].ID != "tie" {
 		t.Fatalf("leverage order = %v, want root/new/tie", []string{got[0].ID, got[1].ID, got[2].ID})
+	}
+}
+
+func TestBoardLeverageUsesReverseDependencyGraph(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "one", CreatedAt: "2026-09-03T00:00:00Z"},
+		{ID: "seven", CreatedAt: "2026-09-01T00:00:00Z"},
+	}
+	dependents := make([]bd.DepRecord, 7)
+	for i := range dependents {
+		dependents[i].ID = "dependent-" + itoa(i)
+	}
+	f := &fakeClient{
+		issues: map[bd.View][]bd.Issue{bd.ViewReady: issues},
+		upByID: map[string][]bd.DepRecord{
+			"one":   {{ID: "dependent-one"}},
+			"seven": dependents,
+		},
+	}
+	m := newTestModel(f)
+	m.sortMode = SortLeverage
+	msg := m.loadBoardCmd()()
+	m = applyMsg(t, m, msg)
+	if got := m.rows[0].ID; got != "seven" {
+		t.Fatalf("leverage order = %q, want seven", got)
+	}
+	if m.rows[0].DependentCount != 7 {
+		t.Fatalf("reverse dependency count = %d, want 7", m.rows[0].DependentCount)
+	}
+}
+
+func TestBoardGraphLoadsWithBoundedConcurrency(t *testing.T) {
+	issues := make([]bd.Issue, boardGraphWorkers+2)
+	for i := range issues {
+		issues[i].ID = "issue-" + itoa(i)
+	}
+	f := &concurrentDepsClient{fakeClient: &fakeClient{
+		issues: map[bd.View][]bd.Issue{bd.ViewAll: issues},
+	}}
+	m := newTestModel(f.fakeClient)
+	m.backend = f
+	m.view = bd.ViewAll
+	msg := m.loadBoardCmd()()
+	if got := msg.(boardMsg).err; got != nil {
+		t.Fatalf("load board: %v", got)
+	}
+	if f.max <= 1 || f.max > boardGraphWorkers {
+		t.Fatalf("peak dependency calls = %d, want 2..%d", f.max, boardGraphWorkers)
 	}
 }
 

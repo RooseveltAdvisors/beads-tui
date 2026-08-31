@@ -58,8 +58,8 @@ The TUI is keyboard-driven:
   active filter first, then returns from the detail pane when pressed again
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
 - `s` cycles priority, created, updated, alphabetical, and leverage sorting;
-  created is the default newest-first order, while leverage ranks the work
-  with the most dependents first
+  created is the default newest-first order, while leverage ranks the work by
+  the graph-backed `⇡N blocks` count, with the most dependents first
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
 - `/` opens a flat, incremental result list across bead id, title, and
   description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels
