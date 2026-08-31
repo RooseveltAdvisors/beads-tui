@@ -246,9 +246,6 @@ func TestNarrowRowsCompressButRetainDependencyCounts(t *testing.T) {
 	}
 	for _, selected := range []bool{false, true} {
 		width := 10
-		if selected {
-			width = 12
-		}
 		row := NewVocab(nil).ListRow(issue, width, selected)
 		plain := stripANSI(row)
 		if displayWidth(row) > width {
@@ -258,6 +255,9 @@ func TestNarrowRowsCompressButRetainDependencyCounts(t *testing.T) {
 			if !strings.Contains(plain, want) {
 				t.Errorf("selected=%v narrow row lost reserved %q: %q", selected, want, plain)
 			}
+		}
+		if selected && !strings.Contains(plain, "1/4") {
+			t.Errorf("selected narrow row did not preserve compact digits: %q", plain)
 		}
 		if strings.Contains(plain, "frontend") {
 			t.Errorf("selected=%v labels did not collapse first: %q", selected, plain)

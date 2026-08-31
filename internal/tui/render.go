@@ -270,13 +270,17 @@ func compactDependencyCounts(down, up, width int) string {
 	if down > 0 && up > 0 && width >= 3 {
 		leftWidth := (width - 1) / 2
 		rightWidth := width - 1 - leftWidth
-		return truncate(itoa(down), leftWidth) + "/" + truncate(itoa(up), rightWidth)
+		return truncateDigits(itoa(down), leftWidth) + "/" + truncateDigits(itoa(up), rightWidth)
 	}
 	value := down
 	if value == 0 {
 		value = up
 	}
-	return truncate(itoa(value), width)
+	return truncateDigits(itoa(value), width)
+}
+
+func truncateDigits(value string, width int) string {
+	return runewidth.Truncate(value, width, "")
 }
 
 var tagColors = []lipgloss.Color{"39", "141", "42", "208", "81", "177"}
