@@ -773,6 +773,19 @@ func (m Model) renderDetailPane(w, h int) []string {
 
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
+	if w < 48 {
+		filter := "off"
+		if m.filter.Active() {
+			filter = "on"
+		}
+		percent := 0
+		if len(m.rows) == 1 {
+			percent = 100
+		} else if len(m.rows) > 1 {
+			percent = m.selected * 100 / (len(m.rows) - 1)
+		}
+		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  filter:%s  %d%%", m.view.Label(), filter, percent)), w)
+	}
 	selected := m.selectedID()
 	if selected == "" {
 		selected = "-"
@@ -821,8 +834,16 @@ func footerStatus(w int, view, sortMode, filter, selected string, total int) str
 
 // renderHelp overlays the key reference.
 func (m Model) renderHelp() string {
-	lines := []string{
-		styleBold.Render("beads-tui - read-only board for Beads (bd)"),
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	width := w - 4
+	if width > 72 {
+		width = 72
+	}
+	raw := []string{
+		"beads-tui - read-only board for Beads (bd)",
 		"",
 		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
@@ -834,18 +855,21 @@ func (m Model) renderHelp() string {
 		"  Tags:          t filter by the selected bead's labels",
 		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
-		styleDim.Render("Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked"),
-		styleDim.Render("Markers: ⇣N depends on N · ⇡N has N dependents"),
+		"Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked",
+		"Markers: ⇣N depends on N · ⇡N has N dependents",
 		"",
-		styleDim.Render("Read-only: beads-tui never creates, edits or closes beads."),
+		"Read-only: beads-tui never creates, edits or closes beads.",
 	}
-	w := m.width
-	if w <= 0 {
-		w = 80
+	inner := max(1, width-2)
+	var lines []string
+	for _, line := range raw {
+		lines = append(lines, wrapText(line, inner)...)
 	}
-	width := w - 4
-	if width > 72 {
-		width = 72
+	lines[0] = styleBold.Render(lines[0])
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-4; i-- {
+		if lines[i] != "" {
+			lines[i] = styleDim.Render(lines[i])
+		}
 	}
 	box := pane("Help", lines, width, len(lines)+2)
 	out := make([]string, 0, m.height)

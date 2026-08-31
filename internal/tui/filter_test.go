@@ -129,6 +129,43 @@ func TestRequiredFooterFieldsSurviveNarrowWidths(t *testing.T) {
 	}
 }
 
+func TestCompactFooterPreservesFallbackFields(t *testing.T) {
+	m := New(nil)
+	m.rows = []bd.Issue{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	m.selected = 1
+	m.filter = ParseFilter("status:open")
+	footer := stripANSI(m.renderFooter(40))
+	for _, want := range []string{"Ready", "filter:on", "50%"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("compact footer missing %q: %q", want, footer)
+		}
+	}
+	if displayWidth(footer) > 40 {
+		t.Fatalf("compact footer overflowed: %q", footer)
+	}
+}
+
+func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
+	m := New(nil)
+	m.width, m.height = 80, 24
+	view := stripANSI(m.renderHelp())
+	for _, want := range []string{
+		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
+		"enter/l/→", "h/←", "1 Ready", "2 Open", "3 All", "s cycle",
+		"f prompt", "Enter apply", "Esc cancel/clear", "status:open",
+		"priority:P1", "label:frontend", "t filter", "r ·", "Help: ?", "q/Ctrl+C",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("wrapped help missing %q: %s", want, view)
+		}
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if displayWidth(line) > 80 {
+			t.Errorf("help line %d overflowed: %q", i, line)
+		}
+	}
+}
+
 func TestFilteredEmptyStateNamesActiveFilter(t *testing.T) {
 	m := New(nil)
 	m.allRows = []bd.Issue{{ID: "fm-a", Status: "open"}}
