@@ -46,14 +46,28 @@ beads-tui --version
 
 The TUI is keyboard-driven:
 
-- `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `f`/`b` page
+- `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `space`/`b` page
+- `s` cycles priority, created, updated, alphabetical, and dependency sorting
+- `f` opens a filter prompt (`status:blocked priority:P1 words`); `esc` clears it
+- `v` toggles a dependency tree; `enter` expands or collapses a tree node
 - `enter` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` back
-- `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
+- `1`/`2`/`3` switch views; `tab`/`shift+tab` cycle views; `r` refreshes
+- `?` shows the grouped key reference; `q` (or `ctrl+c`) quits
 
 Each list row carries a status icon, priority (`P0`-`P4`), id and title, plus
 `⇣N`/`⇡N` dependency counts. The detail pane shows the full issue: status
 pill, description, notes, and the dependency edges in both directions with
 their edge type (`blocks`, `tracks`, `parent-child`, ...).
+
+The footer always shows the active view, sort mode, filter, selection, count,
+and position. Markdown descriptions are rendered with Glamour. Optional key
+overrides use `~/.config/beads-tui/config.toml`:
+
+```toml
+[keybindings]
+filter = "/"
+sort = "o"
+```
 
 Rows and markers:
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -146,6 +147,8 @@ func formatPriority(p int) string {
 		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render(s)
 	case 1:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Render(s)
+	case 2:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("blue")).Render(s)
 	default:
 		return styleDim.Render(s)
 	}
@@ -167,17 +170,21 @@ func BuildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int) []str
 		meta += "  ·  " + d.IssueType
 	}
 	lines = append(lines, styleDim.Render(meta))
-	lines = append(lines, styleDim.Render("Assignee: "+orDash(d.Assignee)))
-	if d.CreatedAt != "" {
-		lines = append(lines, styleDim.Render("Created: "+d.CreatedAt+"   Updated: "+orDash(d.UpdatedAt)))
+	lines = append(lines, styleDim.Render("Owner: "+orDash(firstNonEmpty(d.Owner, d.Assignee))))
+	lines = append(lines, styleDim.Render("Created: "+orDash(d.CreatedAt)+"   Updated: "+orDash(d.UpdatedAt)))
+	if d.Assignee != "" && d.Assignee != d.Owner {
+		lines = append(lines, styleDim.Render("Assignee: "+d.Assignee))
 	}
 	counts := "Depends " + itoa(d.DependencyCount) + " · Dependents " + itoa(d.DependentCount) + " · Comments " + itoa(d.CommentCount)
 	lines = append(lines, styleDim.Render(counts))
+	if len(d.Labels) > 0 {
+		lines = append(lines, styleDim.Render("Tags: "+strings.Join(d.Labels, ", ")))
+	}
 	lines = append(lines, "")
 
 	if d.Description != "" {
 		lines = append(lines, styleSection.Render("Description"))
-		lines = append(lines, wrapText(strings.TrimSpace(d.Description), width)...)
+		lines = append(lines, markdownLines(d.Description, width)...)
 		lines = append(lines, "")
 	}
 	if d.Notes != "" {
@@ -207,10 +214,10 @@ func depLine(v Vocab, dep bd.DepRecord, width int, prefix string) string {
 	b.WriteString(prefix)
 	b.WriteString(v.Icon(dep.Status))
 	b.WriteString(" ")
-	b.WriteString(dep.ID)
 	if dep.Title != "" {
-		b.WriteString(" ")
 		b.WriteString(dep.Title)
+	} else {
+		b.WriteString(dep.ID)
 	}
 	suffix := ""
 	if dep.DependencyType != "" {
@@ -335,6 +342,35 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func markdownLines(markdown string, width int) []string {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(width),
+		glamour.WithPreservedNewLines(),
+	)
+	if err != nil {
+		return wrapText(strings.TrimSpace(markdown), width)
+	}
+	rendered, err := renderer.Render(strings.TrimSpace(markdown))
+	if err != nil {
+		return wrapText(strings.TrimSpace(markdown), width)
+	}
+	rendered = strings.TrimRight(rendered, "\n")
+	if rendered == "" {
+		return nil
+	}
+	return strings.Split(rendered, "\n")
 }
 
 func itoa(n int) string {

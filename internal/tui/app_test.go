@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -446,4 +448,103 @@ func TestWrapText(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSortFilterAndStatusBarInteractions(t *testing.T) {
+	m := drive(t, nil)
+	if m.sortMode != SortAlphabetical {
+		t.Fatalf("default sort = %v, want alphabetical presentation", m.sortMode)
+	}
+	m = sendKey(t, m, "s")
+	if m.sortMode != SortDependencies {
+		t.Fatalf("after s sort = %v, want dependencies", m.sortMode)
+	}
+	m = sendKey(t, m, "f")
+	if !m.filtering {
+		t.Fatal("f should open filter prompt")
+	}
+	m = sendKey(t, m, "status:blocked")
+	m = sendKey(t, m, "enter")
+	if m.filtering || m.filter.Status != "blocked" || len(m.rows) != 1 {
+		t.Fatalf("filter state = filtering:%v filter:%+v rows:%d", m.filtering, m.filter, len(m.rows))
+	}
+	plain := stripANSI(m.View())
+	for _, want := range []string{"sort:dependencies", "filter:status:blocked", "fm-bbb", "1 total", "100%"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("status bar missing %q: %s", want, plain)
+		}
+	}
+	m = sendKey(t, m, "f")
+	m = sendKey(t, m, "esc")
+	if m.filter.Active() || len(m.rows) != 3 {
+		t.Errorf("esc did not clear filter: %+v rows=%d", m.filter, len(m.rows))
+	}
+}
+
+func TestGraphToggleAndTreeCollapse(t *testing.T) {
+	f := &fakeClient{down: []bd.DepRecord{{ID: "fm-aaa", Title: "Alpha task", Status: "open", DependencyType: "blocks"}}}
+	m := drive(t, f)
+	m = step(t, m, "v")
+	if !m.tree || m.graphLoading {
+		t.Fatalf("tree toggle state = tree:%v loading:%v", m.tree, m.graphLoading)
+	}
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "Graph") || !strings.Contains(plain, "└─") && !strings.Contains(plain, "├─") {
+		t.Errorf("tree render lacks hierarchy: %s", plain)
+	}
+	before := len(m.displayItems())
+	m = sendKey(t, m, "enter")
+	if len(m.displayItems()) > before || m.expanded["fm-bbb"] {
+		t.Errorf("enter did not collapse tree node: before=%d after=%d expanded=%v", before, len(m.displayItems()), m.expanded)
+	}
+}
+
+func TestHalfPageAndTabNavigation(t *testing.T) {
+	m := drive(t, nil)
+	m.height = 20
+	m = sendKey(t, m, "ctrl+d")
+	if m.selected == 0 {
+		t.Error("ctrl+d should move list by half page")
+	}
+	m = sendKey(t, m, "tab")
+	if m.view != bd.ViewOpen {
+		t.Errorf("tab view = %v, want open", m.view)
+	}
+	m = sendKey(t, m, "shift+tab")
+	if m.view != bd.ViewReady {
+		t.Errorf("shift-tab view = %v, want ready", m.view)
+	}
+}
+
+func TestDetailRendersMarkdownFieldsAndNamedEdges(t *testing.T) {
+	issue := testDetail()
+	issue.Description = "# Heading\n\n**Important** description"
+	issue.Owner = "owner@example.com"
+	issue.CreatedAt, issue.UpdatedAt = "created", "updated"
+	issue.Labels = []string{"urgent", "frontend"}
+	lines := BuildDetail(NewVocab(nil), issue, []bd.DepRecord{{ID: "fm-dep", Title: "Dependency name", Status: "open", DependencyType: "blocks"}}, nil, 50)
+	plain := stripANSI(strings.Join(lines, "\n"))
+	golden, err := os.ReadFile(filepath.Join("testdata", "detail.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := normalizeGolden(plain), strings.TrimSpace(string(golden)); got != want {
+		t.Errorf("detail golden mismatch\n got:\n%s\nwant:\n%s", got, want)
+	}
+	for _, want := range []string{"Heading", "Important", "Owner: owner@example.com", "Created: created", "Tags: urgent, frontend", "Dependency name", "[blocks]"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("detail missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "fm-dep") {
+		t.Error("named dependency should not render raw id")
+	}
+}
+
+func normalizeGolden(value string) string {
+	lines := strings.Split(value, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

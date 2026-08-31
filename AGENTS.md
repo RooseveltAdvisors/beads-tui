@@ -19,6 +19,8 @@ Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bead
 
 - The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`).
 - Status vocabulary loads live from `bd statuses --json`; on failure the built-in fallback in `internal/tui/render.go` (`NewVocab`) takes over.
+- Sort/filter/tree projection is client-side in `internal/tui/board.go`; toggling the tree lazily issues one read-only `bd dep list` call per bead.
+- Optional key overrides are read from `~/.config/beads-tui/config.toml` under `[keybindings]` by `internal/tui/config.go`.
 
 ## Maintaining this file
 

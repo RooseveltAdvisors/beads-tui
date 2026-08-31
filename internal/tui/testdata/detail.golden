@@ -1,0 +1,20 @@
+● blocked
+Beta blocked task
+ID fm-bbb  ·  P2  ·  bug
+Owner: owner@example.com
+Created: created   Updated: updated
+Assignee: Jane
+Depends 0 · Dependents 0 · Comments 0
+Tags: urgent, frontend
+
+Description
+
+Heading
+
+Important description
+
+Notes
+Assigned last sprint.
+
+Depends on (1)
+↳ ○ Dependency name [blocks]
