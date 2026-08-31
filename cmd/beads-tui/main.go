@@ -149,7 +149,9 @@ Usage:
   beads-tui show <id>
   beads-tui --version
 
-The TUI is keyboard-driven: j/k or arrow keys move, Enter focuses detail,
-1/2/3 switch views (ready/open/all), r refreshes, ? shows help, q quits.
+The TUI is keyboard-driven: j/k or up/down move, g/G jump, f/b page, and
+ctrl-u/ctrl-d move half a page. Enter focuses detail; h/l or left/right switch
+panes; Esc returns to the list. 1/2/3 switch views (ready/open/all), r refreshes,
+? shows help, and q quits.
 `, strings.TrimSpace(version))
 }
