@@ -151,7 +151,7 @@ Usage:
 
 The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, f/b page, and
 ctrl-u/ctrl-d move half a page. Enter/Tab toggle parent subtrees or Enter opens
-leaf detail; h/left collapses, l/right expands or focuses detail, v toggles
-tree/flat, 1/2/3 switch views, r refreshes, ? shows help, and q quits.
+leaf detail; h/left collapses, l/right focuses detail, v toggles tree/flat,
+1/2/3 switch views, r refreshes, ? shows help, and q quits.
 `, strings.TrimSpace(version))
 }
