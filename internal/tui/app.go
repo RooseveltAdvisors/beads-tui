@@ -58,6 +58,7 @@ type Model struct {
 	lastSync string
 	help     bool
 	quitting bool
+	markdown *markdownRenderer
 
 	width  int
 	height int
@@ -89,12 +90,13 @@ type detailMsg struct {
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
 	return Model{
-		backend: backend,
-		view:    bd.ViewReady,
-		focus:   FocusList,
-		vocab:   NewVocab(nil),
-		width:   80,
-		height:  24,
+		backend:  backend,
+		view:     bd.ViewReady,
+		focus:    FocusList,
+		vocab:    NewVocab(nil),
+		width:    80,
+		height:   24,
+		markdown: &markdownRenderer{},
 	}
 }
 
@@ -109,7 +111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.detail != nil {
-			lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
+			lines := len(m.buildDetail(m.detailWidth()))
 			_, maxOffset := m.detailContentBudget(lines)
 			if m.dOffset > maxOffset {
 				m.dOffset = maxOffset
@@ -231,7 +233,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	lines := len(BuildDetail(m.vocab, m.detail, m.down, m.up, m.detailWidth()))
+	lines := len(m.buildDetail(m.detailWidth()))
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
 	switch msg.String() {
@@ -300,6 +302,13 @@ func (m Model) halfPageStep() int {
 		return 1
 	}
 	return step
+}
+
+func (m Model) buildDetail(width int) []string {
+	if m.markdown == nil {
+		m.markdown = &markdownRenderer{}
+	}
+	return buildDetail(m.vocab, m.detail, m.down, m.up, width, m.markdown)
 }
 
 func (m Model) loadBoardCmd() tea.Cmd {
@@ -557,7 +566,7 @@ func (m Model) renderDetailPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(l))
 		}
 	case m.detail != nil:
-		all := BuildDetail(m.vocab, m.detail, m.down, m.up, inner)
+		all := m.buildDetail(inner)
 		offset := m.dOffset
 		contentVis, maxOffset := m.detailContentBudget(len(all))
 		if offset > maxOffset {
