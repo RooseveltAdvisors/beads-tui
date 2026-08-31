@@ -19,6 +19,7 @@ Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bead
 
 - The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`).
 - Status vocabulary loads live from `bd statuses --json`; on failure the built-in fallback in `internal/tui/render.go` (`NewVocab`) takes over.
+- Board sorting/filtering primitives and prompt syntax live in `internal/tui/filter.go`; the key dispatch and derived-row lifecycle live in `internal/tui/app.go`.
 
 ## Maintaining this file
 

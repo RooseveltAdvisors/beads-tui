@@ -149,9 +149,10 @@ Usage:
   beads-tui show <id>
   beads-tui --version
 
-The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, f/b page, and
+The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, space/b page, and
 ctrl-u/ctrl-d move half a page. Enter/Tab toggle parent subtrees or Enter opens
 leaf detail; h/left collapses, l/right focuses detail, v toggles tree/flat,
-1/2/3 switch views, r refreshes, ? shows help, and q quits.
+1/2/3 switch views, s sorts, f filters, t filters by labels,
+r refreshes, ? shows help, and q quits.
 `, strings.TrimSpace(version))
 }

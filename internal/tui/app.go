@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -40,7 +42,9 @@ type Model struct {
 	backend Backend
 
 	view     bd.View
-	issues   []bd.Issue // complete snapshot; rows is the visible projection
+	sortMode SortMode
+	filter   Filter
+	allRows  []bd.Issue
 	deps     map[string][]bd.DepRecord
 	rows     []bd.Issue
 	treeRows []TreeRow
@@ -60,10 +64,12 @@ type Model struct {
 	detailErr string
 	checking  bool
 
-	lastSync string
-	help     bool
-	quitting bool
-	markdown *markdownRenderer
+	help        bool
+	helpOffset  int
+	filtering   bool
+	filterInput textinput.Model
+	quitting    bool
+	markdown    *markdownRenderer
 
 	width  int
 	height int
@@ -95,16 +101,25 @@ type detailMsg struct {
 
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
+	input := textinput.New()
+	input.Prompt = "Filter › "
+	input.Placeholder = "status:open  priority:P1  label:frontend  text"
+	input.CharLimit = 120
+	input.Width = 60
 	return Model{
-		backend:  backend,
-		view:     bd.ViewReady,
-		focus:    FocusList,
-		vocab:    NewVocab(nil),
-		width:    80,
-		height:   24,
-		markdown: &markdownRenderer{},
-		expanded: map[string]bool{},
-		treeMode: true,
+		backend: backend,
+		view:    bd.ViewReady,
+		// Alphabetical is a stable, unsurprising initial view; s cycles to
+		// priority, then created and updated timestamps.
+		sortMode:    SortAlphabetical,
+		focus:       FocusList,
+		vocab:       NewVocab(nil),
+		filterInput: input,
+		width:       80,
+		height:      24,
+		markdown:    &markdownRenderer{},
+		expanded:    map[string]bool{},
+		treeMode:    true,
 	}
 }
 
@@ -151,17 +166,48 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.help {
+		switch msg.String() {
+		case "j", "down":
+			m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
+			return m, nil
+		case "k", "up":
+			m.helpOffset = max(m.helpOffset-1, 0)
+			return m, nil
+		}
 		m.help = false
+		m.helpOffset = 0
 		return m, nil
+	}
+	if m.filtering {
+		switch msg.String() {
+		case "esc":
+			m.filtering = false
+			m.filterInput.Blur()
+			m.filter = Filter{}
+			return m, m.rebuildRows(m.selectedID())
+		case "enter":
+			m.filtering = false
+			m.filterInput.Blur()
+			m.filter = ParseFilter(m.filterInput.Value())
+			return m, m.rebuildRows(m.selectedID())
+		}
+		var cmd tea.Cmd
+		m.filterInput, cmd = m.filterInput.Update(msg)
+		return m, cmd
 	}
 	switch msg.String() {
 	case "?":
 		m.help = true
+		m.helpOffset = 0
 		return m, nil
 	case "q":
 		m.quitting = true
 		return m, tea.Quit
 	case "esc":
+		if m.filter.Active() {
+			m.filter = Filter{}
+			return m, m.rebuildRows(m.selectedID())
+		}
 		if m.focus == FocusDetail {
 			m.focus = FocusList
 			m.dOffset = 0
@@ -173,6 +219,32 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchView(bd.ViewOpen)
 	case "3":
 		return m.switchView(bd.ViewAll)
+	case "s":
+		m.sortMode = m.sortMode.Next()
+		return m, m.rebuildRows(m.selectedID())
+	case "f":
+		m.filtering = true
+		m.filterInput.SetValue("")
+		m.filterInput.Focus()
+		return m, textinput.Blink
+	case "t":
+		if id := m.selectedID(); id != "" {
+			for _, issue := range m.rows {
+				if issue.ID == id && len(issue.Labels) > 0 {
+					labels := make([]string, 0, len(issue.Labels))
+					for _, label := range issue.Labels {
+						if label = strings.TrimSpace(label); label != "" {
+							labels = append(labels, strings.ToLower(label))
+						}
+					}
+					if len(labels) == 0 {
+						return m, nil
+					}
+					m.filter = Filter{Kind: FilterLabel, Query: strings.Join(labels, ",")}
+					return m, m.rebuildRows(id)
+				}
+			}
+		}
 	case "r":
 		m.loading = true
 		if len(m.rows) > 0 {
@@ -198,6 +270,53 @@ func (m Model) switchView(view bd.View) (tea.Model, tea.Cmd) {
 	return m, m.loadBoardCmd()
 }
 
+func (m Model) selectedID() string {
+	if m.selected >= 0 && m.selected < len(m.rows) {
+		return m.rows[m.selected].ID
+	}
+	return ""
+}
+
+// rebuildRows applies the current filter and sort while preserving selection
+// by bead id. It also requests detail if the selected row changed.
+func (m *Model) rebuildRows(previousID string) tea.Cmd {
+	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
+	if m.expanded == nil {
+		m.expanded = map[string]bool{}
+	}
+	if m.treeMode {
+		roots := BuildDependencyTree(projected, m.deps, m.sortMode)
+		m.treeRows = FlattenDependencyTree(roots, m.expanded)
+		m.rows = make([]bd.Issue, len(m.treeRows))
+		for i, row := range m.treeRows {
+			m.rows[i] = row.Issue
+		}
+	} else {
+		m.treeRows = nil
+		m.rows = projected
+	}
+	m.selected = 0
+	if previousID != "" {
+		for i := range m.rows {
+			if m.rows[i].ID == previousID {
+				m.selected = i
+				break
+			}
+		}
+	}
+	if len(m.rows) == 0 {
+		m.detail, m.down, m.up = nil, nil, nil
+		m.detailErr = ""
+		m.checking = false
+		return nil
+	}
+	if m.detail == nil || m.detail.ID != m.rows[m.selected].ID {
+		m.checking = true
+		return m.loadDetailCmd(m.rows[m.selected].ID)
+	}
+	return nil
+}
+
 // navIndexes returns the wrapped step for list navigation (no-op on empty).
 func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	n := len(m.rows)
@@ -217,12 +336,10 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected = n - 1
 	case "v":
 		m.treeMode = !m.treeMode
-		m.rebuildRows(m.rows[m.selected].ID)
-		return m, nil
+		return m, m.rebuildRows(m.rows[m.selected].ID)
 	case "enter", "tab":
 		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.toggleSelectedTreeRow()
-			return m, nil
+			return m, m.toggleSelectedTreeRow()
 		}
 		if msg.String() == "tab" {
 			return m, nil
@@ -232,13 +349,13 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h", "left":
 		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
 			m.expanded[m.treeRows[m.selected].Issue.ID] = false
-			m.rebuildRows(m.treeRows[m.selected].Issue.ID)
+			return m, m.rebuildRows(m.treeRows[m.selected].Issue.ID)
 		}
 		return m, nil
 	case "l", "L", "right":
 		m.focus = FocusDetail
 		m.dOffset = 0
-	case "f", " ", "pgdown", "ctrl+f":
+	case " ", "pgdown", "ctrl+f":
 		m.selected += page
 	case "b", "pgup", "ctrl+b":
 		m.selected -= page
@@ -270,7 +387,7 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dOffset = 0
 	case "G":
 		m.dOffset = maxOffset
-	case "f", " ", "pgdown", "ctrl+f":
+	case " ", "pgdown", "ctrl+f":
 		m.dOffset += page
 	case "b", "pgup", "ctrl+b":
 		m.dOffset -= page
@@ -405,54 +522,10 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	m.boardErr = ""
 	// Capture the previous selection from the OLD board before rows are
 	// replaced, then restore it by id if the bead is still present.
-	prev := ""
-	if m.selected < len(m.rows) {
-		prev = m.rows[m.selected].ID
-	}
-	m.issues = msg.issues
+	prev := m.selectedID()
+	m.allRows = append([]bd.Issue(nil), msg.issues...)
 	m.deps = msg.deps
-	m.rebuildRows(prev)
-	m.lastSync = time.Now().Format("15:04:05")
-	if len(m.rows) == 0 {
-		m.detail, m.down, m.up = nil, nil, nil
-		m.detailErr = ""
-		m.checking = false
-		return nil
-	}
-	if cur := m.rows[m.selected].ID; m.detail == nil || m.detail.ID != cur {
-		m.checking = true
-		return m.loadDetailCmd(cur)
-	}
-	return nil
-}
-
-// rebuildRows projects the complete board snapshot into the active flat or
-// expanded tree view, preserving selection by bead ID where possible.
-func (m *Model) rebuildRows(selectedID string) {
-	if m.expanded == nil {
-		m.expanded = map[string]bool{}
-	}
-	if !m.treeMode {
-		m.rows = append([]bd.Issue(nil), m.issues...)
-		m.treeRows = nil
-		m.selected = m.indexOfRow(selectedID)
-		return
-	}
-	roots := BuildDependencyTree(m.issues, m.deps)
-	m.treeRows = FlattenDependencyTree(roots, m.expanded)
-	m.rows = make([]bd.Issue, len(m.treeRows))
-	for i, row := range m.treeRows {
-		m.rows[i] = row.Issue
-	}
-	if selectedID != "" {
-		for i := range m.rows {
-			if m.rows[i].ID == selectedID {
-				m.selected = i
-				return
-			}
-		}
-	}
-	m.selected = 0
+	return m.rebuildRows(prev)
 }
 
 func (m Model) indexOfRow(id string) int {
@@ -467,14 +540,15 @@ func (m Model) indexOfRow(id string) int {
 	return 0
 }
 
-func (m *Model) toggleSelectedTreeRow() {
+func (m *Model) toggleSelectedTreeRow() tea.Cmd {
 	if m.selected >= len(m.treeRows) {
-		return
+		return nil
 	}
 	id := m.treeRows[m.selected].Issue.ID
 	m.expanded[id] = !m.treeRows[m.selected].Expanded
-	m.rebuildRows(id)
+	cmd := m.rebuildRows(id)
 	m.selected = m.indexOfRow(id)
+	return cmd
 }
 
 // applyDetail installs a detail snapshot, discarding stale responses.
@@ -516,6 +590,9 @@ func (m Model) View() string {
 		h = 24
 	}
 	contentH := h - 2
+	if m.filtering {
+		contentH--
+	}
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -530,6 +607,10 @@ func (m Model) View() string {
 	var sb strings.Builder
 	sb.WriteString(m.renderHeader(w))
 	sb.WriteString("\n")
+	if m.filtering {
+		sb.WriteString(m.renderFilterPrompt(w))
+		sb.WriteString("\n")
+	}
 	for i := 0; i < contentH; i++ {
 		sb.WriteString(listPane[i])
 		sb.WriteString(" ")
@@ -538,6 +619,12 @@ func (m Model) View() string {
 	}
 	sb.WriteString(m.renderFooter(w))
 	return sb.String()
+}
+
+func (m Model) renderFilterPrompt(w int) string {
+	label := styleDim.Render("FILTER")
+	input := m.filterInput.View()
+	return truncatePhys(label+"  "+input, w)
 }
 
 // renderHeader paints the title bar: view name and tabs.
@@ -583,7 +670,11 @@ func (m Model) renderListPane(w, h int) []string {
 	case m.loading && len(m.rows) == 0:
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
-		lines = append(lines, styleDim.Render(m.emptyBoardText()))
+		if m.filter.Active() {
+			lines = append(lines, styleDim.Render("No matches for filter: "+m.filter.String()))
+		} else {
+			lines = append(lines, styleDim.Render(m.emptyBoardText()))
+		}
 	default:
 		vis := h - 2
 		if m.loading {
@@ -693,65 +784,128 @@ func (m Model) renderDetailPane(w, h int) []string {
 
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
+	if w < 48 {
+		filter := "off"
+		if m.filter.Active() {
+			filter = "on"
+		}
+		percent := 0
+		if len(m.rows) == 1 {
+			percent = 100
+		} else if len(m.rows) > 1 {
+			percent = m.selected * 100 / (len(m.rows) - 1)
+		}
+		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  filter:%s  %d%%", m.view.Label(), filter, percent)), w)
+	}
+	selected := m.selectedID()
+	if selected == "" {
+		selected = "-"
+	}
+	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows))
+	hints := styleDim.Render("s sort f filter t tag ? help q quit")
 	var left string
 	switch {
 	case m.boardErr != "":
-		left = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error - check bd") +
-			styleDim.Render(" · q quit")
-		m.lastSync = ""
+		left = styleDim.Render(status) + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
+		hints = styleDim.Render("q quit")
 	case m.loading:
-		left = styleDim.Render("loading…")
+		left = styleDim.Render(status) + " · " + styleDim.Render("loading…")
 	case m.focus == FocusDetail:
-		left = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
+		left = styleDim.Render(status)
+		hints = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
 	default:
-		mode := "tree"
-		if !m.treeMode {
-			mode = "flat"
-		}
-		left = styleDim.Render("j/k move · ^u/d half · enter/tab fold · h collapse · l detail · v " + mode + " · ? · q quit")
+		left = styleDim.Render(status)
 	}
-	right := ""
-	if m.lastSync != "" {
-		right = styleDim.Render("sync " + m.lastSync)
+	if displayWidth(left)+1+displayWidth(hints) <= w {
+		return fitLine(left, hints, w)
 	}
-	return fitLine(left, right, w)
+	return truncatePhys(left, w)
+}
+
+func footerStatus(w int, view, sortMode, filter, selected string, total int) string {
+	if filter == "" {
+		filter = "-"
+	}
+	if w < 64 {
+		view = truncate(view, 3)
+		sortMode = truncate(sortMode, 3)
+	}
+	fixed := fmt.Sprintf("view:%s sort:%s filter: sel: total:%d", view, sortMode, total)
+	available := max(2, w-runewidth.StringWidth(fixed))
+	filterWidth := max(1, available*2/3)
+	selectedWidth := max(1, available-filterWidth)
+	return fmt.Sprintf("view:%s sort:%s filter:%s sel:%s total:%d",
+		view, sortMode, truncate(filter, filterWidth), truncate(selected, selectedWidth), total)
 }
 
 // renderHelp overlays the key reference.
 func (m Model) renderHelp() string {
-	lines := []string{
-		styleBold.Render("beads-tui - read-only board for Beads (bd)"),
-		"",
-		"  Nav tree:      j/k or ↑/↓ move · g/G top/bottom · f/b page",
-		"  Half-page:     ctrl-u/d in list and detail",
-		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree",
-		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
-		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
-		"  Refresh:       r  ·  Quit: q or ctrl+c  ·  Close this: any key",
-		"",
-		styleDim.Render("Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked"),
-		styleDim.Render("Markers: ⇣N depends on N · ⇡N has N dependents"),
-		"",
-		styleDim.Render("Read-only: beads-tui never creates, edits or closes beads."),
+	w, width, height := m.helpDimensions()
+	lines := m.helpLines(width)
+	vis := max(1, height-2)
+	offset := min(m.helpOffset, max(0, len(lines)-vis))
+	end := min(len(lines), offset+vis)
+	title := fmt.Sprintf("Help · j/k scroll · %d/%d", offset+1, max(1, len(lines)-vis+1))
+	box := pane(title, lines[offset:end], width, height)
+	out := make([]string, 0, height)
+	for _, line := range box {
+		out = append(out, strings.Repeat(" ", max(0, (w-displayWidth(line))/2))+line)
 	}
-	w := m.width
+	return strings.Join(out, "\n")
+}
+
+func (m Model) helpDimensions() (w, width, height int) {
+	w, height = m.width, m.height
 	if w <= 0 {
 		w = 80
 	}
-	width := w - 4
+	if height <= 0 {
+		height = 24
+	}
+	width = w - 4
 	if width > 72 {
 		width = 72
 	}
-	box := pane("Help", lines, width, len(lines)+2)
-	out := make([]string, 0, m.height)
-	for i := 0; i < m.height; i++ {
-		if i < len(box) {
-			out = append(out, strings.Repeat(" ", (w-displayWidth(box[i]))/2)+box[i])
-		} else {
-			out = append(out, "")
+	return w, max(3, width), max(3, height)
+}
+
+func (m Model) helpLines(width int) []string {
+	raw := []string{
+		"beads-tui - read-only board for Beads (bd)",
+		"",
+		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
+		"  Half-page:     ctrl-u/d in list and detail",
+		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree · siblings use active sort",
+		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
+		"  Navigation:    esc close detail / clear filter",
+		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
+		"  Sort:          s cycle priority · created · updated · alphabetical",
+		"  Filter:        f prompt · Enter apply · status:open · priority:P1 · label:frontend · text",
+		"  Tags:          t filter by the selected bead's labels",
+		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
+		"",
+		"Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked",
+		"Markers: ⇣N depends on N · ⇡N has N dependents",
+		"",
+		"Read-only: beads-tui never creates, edits or closes beads.",
+	}
+	inner := max(1, width-2)
+	var lines []string
+	for _, line := range raw {
+		lines = append(lines, wrapText(line, inner)...)
+	}
+	lines[0] = styleBold.Render(lines[0])
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-4; i-- {
+		if lines[i] != "" {
+			lines[i] = styleDim.Render(lines[i])
 		}
 	}
-	return strings.Join(out, "\n")
+	return lines
+}
+
+func (m Model) helpMaxOffset() int {
+	_, width, height := m.helpDimensions()
+	return max(0, len(m.helpLines(width))-max(1, height-2))
 }
 
 // listPaneWidth splits the width between board and detail.
@@ -840,8 +994,7 @@ func padRight(s string, cells int) string {
 	return s + strings.Repeat(" ", cells-displayWidth(s))
 }
 
-// truncatePhys truncates an ANSI string to cells display width, preserving
-// the leading ANSI styling in the result.
+// truncatePhys truncates an ANSI string without discarding embedded styles.
 func truncatePhys(s string, cells int) string {
 	if cells <= 0 {
 		return ""
@@ -850,38 +1003,44 @@ func truncatePhys(s string, cells int) string {
 	if runewidth.StringWidth(plain) <= cells {
 		return s
 	}
-	prefix := ansiPrefix(s)
-	return prefix + truncate(plain, cells) + "\x1b[0m"
-}
-
-// ansiPrefix extracts all leading consecutive ANSI SGR escape sequences from a styled string.
-func ansiPrefix(s string) string {
-	pos := 0
-	for {
-		idx := strings.Index(s[pos:], "\x1b[")
-		if idx != 0 {
+	limit := cells - 1
+	var b strings.Builder
+	width := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			end := strings.IndexByte(s[i:], 'm')
+			if end < 0 {
+				break
+			}
+			end += i + 1
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		rw := runewidth.RuneWidth(r)
+		if width+rw > limit {
 			break
 		}
-		end := strings.IndexByte(s[pos:], 'm')
-		if end == -1 {
-			break
-		}
-		pos += end + 1
+		b.WriteRune(r)
+		width += rw
+		i += size
 	}
-	return s[:pos]
+	b.WriteString("…\x1b[0m")
+	return b.String()
 }
 
-// fitLine lays a left/right pair out on one line, dropping the right part
-// (decoration) before truncating the left when the line cannot fit.
+// fitLine lays a left/right pair out on one line, preserving the right-side
+// shortcuts and truncating the status text when the line cannot fit.
 func fitLine(left, right string, w int) string {
 	lw, rw := displayWidth(left), displayWidth(right)
 	if lw+rw <= w {
 		return left + strings.Repeat(" ", w-lw-rw) + right
 	}
-	if lw > w {
-		return truncatePhys(left, w)
+	if rw >= w {
+		return truncatePhys(right, w)
 	}
-	return left
+	return truncatePhys(left, w-rw-1) + " " + right
 }
 
 // displayWidth reports the cell width of ANSI-styled text.

@@ -169,42 +169,154 @@ func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
 	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
 }
 
-func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selected bool) string {
-	var b strings.Builder
-	b.WriteString(prefix)
-	b.WriteString(marker)
-	icon := v.Icon(issue.Status)
-	b.WriteString(icon)
-	b.WriteString(" ")
-	b.WriteString(formatPriority(issue.Priority))
-	b.WriteString(" ")
-	b.WriteString(issue.ID)
-	if issue.Title != "" {
-		b.WriteString(" ")
-		b.WriteString(issue.Title)
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected bool) string {
+	usable := width
+	if selected {
+		usable -= 2
 	}
+	if usable < 1 {
+		usable = 1
+	}
+	icon := v.Icon(issue.Status)
+	rowPrefix := func() string {
+		return treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+	}
+	prefix := rowPrefix()
+
+	var body strings.Builder
+	if issue.ID != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.ID)
+	}
+	if issue.Title != "" && issue.ID != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.Title)
+	} else if issue.Title != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.Title)
+	}
+	tags := renderTags(issue.Labels)
 	counts := ""
+	compactCounts := ""
 	if issue.DependencyCount > 0 {
-		counts += " ⇣" + itoa(issue.DependencyCount)
+		counts += "⇣" + itoa(issue.DependencyCount)
+		compactCounts += itoa(issue.DependencyCount)
 	}
 	if issue.DependentCount > 0 {
-		counts += " ⇡" + itoa(issue.DependentCount)
+		if counts != "" {
+			counts += " "
+			compactCounts += "/"
+		}
+		counts += "⇡" + itoa(issue.DependentCount)
+		compactCounts += itoa(issue.DependentCount)
 	}
-	line := b.String()
-	line = truncate(line, width)
-	if counts != "" {
-		rest := width - runewidth.StringWidth(stripANSI(line))
-		dw := displayWidth(counts)
-		if rest > dw+2 {
-			line = lipgloss.JoinHorizontal(lipgloss.Left, line,
-				styleDim.Render(strings.Repeat(" ", rest-dw-1)+counts))
+	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+	reservedCounts := 0
+	if issue.DependencyCount > 0 || issue.DependentCount > 0 {
+		reservedCounts = 2
+		if issue.DependencyCount > 0 && issue.DependentCount > 0 {
+			reservedCounts = 4
 		}
 	}
+	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-reservedCounts))
+	prefix = rowPrefix()
+	if issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
+		icon = compactStatusIcon(issue.Status)
+		prefix = rowPrefix()
+	}
+
+	// Status and priority stay present; extreme rows reduce wide status icons
+	// to one cell before compressing count digits for both dependency directions.
+	minimumBody := displayWidth(prefix) + 20
+	fullCountBudget := displayWidth(counts)
+	if counts != "" && usable-fullCountBudget-1 < minimumBody && displayWidth(compactCounts) < fullCountBudget {
+		counts = compactCounts
+	}
+	countWidth := displayWidth(counts)
+	prefixWidth := displayWidth(prefix)
+	if counts != "" && countWidth+1 > usable-prefixWidth {
+		countBudget := max(0, usable-prefixWidth-1)
+		line := prefix
+		if compact := compactDependencyCounts(issue.DependencyCount, issue.DependentCount, countBudget); compact != "" {
+			line += " " + styleDim.Render(compact)
+		}
+		if selected {
+			return styleSelected.Render("▸ " + line)
+		}
+		return line
+	}
+	contentBudget := usable
+	if counts != "" {
+		contentBudget -= countWidth + 1
+	}
+	if contentBudget <= 0 {
+		line := styleDim.Render(strings.Repeat(" ", max(0, usable-countWidth)) + truncate(counts, usable))
+		if selected {
+			return styleSelected.Render("▸ " + line)
+		}
+		return line
+	}
+
+	line := prefix + body.String()
+	maxTagBudget := contentBudget - minimumBody - 1
+	if tags != "" && maxTagBudget >= 3 {
+		tagBudget := min(displayWidth(tags), maxTagBudget)
+		line = truncatePhys(line, contentBudget-tagBudget-1) + " " + truncatePhys(tags, tagBudget)
+	} else {
+		line = truncatePhys(line, contentBudget)
+	}
+	if counts != "" {
+		line = padRight(line, contentBudget) + " " + styleDim.Render(counts)
+	}
 	if selected {
-		line = truncate(line, width-2)
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+func compactDependencyCounts(down, up, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if down > 0 && up > 0 && width >= 3 {
+		leftWidth := (width - 1) / 2
+		rightWidth := width - 1 - leftWidth
+		return truncateDigits(itoa(down), leftWidth) + "/" + truncateDigits(itoa(up), rightWidth)
+	}
+	value := down
+	if value == 0 {
+		value = up
+	}
+	return truncateDigits(itoa(value), width)
+}
+
+func truncateDigits(value string, width int) string {
+	return runewidth.Truncate(value, width, "")
+}
+
+func compactStatusIcon(status string) string {
+	for _, r := range status {
+		if runewidth.RuneWidth(r) == 1 {
+			return string(r)
+		}
+		break
+	}
+	return "•"
+}
+
+var tagColors = []lipgloss.Color{"39", "141", "42", "208", "81", "177"}
+
+// renderTags keeps labels compact while giving each tag a distinct accent.
+func renderTags(labels []string) string {
+	var tags []string
+	for i, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		style := lipgloss.NewStyle().Foreground(tagColors[i%len(tagColors)]).Bold(true)
+		tags = append(tags, style.Render("["+label+"]"))
+	}
+	return strings.Join(tags, " ")
 }
 
 // formatPriority renders the P0-P4 marker, emphasizing P0/P1.
