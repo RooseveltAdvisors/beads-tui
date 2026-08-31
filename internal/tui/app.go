@@ -64,17 +64,22 @@ type Model struct {
 	detailErr string
 	checking  bool
 
-	help        bool
-	helpOffset  int
-	filtering   bool
-	searching   bool
-	searchBase  Filter
-	searchFocus Focus
-	searchID    string
-	searchDOff  int
-	filterInput textinput.Model
-	quitting    bool
-	markdown    *markdownRenderer
+	help         bool
+	helpOffset   int
+	filtering    bool
+	searching    bool
+	searchBase   Filter
+	searchFocus  Focus
+	searchID     string
+	searchDOff   int
+	searchDetail *bd.Issue
+	searchDown   []bd.DepRecord
+	searchUp     []bd.DepRecord
+	searchDErr   string
+	searchCheck  bool
+	filterInput  textinput.Model
+	quitting     bool
+	markdown     *markdownRenderer
 
 	width  int
 	height int
@@ -191,6 +196,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.searching {
 				m.filter = m.searchBase
 				m.searching = false
+				m.detail = m.searchDetail
+				m.down = m.searchDown
+				m.up = m.searchUp
+				m.detailErr = m.searchDErr
+				m.checking = m.searchCheck
 				cmd := m.rebuildRows(m.searchID)
 				m.focus = m.searchFocus
 				m.dOffset = m.searchDOff
@@ -297,6 +307,11 @@ func (m *Model) openPrompt(search bool) tea.Cmd {
 		m.searchFocus = m.focus
 		m.searchID = m.selectedID()
 		m.searchDOff = m.dOffset
+		m.searchDetail = m.detail
+		m.searchDown = m.down
+		m.searchUp = m.up
+		m.searchDErr = m.detailErr
+		m.searchCheck = m.checking
 		m.focus = FocusList
 		m.filterInput.Prompt = "Search / › "
 	} else {
