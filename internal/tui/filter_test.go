@@ -216,3 +216,25 @@ func TestTruncatedRowKeepsTagStyleAndSpace(t *testing.T) {
 		t.Fatalf("truncated tag lost ANSI style: %q", row)
 	}
 }
+
+func TestTruncatedTaggedRowsReserveDependencyMarkers(t *testing.T) {
+	issue := bd.Issue{
+		ID: "fm-x", Title: strings.Repeat("long title ", 8), Status: "blocked", Priority: 1,
+		Labels: []string{"frontend"}, DependencyCount: 12, DependentCount: 3,
+	}
+	for _, selected := range []bool{false, true} {
+		row := NewVocab(nil).ListRow(issue, 36, selected)
+		plain := stripANSI(row)
+		if displayWidth(row) > 36 {
+			t.Fatalf("selected=%v row overflowed: %q", selected, plain)
+		}
+		for _, want := range []string{"●", "P1", "⇣12", "⇡3"} {
+			if !strings.Contains(plain, want) {
+				t.Errorf("selected=%v row missing reserved %q: %q", selected, want, plain)
+			}
+		}
+		if !strings.HasSuffix(plain, "⇣12 ⇡3") {
+			t.Errorf("selected=%v markers are not right-edge content: %q", selected, plain)
+		}
+	}
+}

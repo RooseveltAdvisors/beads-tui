@@ -169,45 +169,62 @@ func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
 	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
 }
 
-func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selected bool) string {
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected bool) string {
+	usable := width
+	if selected {
+		usable -= 2
+	}
+	if usable < 1 {
+		usable = 1
+	}
 	var b strings.Builder
-	b.WriteString(prefix)
+	b.WriteString(treePrefix)
 	b.WriteString(marker)
 	icon := v.Icon(issue.Status)
-	b.WriteString(icon)
+	b.WriteString(v.statusStyle(issue.Status).Render(icon))
 	b.WriteString(" ")
 	b.WriteString(formatPriority(issue.Priority))
-	b.WriteString(" ")
-	b.WriteString(issue.ID)
-	if issue.Title != "" {
-		b.WriteString(" ")
-		b.WriteString(issue.Title)
+	header := b.String()
+
+	var body strings.Builder
+	if issue.ID != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.ID)
+	}
+	if issue.Title != "" && issue.ID != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.Title)
+	} else if issue.Title != "" {
+		body.WriteString(" ")
+		body.WriteString(issue.Title)
 	}
 	tags := renderTags(issue.Labels)
 	counts := ""
 	if issue.DependencyCount > 0 {
-		counts += " ⇣" + itoa(issue.DependencyCount)
+		counts += "⇣" + itoa(issue.DependencyCount)
 	}
 	if issue.DependentCount > 0 {
-		counts += " ⇡" + itoa(issue.DependentCount)
+		if counts != "" {
+			counts += " "
+		}
+		counts += "⇡" + itoa(issue.DependentCount)
 	}
-	line := b.String()
-	if tags != "" && width > 4 {
-		tagBudget := min(displayWidth(tags), max(3, width/2))
-		line = truncatePhys(line, width-tagBudget-1) + " " + truncatePhys(tags, tagBudget)
+	countBudget := displayWidth(counts)
+	if counts != "" {
+		countBudget++
+	}
+	contentBudget := max(1, usable-countBudget)
+	line := header + body.String()
+	if tags != "" && contentBudget > displayWidth(header)+2 {
+		tagBudget := min(displayWidth(tags), max(3, contentBudget/2))
+		line = truncatePhys(line, contentBudget-tagBudget-1) + " " + truncatePhys(tags, tagBudget)
 	} else {
-		line = truncatePhys(line, width)
+		line = truncatePhys(line, contentBudget)
 	}
 	if counts != "" {
-		rest := width - runewidth.StringWidth(stripANSI(line))
-		dw := displayWidth(counts)
-		if rest > dw+2 {
-			line = lipgloss.JoinHorizontal(lipgloss.Left, line,
-				styleDim.Render(strings.Repeat(" ", rest-dw-1)+counts))
-		}
+		line = padRight(line, contentBudget) + " " + styleDim.Render(counts)
 	}
 	if selected {
-		line = truncatePhys(line, width-2)
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
