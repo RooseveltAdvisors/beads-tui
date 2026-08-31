@@ -19,6 +19,34 @@ func TestReadyLeverageSortPutsLargestUnblockFirst(t *testing.T) {
 	}
 }
 
+func TestBoardLeverageUsesReverseDependencyGraph(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "one", CreatedAt: "2026-09-03T00:00:00Z"},
+		{ID: "seven", CreatedAt: "2026-09-01T00:00:00Z"},
+	}
+	dependents := make([]bd.DepRecord, 7)
+	for i := range dependents {
+		dependents[i].ID = "dependent-" + itoa(i)
+	}
+	f := &fakeClient{
+		issues: map[bd.View][]bd.Issue{bd.ViewReady: issues},
+		upByID: map[string][]bd.DepRecord{
+			"one":   {{ID: "dependent-one"}},
+			"seven": dependents,
+		},
+	}
+	m := newTestModel(f)
+	m.sortMode = SortLeverage
+	msg := m.loadBoardCmd()()
+	m = applyMsg(t, m, msg)
+	if got := m.rows[0].ID; got != "seven" {
+		t.Fatalf("leverage order = %q, want seven", got)
+	}
+	if m.rows[0].DependentCount != 7 {
+		t.Fatalf("reverse dependency count = %d, want 7", m.rows[0].DependentCount)
+	}
+}
+
 func TestDependencyChipsNameBothDirections(t *testing.T) {
 	row := stripANSI(NewVocab(nil).ListRow(bd.Issue{ID: "root", Status: "open", DependencyCount: 2, DependentCount: 5}, 80, false))
 	for _, want := range []string{"⇣2 blocked-by", "⇡5 blocks"} {

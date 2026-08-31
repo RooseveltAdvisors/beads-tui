@@ -16,6 +16,7 @@ type fakeClient struct {
 	issue    *bd.Issue
 	down     []bd.DepRecord
 	up       []bd.DepRecord
+	upByID   map[string][]bd.DepRecord
 	statuses []bd.StatusInfo
 
 	failList   error
@@ -39,8 +40,11 @@ func (f *fakeClient) Show(_ context.Context, id string) (*bd.Issue, error) {
 	return f.issue, nil
 }
 
-func (f *fakeClient) Deps(_ context.Context, _ string, up bool) ([]bd.DepRecord, error) {
+func (f *fakeClient) Deps(_ context.Context, id string, up bool) ([]bd.DepRecord, error) {
 	if up {
+		if f.upByID != nil {
+			return f.upByID[id], nil
+		}
 		return f.up, nil
 	}
 	return f.down, nil

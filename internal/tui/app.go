@@ -577,20 +577,29 @@ func (m Model) loadBoardCmd() tea.Cmd {
 			return boardMsg{view: m.view, err: err}
 		}
 		deps := make(map[string][]bd.DepRecord)
-		for _, issue := range issues {
+		for i := range issues {
+			issue := issues[i]
 			if issue.ID == "" {
 				continue
 			}
-			if issue.DependencyCount == 0 {
-				continue
+			if issue.DependencyCount > 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), bdTimeout)
+				records, depErr := m.backend.Deps(ctx, issue.ID, false)
+				cancel()
+				if depErr != nil {
+					return boardMsg{view: m.view, err: depErr}
+				}
+				deps[issue.ID] = records
 			}
+			// bd list's dependent_count can be stale or zeroed. The reverse
+			// dependency query is the source of truth for leverage and ⇡N.
 			ctx, cancel = context.WithTimeout(context.Background(), bdTimeout)
-			records, depErr := m.backend.Deps(ctx, issue.ID, false)
+			dependents, depErr := m.backend.Deps(ctx, issue.ID, true)
 			cancel()
 			if depErr != nil {
 				return boardMsg{view: m.view, err: depErr}
 			}
-			deps[issue.ID] = records
+			issues[i].DependentCount = len(dependents)
 		}
 		return boardMsg{view: m.view, issues: issues, deps: deps}
 	}
