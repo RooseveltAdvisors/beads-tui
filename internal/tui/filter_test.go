@@ -264,3 +264,18 @@ func TestNarrowRowsCompressButRetainDependencyCounts(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectedNarrowRowCompactsWideStatusIcon(t *testing.T) {
+	row := NewVocab(nil).ListRow(bd.Issue{
+		Status: "pinned", Priority: 1, DependencyCount: 123, DependentCount: 456,
+	}, 10, true)
+	plain := stripANSI(row)
+	if displayWidth(row) > 10 {
+		t.Fatalf("wide-icon row overflowed: %q", plain)
+	}
+	for _, want := range []string{"p", "P1", "1/4"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("wide-icon row missing %q: %q", want, plain)
+		}
+	}
+}

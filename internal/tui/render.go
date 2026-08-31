@@ -177,14 +177,11 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	if usable < 1 {
 		usable = 1
 	}
-	var b strings.Builder
-	b.WriteString(treePrefix)
-	b.WriteString(marker)
 	icon := v.Icon(issue.Status)
-	b.WriteString(v.statusStyle(issue.Status).Render(icon))
-	b.WriteString(" ")
-	b.WriteString(formatPriority(issue.Priority))
-	header := b.String()
+	rowPrefix := func() string {
+		return treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+	}
+	prefix := rowPrefix()
 
 	var body strings.Builder
 	if issue.ID != "" {
@@ -213,10 +210,14 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		counts += "⇡" + itoa(issue.DependentCount)
 		compactCounts += itoa(issue.DependentCount)
 	}
+	if issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
+		icon = compactStatusIcon(issue.Status)
+		prefix = rowPrefix()
+	}
 
-	// Status and priority stay fixed; narrow rows then drop labels, preserve
-	// roughly 20 body cells where possible, and finally compress count digits.
-	minimumBody := displayWidth(header) + 20
+	// Status and priority stay present; extreme rows reduce wide status icons
+	// to one cell before compressing count digits for both dependency directions.
+	minimumBody := displayWidth(prefix) + 20
 	fullCountBudget := displayWidth(counts)
 	if counts != "" && usable-fullCountBudget-1 < minimumBody && displayWidth(compactCounts) < fullCountBudget {
 		counts = compactCounts
@@ -246,7 +247,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		return line
 	}
 
-	line := header + body.String()
+	line := prefix + body.String()
 	maxTagBudget := contentBudget - minimumBody - 1
 	if tags != "" && maxTagBudget >= 3 {
 		tagBudget := min(displayWidth(tags), maxTagBudget)
@@ -281,6 +282,13 @@ func compactDependencyCounts(down, up, width int) string {
 
 func truncateDigits(value string, width int) string {
 	return runewidth.Truncate(value, width, "")
+}
+
+func compactStatusIcon(status string) string {
+	for _, r := range status {
+		return string(r)
+	}
+	return "•"
 }
 
 var tagColors = []lipgloss.Color{"39", "141", "42", "208", "81", "177"}
