@@ -204,6 +204,14 @@ func TestFilteredEmptyStateNamesActiveFilter(t *testing.T) {
 	}
 }
 
+func TestPriorityFilterAcceptsP4(t *testing.T) {
+	issues := []bd.Issue{{ID: "p4", Priority: 4}, {ID: "p3", Priority: 3}}
+	got := FilterIssues(issues, ParseFilter("priority:P4"))
+	if len(got) != 1 || got[0].ID != "p4" {
+		t.Fatalf("priority:P4 matched %+v", got)
+	}
+}
+
 func TestTruncatedRowKeepsTagStyleAndSpace(t *testing.T) {
 	row := NewVocab(nil).ListRow(bd.Issue{
 		ID: "fm-x", Title: strings.Repeat("long title ", 8), Status: "open", Labels: []string{"frontend"},
