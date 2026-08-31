@@ -295,3 +295,22 @@ func TestCustomWideStatusUsesSingleCellFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepTreePrefixPreservesEdgesAndDetailCounts(t *testing.T) {
+	vocab := NewVocab(nil)
+	issue := bd.Issue{ID: "deep", Status: "open", Priority: 1, DependencyCount: 123, DependentCount: 456}
+	row := vocab.TreeRow(TreeRow{Issue: issue, Prefix: strings.Repeat("│   ", 8)}, 14, true)
+	plain := stripANSI(row)
+	if displayWidth(row) > 14 {
+		t.Fatalf("deep tree row overflowed: %q", plain)
+	}
+	for _, want := range []string{"…", "○", "P1", "1/4"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("deep tree row missing %q: %q", want, plain)
+		}
+	}
+	detail := stripANSI(strings.Join(BuildDetail(vocab, &issue, nil, nil, 60), "\n"))
+	if !strings.Contains(detail, "Depends 123 · Dependents 456") {
+		t.Errorf("detail pane lost full dependency counts: %q", detail)
+	}
+}

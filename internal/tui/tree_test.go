@@ -38,6 +38,23 @@ func TestBuildDependencyTreeSortsUnrelatedRoots(t *testing.T) {
 	}
 }
 
+func TestBuildDependencyTreeUsesActiveSortWithinHierarchy(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "zulu", Title: "Zulu", Priority: 0},
+		{ID: "alpha", Title: "Alpha", Priority: 2},
+		{ID: "root", Title: "Root", Priority: 1},
+		{ID: "child-z", Title: "Zulu child", Priority: 0, ParentID: "root"},
+		{ID: "child-a", Title: "Alpha child", Priority: 2, ParentID: "root"},
+	}
+	roots := BuildDependencyTree(issues, nil, SortAlphabetical)
+	if got := strings.Join(treeIDs(roots), ","); got != "alpha,root,zulu" {
+		t.Fatalf("alphabetical roots = %s", got)
+	}
+	if got := strings.Join(treeIDs(roots[1].Children), ","); got != "child-a,child-z" {
+		t.Fatalf("alphabetical children = %s", got)
+	}
+}
+
 func TestFlattenDependencyTreeDrawsEdgesAndCollapses(t *testing.T) {
 	issues := []bd.Issue{
 		{ID: "root", Title: "Root"},

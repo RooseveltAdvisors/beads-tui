@@ -32,10 +32,16 @@ type TreeRow struct {
 // normal Beads data; shared children are rendered at their first reachable
 // location so the terminal view remains a navigable tree. Cycles are guarded
 // against and disconnected/cyclic nodes are still returned as roots.
-func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*TreeNode {
+func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord, modes ...SortMode) []*TreeNode {
+	mode := SortPriority
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
+	orderedIssues := SortIssues(issues, mode)
 	nodes := make(map[string]*TreeNode, len(issues))
 	order := make([]string, 0, len(issues))
-	for _, issue := range issues {
+	rank := make(map[string]int, len(issues))
+	for _, issue := range orderedIssues {
 		if issue.ID == "" {
 			continue
 		}
@@ -43,6 +49,7 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 			continue
 		}
 		nodes[issue.ID] = &TreeNode{Issue: issue}
+		rank[issue.ID] = len(order)
 		order = append(order, issue.ID)
 	}
 
@@ -74,13 +81,7 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord) []*T
 		}
 	}
 
-	lessID := func(a, b string) bool {
-		ia, ib := nodes[a].Issue, nodes[b].Issue
-		if ia.Priority != ib.Priority {
-			return ia.Priority < ib.Priority
-		}
-		return a < b
-	}
+	lessID := func(a, b string) bool { return rank[a] < rank[b] }
 	for parent, set := range children {
 		ids := make([]string, 0, len(set))
 		for child := range set {

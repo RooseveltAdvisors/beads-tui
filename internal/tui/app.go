@@ -285,7 +285,7 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 		m.expanded = map[string]bool{}
 	}
 	if m.treeMode {
-		roots := BuildDependencyTree(projected, m.deps)
+		roots := BuildDependencyTree(projected, m.deps, m.sortMode)
 		m.treeRows = FlattenDependencyTree(roots, m.expanded)
 		m.rows = make([]bd.Issue, len(m.treeRows))
 		for i, row := range m.treeRows {
@@ -875,7 +875,7 @@ func (m Model) helpLines(width int) []string {
 		"",
 		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
-		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree",
+		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear filter",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",

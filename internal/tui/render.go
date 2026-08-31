@@ -210,6 +210,16 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		counts += "⇡" + itoa(issue.DependentCount)
 		compactCounts += itoa(issue.DependentCount)
 	}
+	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+	reservedCounts := 0
+	if issue.DependencyCount > 0 || issue.DependentCount > 0 {
+		reservedCounts = 2
+		if issue.DependencyCount > 0 && issue.DependentCount > 0 {
+			reservedCounts = 4
+		}
+	}
+	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-reservedCounts))
+	prefix = rowPrefix()
 	if issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
 		icon = compactStatusIcon(issue.Status)
 		prefix = rowPrefix()
