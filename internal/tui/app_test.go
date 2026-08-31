@@ -130,6 +130,10 @@ func teaKeyMsg(s string) tea.KeyMsg {
 		k.Type = tea.KeyCtrlF
 	case "ctrl+b":
 		k.Type = tea.KeyCtrlB
+	case "ctrl+d":
+		k.Type = tea.KeyCtrlD
+	case "ctrl+u":
+		k.Type = tea.KeyCtrlU
 	}
 	return tea.KeyMsg(k)
 }
@@ -268,6 +272,72 @@ func TestFocusEnterAndEsc(t *testing.T) {
 	}
 }
 
+func TestVimPaneFocusKeys(t *testing.T) {
+	m := drive(t, nil)
+	for _, key := range []string{"l", "L", "right"} {
+		m = sendKey(t, m, key)
+		if m.focus != FocusDetail {
+			t.Errorf("%s focus = %v, want detail", key, m.focus)
+		}
+		m = sendKey(t, m, "h")
+	}
+	for _, key := range []string{"h", "H", "left"} {
+		m = sendKey(t, m, "l")
+		m = sendKey(t, m, key)
+		if m.focus != FocusList {
+			t.Errorf("%s focus = %v, want list", key, m.focus)
+		}
+	}
+}
+
+func TestHalfPageScrollingInListAndDetail(t *testing.T) {
+	issues := make([]bd.Issue, 40)
+	for i := range issues {
+		issues[i] = bd.Issue{ID: "fm-" + strings.Repeat("x", i+1), Title: "Task", Status: "open"}
+	}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	m := newTestModel(f)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues, err: nil})
+	half := m.halfPageStep()
+	m = sendKey(t, m, "ctrl+d")
+	if m.selected != half {
+		t.Fatalf("ctrl+d list selection = %d, want %d", m.selected, half)
+	}
+	m = sendKey(t, m, "ctrl+u")
+	if m.selected != 0 {
+		t.Fatalf("ctrl+u list selection = %d, want 0", m.selected)
+	}
+
+	long := testDetailOf(issues[0].ID)
+	long.Description = strings.Repeat("word ", 300)
+	m = applyMsg(t, m, detailMsg{id: issues[0].ID, issue: long, err: nil})
+	m = sendKey(t, m, "enter")
+	m = sendKey(t, m, "ctrl+d")
+	if m.dOffset != half {
+		t.Fatalf("ctrl+d detail offset = %d, want %d", m.dOffset, half)
+	}
+	m = sendKey(t, m, "ctrl+u")
+	if m.dOffset != 0 {
+		t.Fatalf("ctrl+u detail offset = %d, want 0", m.dOffset)
+	}
+}
+
+func TestDescriptionRendersMarkdown(t *testing.T) {
+	d := testDetail()
+	d.Description = "# Heading\n\n**bold** and *italic*\n\n- first\n- second\n\n```go\nfmt.Println(\"code\")\n```"
+	plain := stripANSI(strings.Join(BuildDetail(NewVocab(nil), d, nil, nil, 60), "\n"))
+	for _, want := range []string{"Heading", "bold", "italic", "first", "second", "fmt.Println(\"code\")"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("rendered description missing %q:\n%s", want, plain)
+		}
+	}
+	for _, sourceSyntax := range []string{"# Heading", "**bold**", "*italic*", "```"} {
+		if strings.Contains(plain, sourceSyntax) {
+			t.Errorf("markdown syntax %q was not rendered:\n%s", sourceSyntax, plain)
+		}
+	}
+}
+
 func TestDetailScrollBounds(t *testing.T) {
 	long := testDetail()
 	long.Description = strings.Repeat("word ", 200)
@@ -370,7 +440,7 @@ func TestHelpToggle(t *testing.T) {
 		t.Fatal("? should open help")
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"1 Ready", "2 Open", "3 All", "Read-only", "⇣", "⇡"} {
+	for _, want := range []string{"1 Ready", "2 Open", "3 All", "ctrl-u/d", "h/l", "Read-only", "⇣", "⇡"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help missing %q", want)
 		}
