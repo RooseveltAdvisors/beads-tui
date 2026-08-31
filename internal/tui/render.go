@@ -28,9 +28,12 @@ var statusColors = map[string]string{
 // urgent, closed as finished, pinned as sticky).
 var statusOverrides = map[string]string{
 	"blocked":     "red",
-	"in_progress": "yellow",
+	"in_progress": "39",
 	"deferred":    "208",
 	"closed":      "gray",
+	"hold":        "magenta",
+	"on_hold":     "magenta",
+	"held":        "magenta",
 	"pinned":      "magenta",
 	"hooked":      "cyan",
 }
@@ -43,6 +46,17 @@ var (
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("252"))
 )
+
+func viewStyle(view bd.View) lipgloss.Style {
+	color := "39"
+	switch view {
+	case bd.ViewOpen:
+		color = "42"
+	case bd.ViewAll:
+		color = "141"
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+}
 
 // Vocab carries the status vocabulary into rendering: icon + category per
 // status name, falling back to the built-in vocabulary when bd never
@@ -155,6 +169,12 @@ func (v Vocab) StatusPill(status string) string {
 	return v.statusStyle(status).Render(v.Icon(status) + " " + status)
 }
 
+// StatusPillIssue keeps deferred timing visible in the detail header while
+// retaining the native status color.
+func (v Vocab) StatusPillIssue(issue bd.Issue) string {
+	return v.statusStyle(issue.Status).Render(v.Icon(issue.Status) + " " + rowStatusText(issue))
+}
+
 // ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 	return v.renderRow(issue, "", "", width, selected)
@@ -195,6 +215,9 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		}
 		counts += "⇡" + itoa(issue.DependentCount)
 		compactCounts += itoa(issue.DependentCount)
+	}
+	if width >= 48 && counts != "" {
+		counts = dependencyChips(issue)
 	}
 	reservedCounts := 0
 	compactCountReserve := 0
@@ -335,6 +358,17 @@ func compactDependencyCounts(down, up, width int) string {
 	return truncateDigits(itoa(value), width)
 }
 
+func dependencyChips(issue bd.Issue) string {
+	parts := make([]string, 0, 2)
+	if issue.DependencyCount > 0 {
+		parts = append(parts, "⇣"+itoa(issue.DependencyCount)+" blocked-by")
+	}
+	if issue.DependentCount > 0 {
+		parts = append(parts, "⇡"+itoa(issue.DependentCount)+" blocks")
+	}
+	return strings.Join(parts, "  ")
+}
+
 func truncateDigits(value string, width int) string {
 	return runewidth.Truncate(value, width, "")
 }
@@ -388,7 +422,7 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 		return []string{styleDim.Render("No selection.")}
 	}
 	var lines []string
-	lines = append(lines, v.StatusPill(d.Status))
+	lines = append(lines, v.StatusPillIssue(*d))
 	if d.Title != "" {
 		lines = append(lines, styleBold.Render(d.Title))
 	}
@@ -419,14 +453,14 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 		lines = append(lines, "")
 	}
 	if len(down) > 0 {
-		lines = append(lines, styleSection.Render("Depends on ("+itoa(len(down))+")"))
+		lines = append(lines, styleSection.Render("Depends on ("+itoa(len(down))+") · blocked-by"))
 		for _, dep := range down {
 			lines = append(lines, depLine(v, dep, width, "↳ "))
 		}
 		lines = append(lines, "")
 	}
 	if len(up) > 0 {
-		lines = append(lines, styleSection.Render("Dependents ("+itoa(len(up))+")"))
+		lines = append(lines, styleSection.Render("Dependents ("+itoa(len(up))+") · blocks"))
 		for _, dep := range up {
 			lines = append(lines, depLine(v, dep, width, "↳ "))
 		}

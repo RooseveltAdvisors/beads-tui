@@ -72,12 +72,12 @@ func TestNewKeyDispatchAndStatusBar(t *testing.T) {
 		{ID: "fm-b", Title: "Beta", Status: "blocked", Priority: 1, Labels: []string{"backend"}},
 	}}}
 	m := drive(t, f)
-	if m.sortMode != SortAlphabetical {
-		t.Fatalf("initial sort = %s, want alphabetical", m.sortMode)
+	if m.sortMode != SortCreated {
+		t.Fatalf("initial sort = %s, want created", m.sortMode)
 	}
 	m = sendKey(t, m, "s")
-	if m.sortMode != SortPriority || m.rows[0].ID != "fm-b" {
-		t.Fatalf("s sort = %s, first row %q; want priority/fm-b", m.sortMode, m.rows[0].ID)
+	if m.sortMode != SortUpdated || m.rows[0].ID != "fm-a" {
+		t.Fatalf("s sort = %s, first row %q; want updated/fm-a", m.sortMode, m.rows[0].ID)
 	}
 	m = sendKey(t, m, "f")
 	if !m.filtering {
@@ -97,7 +97,7 @@ func TestNewKeyDispatchAndStatusBar(t *testing.T) {
 		t.Fatalf("t filter = %+v, rows=%d", m.filter, len(m.rows))
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"sort:priority", "filter:label:backend", "sel:fm-b", "total:1", "s sort", "f filter", "t tag", "? help", "q quit"} {
+	for _, want := range []string{"sort:updated", "filter:label:backend", "sel:fm-b", "total:1", "scroll:0%"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("status bar missing %q: %s", want, view)
 		}

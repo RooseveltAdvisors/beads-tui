@@ -192,6 +192,19 @@ func SortIssues(issues []bd.Issue, mode SortMode) []bd.Issue {
 	return sorted
 }
 
+// SortReadyByLeverage orders actionable work by how many downstream beads it
+// unblocks, then uses the created-descending order for deterministic ties.
+func SortReadyByLeverage(issues []bd.Issue) []bd.Issue {
+	sorted := SortIssues(issues, SortCreated)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].DependentCount != sorted[j].DependentCount {
+			return sorted[i].DependentCount > sorted[j].DependentCount
+		}
+		return false
+	})
+	return sorted
+}
+
 // compareTimestamp orders non-empty timestamps newest first. bd emits RFC3339
 // timestamps, while the lexical fallback keeps malformed values deterministic.
 func compareTimestamp(a, b string) int {

@@ -54,7 +54,9 @@ The TUI is keyboard-driven:
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active filter first, then returns from the detail pane when pressed again
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
-- `s` cycles priority, created, updated, and alphabetical sorting
+- `s` cycles priority, created, updated, and alphabetical sorting; created is
+  the default newest-first order, while Ready promotes the highest leverage
+  (unblock-count) work
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
 - `/` opens a flat, incremental result list across bead id, title, and
   description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels
