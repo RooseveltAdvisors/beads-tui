@@ -640,7 +640,7 @@ func (m Model) vocabViewLabel() string {
 func (m Model) renderTabs() string {
 	var parts []string
 	for i, view := range bd.AllViews {
-		label := fmt.Sprintf("[%d]%s", i+1, view.Label())
+		label := fmt.Sprintf("[%d]%s", i+1, view.TabLabel())
 		if view == m.view {
 			parts = append(parts, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render(label))
 		} else {

@@ -29,7 +29,7 @@ var statusColors = map[string]string{
 var statusOverrides = map[string]string{
 	"blocked":     "red",
 	"in_progress": "yellow",
-	"deferred":    "gray",
+	"deferred":    "208",
 	"closed":      "gray",
 	"pinned":      "magenta",
 	"hooked":      "cyan",
@@ -181,7 +181,16 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	rowPrefix := func() string {
 		return treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 	}
-	prefix := rowPrefix()
+	status := v.rowStatus(issue)
+	showStatus := status != "" && width >= 40
+	prefixWithStatus := func() string {
+		prefix := rowPrefix()
+		if showStatus {
+			prefix += " " + status
+		}
+		return prefix
+	}
+	prefix := prefixWithStatus()
 
 	var body strings.Builder
 	if issue.ID != "" {
@@ -218,11 +227,15 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 			reservedCounts = 4
 		}
 	}
-	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-reservedCounts))
-	prefix = rowPrefix()
+	statusReserve := 0
+	if showStatus {
+		statusReserve = displayWidth(status) + 1
+	}
+	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-reservedCounts-statusReserve))
+	prefix = prefixWithStatus()
 	if issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
 		icon = compactStatusIcon(issue.Status)
-		prefix = rowPrefix()
+		prefix = prefixWithStatus()
 	}
 
 	// Status and priority stay present; extreme rows reduce wide status icons
@@ -272,6 +285,23 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+// rowStatus renders the native bd status. Ready is deliberately never used
+// here: it is a computed board view, not an issue status.
+func (v Vocab) rowStatus(issue bd.Issue) string {
+	status := strings.TrimSpace(issue.Status)
+	if status == "" {
+		return ""
+	}
+	if strings.EqualFold(status, "deferred") && strings.TrimSpace(issue.DeferUntil) != "" {
+		until := strings.TrimSpace(issue.DeferUntil)
+		if date, _, ok := strings.Cut(until, "T"); ok {
+			until = date
+		}
+		status += " until " + until
+	}
+	return v.statusStyle(issue.Status).Render(status)
 }
 
 func compactDependencyCounts(down, up, width int) string {

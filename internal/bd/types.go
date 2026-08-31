@@ -47,6 +47,15 @@ func (v View) Label() string {
 	}
 }
 
+// TabLabel is the concise, user-facing label used in the board's view tabs.
+// Ready is a computed actionable view, not a bead status.
+func (v View) TabLabel() string {
+	if v == ViewReady {
+		return "Ready (actionable)"
+	}
+	return v.Label()
+}
+
 // Issue is one bead in the graph. Which fields are populated depends on the
 // command that produced the record:
 //
@@ -66,6 +75,7 @@ type Issue struct {
 	Assignee        string   `json:"assignee"`
 	Owner           string   `json:"owner"`
 	Labels          []string `json:"labels"`
+	DeferUntil      string   `json:"defer_until"`
 	CreatedAt       string   `json:"created_at"`
 	CreatedBy       string   `json:"created_by"`
 	UpdatedAt       string   `json:"updated_at"`

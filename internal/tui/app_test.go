@@ -176,7 +176,7 @@ func TestBoardLoadAndRender(t *testing.T) {
 	view := stripANSI(m.View())
 	for _, want := range []string{
 		"beads-tui", "Ready board", "fm-aaa", "Alpha task", "fm-bbb",
-		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]Ready", "[2]Open",
+		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]Ready (actionable)", "[2]Open",
 		"[3]All", "q quit",
 	} {
 		if !strings.Contains(view, want) {

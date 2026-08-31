@@ -112,6 +112,36 @@ func TestListRowsRenderColoredLabels(t *testing.T) {
 	}
 }
 
+func TestListRowsRenderNativeStatusColumn(t *testing.T) {
+	vocab := NewVocab(nil)
+	for _, issue := range []bd.Issue{
+		{ID: "open", Title: "Open", Status: "open"},
+		{ID: "progress", Title: "Progress", Status: "in_progress"},
+		{ID: "closed", Title: "Closed", Status: "closed"},
+		{ID: "deferred", Title: "Deferred", Status: "deferred", DeferUntil: "2026-09-04T12:00:00Z"},
+	} {
+		row := stripANSI(vocab.ListRow(issue, 80, false))
+		if !strings.Contains(row, issue.Status) {
+			t.Errorf("row for %q missing native status: %q", issue.ID, row)
+		}
+		if strings.Contains(row, "ready") {
+			t.Errorf("row for %q rendered computed ready status: %q", issue.ID, row)
+		}
+		if issue.Status == "deferred" && !strings.Contains(row, "until 2026-09-04") {
+			t.Errorf("deferred row missing until date: %q", row)
+		}
+	}
+}
+
+func TestReadyTabNamesComputedView(t *testing.T) {
+	m := New(nil)
+	m.width, m.height = 80, 24
+	view := stripANSI(m.renderTabs())
+	if !strings.Contains(view, "[1]Ready (actionable)") {
+		t.Fatalf("tabs missing actionable Ready label: %q", view)
+	}
+}
+
 func TestRequiredFooterFieldsSurviveNarrowWidths(t *testing.T) {
 	m := New(nil)
 	m.rows = []bd.Issue{{ID: "fm-long-selected-id"}}
