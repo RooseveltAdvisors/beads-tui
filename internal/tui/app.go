@@ -69,6 +69,9 @@ type Model struct {
 	filtering   bool
 	searching   bool
 	searchBase  Filter
+	searchFocus Focus
+	searchID    string
+	searchDOff  int
 	filterInput textinput.Model
 	quitting    bool
 	markdown    *markdownRenderer
@@ -187,6 +190,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filterInput.Blur()
 			if m.searching {
 				m.filter = m.searchBase
+				m.searching = false
+				cmd := m.rebuildRows(m.searchID)
+				m.focus = m.searchFocus
+				m.dOffset = m.searchDOff
+				return m, cmd
 			} else {
 				m.filter = Filter{}
 			}
@@ -286,6 +294,10 @@ func (m *Model) openPrompt(search bool) tea.Cmd {
 	m.filtering = true
 	m.searching = search
 	if search {
+		m.searchFocus = m.focus
+		m.searchID = m.selectedID()
+		m.searchDOff = m.dOffset
+		m.focus = FocusList
 		m.filterInput.Prompt = "Search / › "
 	} else {
 		m.filterInput.Prompt = "Filter › "

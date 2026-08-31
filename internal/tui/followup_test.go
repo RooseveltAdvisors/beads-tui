@@ -63,6 +63,42 @@ func TestSlashSearchNavigationUsesMatches(t *testing.T) {
 	}
 }
 
+func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "a", Title: "Task alpha", Status: "open"},
+		{ID: "b", Title: "Task beta", Status: "open"},
+		{ID: "c", Title: "Task gamma", Status: "open"},
+	}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	m := newTestModel(f)
+	m.treeMode = false
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues})
+	m.selected = 1
+	m.focus = FocusDetail
+	m.dOffset = 7
+
+	m = sendKey(t, m, "/")
+	if m.focus != FocusList {
+		t.Fatalf("search focus = %v, want list", m.focus)
+	}
+	m = sendKey(t, m, "task")
+	m = sendKey(t, m, "enter")
+	m = sendKey(t, m, "j")
+	if m.focus != FocusList || m.rows[m.selected].ID != "c" {
+		t.Fatalf("search navigation focus=%v selected=%s", m.focus, m.rows[m.selected].ID)
+	}
+
+	m.focus = FocusDetail
+	m.dOffset = 7
+	m.selected = 1
+	m = sendKey(t, m, "/")
+	m = sendKey(t, m, "alpha")
+	m = sendKey(t, m, "esc")
+	if m.focus != FocusDetail || m.rows[m.selected].ID != "b" || m.dOffset != 7 {
+		t.Fatalf("cancel restored focus=%v selected=%s offset=%d", m.focus, m.rows[m.selected].ID, m.dOffset)
+	}
+}
+
 func TestSlashSearchFlattensMatchesAndRevealsSelectedTreePath(t *testing.T) {
 	issues := []bd.Issue{
 		{ID: "parent", Title: "Matching parent", Status: "open"},
