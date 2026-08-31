@@ -1,6 +1,6 @@
 // Command beads-tui renders the Beads board in the terminal: a read-only,
-// keyboard-driven view of `bd ready` / `bd list` with per-bead detail,
-// dependency edges, and the status vocabulary.
+// keyboard-driven dependency tree (or flat list) from `bd list`, with
+// per-bead detail, dependency edges, and the status vocabulary.
 //
 // With no arguments (and a TTY on stdin) it starts the interactive TUI.
 // Subcommands give agents and scripts the same data without a TTY:
@@ -149,9 +149,9 @@ Usage:
   beads-tui show <id>
   beads-tui --version
 
-The TUI is keyboard-driven: j/k or up/down move, g/G jump, f/b page, and
-ctrl-u/ctrl-d move half a page. Enter focuses detail; h/l or left/right switch
-panes; Esc returns to the list. 1/2/3 switch views (ready/open/all), r refreshes,
-? shows help, and q quits.
+The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, f/b page, and
+ctrl-u/ctrl-d move half a page. Enter/Tab toggle parent subtrees or Enter opens
+leaf detail; h/left collapses, l/right expands or focuses detail, v toggles
+tree/flat, 1/2/3 switch views, r refreshes, ? shows help, and q quits.
 `, strings.TrimSpace(version))
 }
