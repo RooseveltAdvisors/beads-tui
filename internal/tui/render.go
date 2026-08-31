@@ -151,9 +151,28 @@ func (v Vocab) StatusPill(status string) string {
 	return v.statusStyle(status).Render(v.Icon(status) + " " + status)
 }
 
-// ListRow renders one board row at the given width.
+// ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
+	return v.renderRow(issue, "", "", width, selected)
+}
+
+// TreeRow renders one dependency-tree row, including its branch connector
+// and expand/collapse marker.
+func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
+	marker := "  "
+	if row.HasChildren {
+		marker = "▾ "
+		if !row.Expanded {
+			marker = "▸ "
+		}
+	}
+	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
+}
+
+func (v Vocab) renderRow(issue bd.Issue, prefix, marker string, width int, selected bool) string {
 	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteString(marker)
 	icon := v.Icon(issue.Status)
 	b.WriteString(icon)
 	b.WriteString(" ")

@@ -26,6 +26,7 @@ const readyFixture = `[
     "status": "open",
     "priority": 1,
     "issue_type": "task",
+    "parent_id": "fm-parent",
     "owner": "rooseveltadvisors@gmail.com",
     "created_at": "2026-08-29T10:40:30Z",
     "created_by": "Jon Roosevelt",
@@ -130,6 +131,9 @@ func TestListBuildsRightArgs(t *testing.T) {
 	}
 	if i.Status != "open" || i.Priority != 1 || i.IssueType != "task" {
 		t.Errorf("unexpected fields: status=%q priority=%d type=%q", i.Status, i.Priority, i.IssueType)
+	}
+	if i.ParentID != "fm-parent" {
+		t.Errorf("parent_id = %q, want fm-parent", i.ParentID)
 	}
 	if len(i.Labels) != 2 || i.Labels[1] != "captain-ask" {
 		t.Errorf("labels = %v, want [active captain-ask]", i.Labels)

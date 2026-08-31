@@ -40,7 +40,12 @@ type Model struct {
 	backend Backend
 
 	view     bd.View
+	issues   []bd.Issue // complete snapshot; rows is the visible projection
+	deps     map[string][]bd.DepRecord
 	rows     []bd.Issue
+	treeRows []TreeRow
+	expanded map[string]bool
+	treeMode bool
 	vocab    Vocab
 	boardErr string
 	loading  bool
@@ -68,6 +73,7 @@ type Model struct {
 type boardMsg struct {
 	view   bd.View
 	issues []bd.Issue
+	deps   map[string][]bd.DepRecord
 	err    error
 }
 
@@ -97,6 +103,8 @@ func New(backend Backend) Model {
 		width:    80,
 		height:   24,
 		markdown: &markdownRenderer{},
+		expanded: map[string]bool{},
+		treeMode: true,
 	}
 }
 
@@ -207,6 +215,34 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected = 0
 	case "G":
 		m.selected = n - 1
+	case "v":
+		m.treeMode = !m.treeMode
+		m.rebuildRows(m.rows[m.selected].ID)
+		return m, nil
+	case "enter", "tab":
+		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
+			m.toggleSelectedTreeRow()
+			return m, nil
+		}
+		if msg.String() == "tab" {
+			return m, nil
+		}
+		m.focus = FocusDetail
+		m.dOffset = 0
+	case "h", "left":
+		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
+			m.expanded[m.rows[m.selected].ID] = false
+			m.rebuildRows(m.rows[m.selected].ID)
+		}
+		return m, nil
+	case "l", "right":
+		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
+			m.expanded[m.rows[m.selected].ID] = true
+			m.rebuildRows(m.rows[m.selected].ID)
+			return m, nil
+		}
+		m.focus = FocusDetail
+		m.dOffset = 0
 	case "f", " ", "pgdown", "ctrl+f":
 		m.selected += page
 	case "b", "pgup", "ctrl+b":
@@ -215,12 +251,6 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected += m.halfPageStep()
 	case "ctrl+u":
 		m.selected -= m.halfPageStep()
-	case "enter":
-		m.focus = FocusDetail
-		m.dOffset = 0
-	case "l", "L", "right":
-		m.focus = FocusDetail
-		m.dOffset = 0
 	default:
 		return m, nil
 	}
@@ -316,7 +346,21 @@ func (m Model) loadBoardCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
 		defer cancel()
 		issues, err := m.backend.List(ctx, m.view)
-		return boardMsg{view: m.view, issues: issues, err: err}
+		if err != nil {
+			return boardMsg{view: m.view, err: err}
+		}
+		deps := make(map[string][]bd.DepRecord)
+		for _, issue := range issues {
+			if issue.ID == "" {
+				continue
+			}
+			records, depErr := m.backend.Deps(ctx, issue.ID, false)
+			if depErr != nil {
+				return boardMsg{view: m.view, err: depErr}
+			}
+			deps[issue.ID] = records
+		}
+		return boardMsg{view: m.view, issues: issues, deps: deps}
 	}
 }
 
@@ -365,17 +409,11 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	if m.selected < len(m.rows) {
 		prev = m.rows[m.selected].ID
 	}
-	m.rows = msg.issues
+	m.issues = msg.issues
+	m.deps = msg.deps
+	m.rebuildRows(prev)
 	m.lastSync = time.Now().Format("15:04:05")
-	m.selected = 0
-	if prev != "" {
-		for i := range m.rows {
-			if m.rows[i].ID == prev {
-				m.selected = i
-				break
-			}
-		}
-	}
+	m.selected = m.indexOfRow(prev)
 	if len(m.rows) == 0 {
 		m.detail, m.down, m.up = nil, nil, nil
 		m.detailErr = ""
@@ -387,6 +425,57 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 		return m.loadDetailCmd(cur)
 	}
 	return nil
+}
+
+// rebuildRows projects the complete board snapshot into the active flat or
+// expanded tree view, preserving selection by bead ID where possible.
+func (m *Model) rebuildRows(selectedID string) {
+	if m.expanded == nil {
+		m.expanded = map[string]bool{}
+	}
+	if !m.treeMode {
+		m.rows = append([]bd.Issue(nil), m.issues...)
+		m.treeRows = nil
+		m.selected = m.indexOfRow(selectedID)
+		return
+	}
+	roots := BuildDependencyTree(m.issues, m.deps)
+	m.treeRows = FlattenDependencyTree(roots, m.expanded)
+	m.rows = make([]bd.Issue, len(m.treeRows))
+	for i, row := range m.treeRows {
+		m.rows[i] = row.Issue
+	}
+	if selectedID != "" {
+		for i := range m.rows {
+			if m.rows[i].ID == selectedID {
+				m.selected = i
+				return
+			}
+		}
+	}
+	m.selected = 0
+}
+
+func (m Model) indexOfRow(id string) int {
+	if id == "" {
+		return 0
+	}
+	for i := range m.rows {
+		if m.rows[i].ID == id {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m *Model) toggleSelectedTreeRow() {
+	if m.selected >= len(m.treeRows) {
+		return
+	}
+	id := m.treeRows[m.selected].Issue.ID
+	m.expanded[id] = !m.treeRows[m.selected].Expanded
+	m.rebuildRows(id)
+	m.selected = m.indexOfRow(id)
 }
 
 // applyDetail installs a detail snapshot, discarding stale responses.
@@ -509,7 +598,11 @@ func (m Model) renderListPane(w, h int) []string {
 		}
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
-			lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
+			if m.treeMode && i < len(m.treeRows) {
+				lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
+			} else {
+				lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
+			}
 		}
 		if m.loading {
 			lines = append(lines, styleDim.Render("Refreshing…"))
@@ -612,7 +705,11 @@ func (m Model) renderFooter(w int) string {
 	case m.focus == FocusDetail:
 		left = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
 	default:
-		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter detail · 1/2/3 view · r refresh · ? help · q quit")
+		mode := "tree"
+		if !m.treeMode {
+			mode = "flat"
+		}
+		left = styleDim.Render("↑↓/j·k select · ctrl-u/d half-page · enter/tab fold · h/l fold · v " + mode + " · 1/2/3 view · r refresh · ? help · q quit")
 	}
 	right := ""
 	if m.lastSync != "" {
@@ -626,9 +723,9 @@ func (m Model) renderHelp() string {
 	lines := []string{
 		styleBold.Render("beads-tui - read-only board for Beads (bd)"),
 		"",
-		"  Nav list:      j/k or ↑/↓ move · g/G top/bottom · f/b page",
+		"  Nav tree:      j/k or ↑/↓ move · g/G top/bottom · f/b page",
 		"  Half-page:     ctrl-u/d in list and detail",
-		"  Panes:         h/l or ←/→ shift focus",
+		"  Tree:          enter/tab toggle · h/l collapse/expand · v flat/tree",
 		"  Detail:        enter (or →) focus · j/k or ↑/↓ scroll · esc back",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
 		"  Refresh:       r  ·  Quit: q or ctrl+c  ·  Close this: any key",

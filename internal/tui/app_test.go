@@ -210,6 +210,35 @@ func TestSelectionMovesAndLoadsDetail(t *testing.T) {
 	}
 }
 
+func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
+	f := &fakeClient{issue: testDetail()}
+	m := newTestModel(f)
+	issues := []bd.Issue{
+		{ID: "root", Title: "Root", Status: "open", Priority: 1},
+		{ID: "child", Title: "Child", Status: "open", Priority: 2, ParentID: "root"},
+	}
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues, deps: map[string][]bd.DepRecord{}})
+	if !m.treeMode || len(m.rows) != 2 {
+		t.Fatalf("initial tree = %v rows, want expanded tree", m.rows)
+	}
+	m = sendKey(t, m, "enter")
+	if len(m.rows) != 1 || m.expanded["root"] {
+		t.Fatalf("after collapse rows=%d expanded=%v", len(m.rows), m.expanded)
+	}
+	m = sendKey(t, m, "l")
+	if len(m.rows) != 2 || !m.expanded["root"] {
+		t.Fatalf("l should expand root: rows=%d expanded=%v", len(m.rows), m.expanded)
+	}
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "└──") {
+		t.Errorf("tree view missing connector:\n%s", plain)
+	}
+	m = sendKey(t, m, "v")
+	if m.treeMode || len(m.treeRows) != 0 || len(m.rows) != 2 {
+		t.Fatalf("v should switch to flat view: tree=%v treeRows=%d rows=%d", m.treeMode, len(m.treeRows), len(m.rows))
+	}
+}
+
 func TestSelectionClampedAtEdges(t *testing.T) {
 	m := drive(t, nil)
 	m = sendKey(t, m, "G")
