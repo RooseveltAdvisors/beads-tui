@@ -1053,6 +1053,9 @@ func (m Model) helpDimensions() (w, width, height int) {
 }
 
 func (m Model) helpLines(width int) []string {
+	rowLegend := fmt.Sprintf("Rows: %s claimable  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
+		m.vocab.Icon("open"), m.vocab.Icon("in_progress"), m.vocab.Icon("blocked"),
+		m.vocab.Icon("closed"), m.vocab.Icon("deferred"), m.vocab.Icon("hold"))
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
@@ -1068,7 +1071,7 @@ func (m Model) helpLines(width int) []string {
 		"  Tags:          t filter by the selected bead's labels",
 		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
-		"Rows: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred  📌 pinned  ◇ hooked",
+		rowLegend,
 		"Markers: ⇣N depends on N · ⇡N has N dependents",
 		"",
 		"Read-only: beads-tui never creates, edits or closes beads.",

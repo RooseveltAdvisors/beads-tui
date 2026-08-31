@@ -148,7 +148,7 @@ func TestReadyRowsShowWorkStateInsteadOfComputedOpen(t *testing.T) {
 		t.Fatalf("claimed Ready row lost real work state or owner: %q", claimed)
 	}
 	blocked := stripANSI(vocab.ReadyRow(bd.Issue{ID: "blocked", Title: "Blocked", Status: "blocked"}, 80, false))
-	if !strings.Contains(blocked, "●") || !strings.Contains(blocked, "blocked") {
+	if !strings.Contains(blocked, "⊘") || !strings.Contains(blocked, "blocked") {
 		t.Fatalf("blocked Ready row lost its visible state: %q", blocked)
 	}
 }
@@ -162,7 +162,7 @@ func TestBuiltInStatusGlyphsAndPriorityColors(t *testing.T) {
 		{Name: "deferred", Icon: "custom-deferred", Category: "frozen"},
 	})
 	for status, want := range map[string]string{
-		"open": "○", "in_progress": "●", "blocked": "●", "closed": "✓", "deferred": "◷",
+		"open": "○", "in_progress": "●", "blocked": "⊘", "closed": "✓", "deferred": "◷", "hold": "📌",
 	} {
 		if got := vocab.Icon(status); got != want {
 			t.Errorf("%s glyph = %q, want %q", status, got, want)
@@ -173,6 +173,20 @@ func TestBuiltInStatusGlyphsAndPriorityColors(t *testing.T) {
 	} {
 		if got := priorityStyle(priority).GetForeground(); got != want {
 			t.Errorf("P%d color = %v, want %v", priority, got, want)
+		}
+	}
+}
+
+func TestHelpLegendUsesRenderedWorkStateGlyphs(t *testing.T) {
+	m := New(nil)
+	legend := strings.Join(m.helpLines(80), "\n")
+	for status, label := range map[string]string{
+		"open": "claimable", "in_progress": "in_progress", "blocked": "blocked",
+		"closed": "closed", "deferred": "deferred", "hold": "hold",
+	} {
+		want := m.vocab.Icon(status) + " " + label
+		if !strings.Contains(legend, want) {
+			t.Errorf("help legend missing rendered state %q", want)
 		}
 	}
 }
@@ -345,17 +359,18 @@ func TestTruncatedRowKeepsTagStyleAndSpace(t *testing.T) {
 }
 
 func TestTruncatedTaggedRowsReserveDependencyMarkers(t *testing.T) {
+	vocab := NewVocab(nil)
 	issue := bd.Issue{
 		ID: "fm-x", Title: strings.Repeat("long title ", 8), Status: "blocked", Priority: 1,
 		Labels: []string{"frontend"}, DependencyCount: 12, DependentCount: 3,
 	}
 	for _, selected := range []bool{false, true} {
-		row := NewVocab(nil).ListRow(issue, 36, selected)
+		row := vocab.ListRow(issue, 36, selected)
 		plain := stripANSI(row)
 		if displayWidth(row) > 36 {
 			t.Fatalf("selected=%v row overflowed: %q", selected, plain)
 		}
-		for _, want := range []string{"●", "P1", "⇣12", "⇡3"} {
+		for _, want := range []string{vocab.Icon("blocked"), "P1", "⇣12", "⇡3"} {
 			if !strings.Contains(plain, want) {
 				t.Errorf("selected=%v row missing reserved %q: %q", selected, want, plain)
 			}
@@ -367,18 +382,19 @@ func TestTruncatedTaggedRowsReserveDependencyMarkers(t *testing.T) {
 }
 
 func TestNarrowRowsCompressButRetainDependencyCounts(t *testing.T) {
+	vocab := NewVocab(nil)
 	issue := bd.Issue{
 		ID: "fm-x", Title: strings.Repeat("long title ", 4), Status: "blocked", Priority: 1,
 		Labels: []string{"frontend"}, DependencyCount: 123, DependentCount: 456,
 	}
 	for _, selected := range []bool{false, true} {
 		width := 10
-		row := NewVocab(nil).ListRow(issue, width, selected)
+		row := vocab.ListRow(issue, width, selected)
 		plain := stripANSI(row)
 		if displayWidth(row) > width {
 			t.Fatalf("selected=%v narrow row overflowed: %q", selected, plain)
 		}
-		for _, want := range []string{"●", "P1", "1", "/", "4"} {
+		for _, want := range []string{vocab.Icon("blocked"), "P1", "1", "/", "4"} {
 			if !strings.Contains(plain, want) {
 				t.Errorf("selected=%v narrow row lost reserved %q: %q", selected, want, plain)
 			}

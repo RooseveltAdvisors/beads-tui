@@ -38,6 +38,17 @@ var statusOverrides = map[string]string{
 	"hooked":      "cyan",
 }
 
+var workStateIcons = map[string]string{
+	"open":        "○",
+	"in_progress": "●",
+	"blocked":     "⊘",
+	"closed":      "✓",
+	"deferred":    "◷",
+	"hold":        "📌",
+	"on_hold":     "📌",
+	"pinned":      "📌",
+}
+
 var (
 	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("gray"))
 	styleBold     = lipgloss.NewStyle().Bold(true)
@@ -119,8 +130,8 @@ func NewVocab(statuses []bd.StatusInfo) Vocab {
 	v := Vocab{icons: map[string]string{}, cats: map[string]string{}}
 	if len(statuses) == 0 {
 		v.icons = map[string]string{
-			"open": "○", "in_progress": "◐", "blocked": "●",
-			"deferred": "❄", "closed": "✓", "pinned": "📌", "hooked": "◇",
+			"open": "○", "in_progress": "●", "blocked": "⊘",
+			"deferred": "◷", "closed": "✓", "hold": "📌", "on_hold": "📌", "pinned": "📌", "hooked": "◇",
 		}
 		v.cats = map[string]string{
 			"open": "active", "in_progress": "wip", "blocked": "wip",
@@ -138,15 +149,12 @@ func NewVocab(statuses []bd.StatusInfo) Vocab {
 func (v Vocab) Icon(status string) string {
 	// Keep the high-signal built-in work states visually consistent even when
 	// bd supplies a custom icon in its live vocabulary.
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "", "open":
-		return "○"
-	case "in_progress", "blocked":
-		return "●"
-	case "closed":
-		return "✓"
-	case "deferred":
-		return "◷"
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	if normalized == "" {
+		normalized = "open"
+	}
+	if icon, ok := workStateIcons[normalized]; ok {
+		return icon
 	}
 	if icon, ok := v.icons[status]; ok {
 		return icon
