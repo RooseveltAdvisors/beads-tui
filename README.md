@@ -54,8 +54,8 @@ The TUI is keyboard-driven:
 
 Each list row carries a status icon, priority (`P0`-`P4`), id and title, plus
 `⇣N`/`⇡N` dependency counts. The detail pane shows the full issue: status
-pill, description, notes, and the dependency edges in both directions with
-their edge type (`blocks`, `tracks`, `parent-child`, ...).
+pill, Markdown-rendered description, notes, and the dependency edges in both
+directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).
 
 Rows and markers:
 
