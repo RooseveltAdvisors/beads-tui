@@ -286,7 +286,10 @@ func truncateDigits(value string, width int) string {
 
 func compactStatusIcon(status string) string {
 	for _, r := range status {
-		return string(r)
+		if runewidth.RuneWidth(r) == 1 {
+			return string(r)
+		}
+		break
 	}
 	return "•"
 }

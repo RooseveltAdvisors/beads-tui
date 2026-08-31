@@ -279,3 +279,19 @@ func TestSelectedNarrowRowCompactsWideStatusIcon(t *testing.T) {
 		}
 	}
 }
+
+func TestCustomWideStatusUsesSingleCellFallback(t *testing.T) {
+	vocab := NewVocab([]bd.StatusInfo{{Name: "待处理", Icon: "📌", Category: "wip"}})
+	row := vocab.ListRow(bd.Issue{
+		Status: "待处理", Priority: 1, DependencyCount: 123, DependentCount: 456,
+	}, 10, true)
+	plain := stripANSI(row)
+	if displayWidth(row) > 10 {
+		t.Fatalf("custom-status row overflowed: %q", plain)
+	}
+	for _, want := range []string{"•", "P1", "1/4"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("custom-status row missing %q: %q", want, plain)
+		}
+	}
+}
