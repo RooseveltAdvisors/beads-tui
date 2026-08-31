@@ -254,8 +254,10 @@ func TestNarrowRowsCompressButRetainDependencyCounts(t *testing.T) {
 		if displayWidth(row) > width {
 			t.Fatalf("selected=%v narrow row overflowed: %q", selected, plain)
 		}
-		if !strings.Contains(plain, "123/456") {
-			t.Errorf("selected=%v narrow row lost dependency counts: %q", selected, plain)
+		for _, want := range []string{"●", "P1", "1", "/", "4"} {
+			if !strings.Contains(plain, want) {
+				t.Errorf("selected=%v narrow row lost reserved %q: %q", selected, want, plain)
+			}
 		}
 		if strings.Contains(plain, "frontend") {
 			t.Errorf("selected=%v labels did not collapse first: %q", selected, plain)

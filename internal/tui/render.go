@@ -214,14 +214,26 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		compactCounts += itoa(issue.DependentCount)
 	}
 
-	// Narrow rows collapse labels first, preserve roughly 20 body cells next,
-	// then compress dependency markers to bare counts while retaining digits.
+	// Status and priority stay fixed; narrow rows then drop labels, preserve
+	// roughly 20 body cells where possible, and finally compress count digits.
 	minimumBody := displayWidth(header) + 20
 	fullCountBudget := displayWidth(counts)
 	if counts != "" && usable-fullCountBudget-1 < minimumBody && displayWidth(compactCounts) < fullCountBudget {
 		counts = compactCounts
 	}
 	countWidth := displayWidth(counts)
+	prefixWidth := displayWidth(prefix)
+	if counts != "" && countWidth+1 > usable-prefixWidth {
+		countBudget := max(0, usable-prefixWidth-1)
+		line := prefix
+		if compact := compactDependencyCounts(issue.DependencyCount, issue.DependentCount, countBudget); compact != "" {
+			line += " " + styleDim.Render(compact)
+		}
+		if selected {
+			return styleSelected.Render("▸ " + line)
+		}
+		return line
+	}
 	contentBudget := usable
 	if counts != "" {
 		contentBudget -= countWidth + 1
@@ -249,6 +261,22 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+func compactDependencyCounts(down, up, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if down > 0 && up > 0 && width >= 3 {
+		leftWidth := (width - 1) / 2
+		rightWidth := width - 1 - leftWidth
+		return truncate(itoa(down), leftWidth) + "/" + truncate(itoa(up), rightWidth)
+	}
+	value := down
+	if value == 0 {
+		value = up
+	}
+	return truncate(itoa(value), width)
 }
 
 var tagColors = []lipgloss.Color{"39", "141", "42", "208", "81", "177"}
