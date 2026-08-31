@@ -46,7 +46,9 @@ beads-tui --version
 
 The TUI is keyboard-driven:
 
-- `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `space`/`b` page
+- `j`/`k` or arrow keys move through the board; `g`/`G` top/bottom, `space`/`b` page.
+  When the focused bead has dependency edges, `G` instead opens its two-hop
+  ASCII dependency graph; cycles are called out in the graph header.
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
 - The default board is an indented dependency tree: `enter`/`tab` toggles a
   parent subtree, `enter` opens a leaf's detail, `h` collapses, and `v` toggles
@@ -54,7 +56,9 @@ The TUI is keyboard-driven:
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active filter first, then returns from the detail pane when pressed again
 - `1`/`2`/`3` switch views, `r` refreshes, `?` shows help, `q` (or `ctrl+c`) quits
-- `s` cycles priority, created, updated, and alphabetical sorting
+- `s` cycles priority, created, updated, and alphabetical sorting; created is
+  the default newest-first order, while Ready promotes the highest leverage
+  (unblock-count) work
 - `f` opens a filter prompt. Use `status:open`, `priority:P1`, `label:frontend`, or free text; `enter` applies and `esc` clears.
 - `/` opens a flat, incremental result list across bead id, title, and
   description; `j`/`k` navigates matches, `enter` commits, and `esc` cancels
@@ -63,10 +67,10 @@ The TUI is keyboard-driven:
 
 Each list row carries its native bd status (never the computed `ready` view
 bucket), priority (`P0`-`P4`), id, title, and colored label tags, plus
-`⇣N`/`⇡N` dependency counts. Deferred rows include their `defer_until` date.
+`⇣N blocked-by`/`⇡N blocks` dependency chips. Deferred rows include their `defer_until` date.
 In-progress status is yellow, closed is dim, and deferred is orange. At normal
 terminal widths, the persistent bottom bar shows the view, sort, active filter,
-selection, and total count; below 48 columns it compacts to the view, filter
+selection, total count, and scroll position; below 48 columns it compacts to the view, filter
 indicator, and scroll position. The detail pane shows the full issue: status
 pill, Markdown-rendered description, notes, and the dependency edges in both
 directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).

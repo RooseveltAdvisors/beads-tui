@@ -64,6 +64,7 @@ type Model struct {
 	detailErr string
 	checking  bool
 	detailGen uint64
+	graph     bool
 
 	help         bool
 	helpOffset   int
@@ -120,9 +121,9 @@ func New(backend Backend) Model {
 	return Model{
 		backend: backend,
 		view:    bd.ViewReady,
-		// Alphabetical is a stable, unsurprising initial view; s cycles to
-		// priority, then created and updated timestamps.
-		sortMode:    SortAlphabetical,
+		// Created is newest-first by default; s cycles through the remaining
+		// modes. Ready additionally promotes work with the highest leverage.
+		sortMode:    SortCreated,
 		focus:       FocusList,
 		vocab:       NewVocab(nil),
 		filterInput: input,
@@ -170,6 +171,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
+		return m, nil
+	}
+	if m.graph {
+		switch msg.String() {
+		case "esc", "G":
+			m.graph = false
+		}
 		return m, nil
 	}
 	if msg.String() == "ctrl+c" {
@@ -345,6 +353,9 @@ func (m Model) selectedID() string {
 // by bead id. It also requests detail if the selected row changed.
 func (m *Model) rebuildRows(previousID string) tea.Cmd {
 	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
+	if m.view == bd.ViewReady && !m.filter.Active() {
+		projected = SortReadyByLeverage(projected)
+	}
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
 	}
@@ -430,6 +441,10 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.selected = 0
 	case "G":
+		if m.hasGraphEdges() {
+			m.graph = true
+			return m, nil
+		}
 		m.selected = n - 1
 	case "v":
 		m.treeMode = !m.treeMode
@@ -486,6 +501,10 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.dOffset = 0
 	case "G":
+		if m.hasGraphEdges() {
+			m.graph = true
+			return m, nil
+		}
 		m.dOffset = maxOffset
 	case " ", "pgdown", "ctrl+f":
 		m.dOffset += page
@@ -684,6 +703,9 @@ func (m Model) View() string {
 	if m.help {
 		return m.renderHelp()
 	}
+	if m.graph {
+		return m.renderGraph()
+	}
 	w, h := m.width, m.height
 	if w <= 0 {
 		w = 80
@@ -738,6 +760,48 @@ func (m Model) renderHeader(w int) string {
 	return fitLine(left, m.renderTabs(), w)
 }
 
+func (m Model) hasGraphEdges() bool {
+	if m.selected < 0 || m.selected >= len(m.rows) {
+		return false
+	}
+	id := m.rows[m.selected].ID
+	if id == "" {
+		return false
+	}
+	if m.rows[m.selected].ParentID != "" || len(m.deps[id]) > 0 {
+		return true
+	}
+	for _, issue := range m.allRows {
+		if issue.ParentID == id {
+			return true
+		}
+		for _, records := range m.deps {
+			for _, dep := range records {
+				if dep.ID == id {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (m Model) renderGraph() string {
+	w, h := m.width, m.height
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	lines, cycle := graphLines(m.rows, m.allRows, m.deps, m.selectedID(), m.vocab)
+	title := "Graph · G/esc close"
+	if cycle {
+		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render("⚠ CYCLE") + " · " + title
+	}
+	return strings.Join(pane(title, lines, w, h), "\n")
+}
+
 func (m Model) vocabViewLabel() string {
 	return styleDim.Render(m.view.Label() + " board")
 }
@@ -747,9 +811,9 @@ func (m Model) renderTabs() string {
 	for i, view := range bd.AllViews {
 		label := fmt.Sprintf("[%d]%s", i+1, view.TabLabel())
 		if view == m.view {
-			parts = append(parts, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render(label))
+			parts = append(parts, viewStyle(view).Bold(true).Render(label))
 		} else {
-			parts = append(parts, styleDim.Render(label))
+			parts = append(parts, viewStyle(view).Render(label))
 		}
 	}
 	return strings.Join(parts, " ")
@@ -906,20 +970,24 @@ func (m Model) renderFooter(w int) string {
 	if selected == "" {
 		selected = "-"
 	}
-	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows))
+	scroll := 0
+	if len(m.rows) > 1 {
+		scroll = m.selected * 100 / (len(m.rows) - 1)
+	}
+	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll)
 	hints := styleDim.Render("s sort f filter t tag ? help q quit")
 	var left string
 	switch {
 	case m.boardErr != "":
-		left = styleDim.Render(status) + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
+		left = status + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
 		hints = styleDim.Render("q quit")
 	case m.loading:
-		left = styleDim.Render(status) + " · " + styleDim.Render("loading…")
+		left = status + " · " + styleDim.Render("loading…")
 	case m.focus == FocusDetail:
-		left = styleDim.Render(status)
+		left = status
 		hints = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
 	default:
-		left = styleDim.Render(status)
+		left = status
 	}
 	if displayWidth(left)+1+displayWidth(hints) <= w {
 		return fitLine(left, hints, w)
@@ -927,7 +995,7 @@ func (m Model) renderFooter(w int) string {
 	return truncatePhys(left, w)
 }
 
-func footerStatus(w int, view, sortMode, filter, selected string, total int) string {
+func footerStatus(w int, view, sortMode, filter, selected string, total, scroll int) string {
 	if filter == "" {
 		filter = "-"
 	}
@@ -935,12 +1003,18 @@ func footerStatus(w int, view, sortMode, filter, selected string, total int) str
 		view = truncate(view, 3)
 		sortMode = truncate(sortMode, 3)
 	}
-	fixed := fmt.Sprintf("view:%s sort:%s filter: sel: total:%d", view, sortMode, total)
+	fixed := fmt.Sprintf("view:%s sort:%s filter: sel: total:%d scroll:%d%%", view, sortMode, total, scroll)
 	available := max(2, w-runewidth.StringWidth(fixed))
 	filterWidth := max(1, available*2/3)
 	selectedWidth := max(1, available-filterWidth)
-	return fmt.Sprintf("view:%s sort:%s filter:%s sel:%s total:%d",
-		view, sortMode, truncate(filter, filterWidth), truncate(selected, selectedWidth), total)
+	return strings.Join([]string{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("view:" + view),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("sort:" + sortMode),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("filter:" + truncate(filter, filterWidth)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("sel:" + truncate(selected, selectedWidth)),
+		styleDim.Render(fmt.Sprintf("total:%d", total)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render(fmt.Sprintf("scroll:%d%%", scroll)),
+	}, " ")
 }
 
 // renderHelp overlays the key reference.
@@ -978,9 +1052,9 @@ func (m Model) helpLines(width int) []string {
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
-		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
+		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · G graph when edges · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
-		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree · siblings use active sort",
+		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear filter",
 		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
@@ -1076,7 +1150,7 @@ func pane(title string, content []string, w, h int) []string {
 	if inner < 1 {
 		inner = 1
 	}
-	topTitle := truncate(title, inner)
+	topTitle := truncatePhys(title, inner)
 	rest := inner - displayWidth(topTitle)
 	if rest < 0 {
 		rest = 0
