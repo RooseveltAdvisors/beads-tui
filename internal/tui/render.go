@@ -51,7 +51,7 @@ var workStateIcons = map[string]string{
 }
 
 var (
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("gray"))
+	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSection  = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true)
 	styleSelected = lipgloss.NewStyle().

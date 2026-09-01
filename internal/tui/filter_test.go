@@ -6,6 +6,7 @@ import (
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestSortIssuesModes(t *testing.T) {
@@ -155,6 +156,21 @@ func TestListRowsRenderColoredLabels(t *testing.T) {
 	plain := stripANSI(row)
 	if !strings.Contains(plain, "[frontend] [urgent]") {
 		t.Fatalf("labels missing from row: %q", plain)
+	}
+}
+
+func TestListRowsRenderTagsWithActiveRenderer(t *testing.T) {
+	renderer := lipgloss.DefaultRenderer()
+	previousProfile := renderer.ColorProfile()
+	renderer.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { renderer.SetColorProfile(previousProfile) })
+
+	row := NewVocab(nil).ListRow(bd.Issue{
+		ID: "fm-x", Title: "Task", Status: "open", Labels: []string{"ops"},
+	}, 80, false)
+	wantTag := renderer.NewStyle().Foreground(lipgloss.Color("245")).Render("[ops]")
+	if !strings.Contains(row, wantTag) {
+		t.Fatalf("tag was not rendered with the active color renderer: %q", row)
 	}
 }
 
