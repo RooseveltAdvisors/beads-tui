@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 beads-tui renders the Beads store strictly read-only via the `bd` CLI. The
 exact invocation contract lives in `internal/bd/bd.go` (see `Client`):
-`bd list --ready|--all|plain --json -n 0`, `bd show ID --json`,
+`bd list --status STATUS --json -n 0`, `bd show ID --json`,
 `bd dep list ID --json [--direction up]`, `bd statuses --json`. Any change to
 bd's flag surface or JSON field names must be mirrored there and in
 `internal/tui/app.go`'s `Backend` interface.

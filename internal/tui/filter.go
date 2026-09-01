@@ -17,7 +17,8 @@ const (
 	SortCreated
 	SortUpdated
 	SortAlphabetical
-	SortLeverage
+	SortDependencies
+	SortDependents
 )
 
 // String returns the short name shown in the status bar.
@@ -29,15 +30,25 @@ func (s SortMode) String() string {
 		return "updated"
 	case SortAlphabetical:
 		return "alphabetical"
-	case SortLeverage:
-		return "leverage"
+	case SortDependencies:
+		return "dependencies"
+	case SortDependents:
+		return "depends"
 	default:
 		return "priority"
 	}
 }
 
-// Next cycles through the board's five sort modes.
-func (s SortMode) Next() SortMode { return SortMode((int(s) + 1) % 5) }
+// Next cycles through the board's named sort modes.
+func (s SortMode) Next() SortMode {
+	order := [...]SortMode{SortCreated, SortUpdated, SortAlphabetical, SortDependencies, SortDependents, SortPriority}
+	for i, mode := range order {
+		if s == mode {
+			return order[(i+1)%len(order)]
+		}
+	}
+	return SortCreated
+}
 
 // FilterKind describes how a filter query is matched.
 type FilterKind uint8
@@ -109,14 +120,29 @@ func ParseFilter(input string) Filter {
 	}
 }
 
-// SearchFilter builds the slash-search variant. Unlike the filter prompt,
-// slash search includes bead IDs so users can jump directly to a known bead.
+// SearchFilter builds the free-text slash-search variant and includes bead IDs.
 func SearchFilter(input string) Filter {
 	query := strings.ToLower(strings.TrimSpace(input))
 	if query == "" {
 		return Filter{}
 	}
 	return Filter{Kind: FilterSearch, Query: query}
+}
+
+// ParseSearchFilter combines structured status/priority/label queries with
+// free-text slash search.
+func ParseSearchFilter(input string) Filter {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return Filter{}
+	}
+	lower := strings.ToLower(input)
+	if strings.Contains(lower, ":") || strings.HasPrefix(lower, "p") ||
+		lower == "open" || lower == "in_progress" || lower == "blocked" ||
+		lower == "closed" || lower == "deferred" {
+		return ParseFilter(input)
+	}
+	return SearchFilter(input)
 }
 
 // Matches reports whether issue satisfies f. Text searches intentionally use
@@ -185,7 +211,11 @@ func SortIssues(issues []bd.Issue, mode SortMode) []bd.Issue {
 			if c := strings.Compare(strings.ToLower(a.Title), strings.ToLower(b.Title)); c != 0 {
 				return c < 0
 			}
-		case SortLeverage:
+		case SortDependencies:
+			if a.DependencyCount != b.DependencyCount {
+				return a.DependencyCount > b.DependencyCount
+			}
+		case SortDependents:
 			if a.DependentCount != b.DependentCount {
 				return a.DependentCount > b.DependentCount
 			}

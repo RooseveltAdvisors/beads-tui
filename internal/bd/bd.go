@@ -35,13 +35,7 @@ func (c *Client) List(ctx context.Context, view View) ([]Issue, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("beads-tui: unsupported view %q", view)
 	}
-	args := []string{"list"}
-	switch view {
-	case ViewReady:
-		args = append(args, "--ready")
-	case ViewAll:
-		args = append(args, "--all")
-	}
+	args := []string{"list", "--status", string(view)}
 	args = append(args, "--json", "-n", "0")
 	var issues []Issue
 	if err := c.jsonCall(ctx, &issues, args...); err != nil {

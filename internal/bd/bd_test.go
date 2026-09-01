@@ -114,11 +114,11 @@ func TestListBuildsRightArgs(t *testing.T) {
 		gotArgs = args
 		return readyFixture, "", nil
 	})
-	issues, err := c.List(context.Background(), ViewReady)
+	issues, err := c.List(context.Background(), ViewOpen)
 	if err != nil {
-		t.Fatalf("List(ready): %v", err)
+		t.Fatalf("List(open): %v", err)
 	}
-	want := []string{"list", "--ready", "--json", "-n", "0"}
+	want := []string{"list", "--status", "open", "--json", "-n", "0"}
 	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
 		t.Errorf("args = %q, want %q", gotArgs, want)
 	}
@@ -145,8 +145,8 @@ func TestListOpenAllVariants(t *testing.T) {
 		view View
 		want string
 	}{
-		{ViewOpen, "list --json -n 0"},
-		{ViewAll, "list --all --json -n 0"},
+		{ViewInProgress, "list --status in_progress --json -n 0"},
+		{ViewClosed, "list --status closed --json -n 0"},
 	} {
 		var gotArgs []string
 		c := stubClient(t, func(args []string) (string, string, error) {
@@ -174,9 +174,27 @@ func TestListInvalidView(t *testing.T) {
 		t.Error("run must not be called for an invalid view")
 		return "", "", nil
 	})
-	if _, err := c.List(context.Background(), View("bogus")); err == nil {
+	if _, err := c.List(context.Background(), View("")); err == nil {
 		t.Fatal("expected error for invalid view")
 	}
+}
+
+func TestViewsFromStatusesKeepsNativeOrderAndAddsCustomStatuses(t *testing.T) {
+	got := ViewsFromStatuses([]StatusInfo{
+		{Name: "closed"}, {Name: "Awaiting_Review"}, {Name: " awaiting_review "},
+	})
+	want := []View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred, "awaiting_review"}
+	if strings.Join(viewsToStrings(got), ",") != strings.Join(viewsToStrings(want), ",") {
+		t.Fatalf("views = %v, want %v", got, want)
+	}
+}
+
+func viewsToStrings(views []View) []string {
+	out := make([]string, len(views))
+	for i, view := range views {
+		out[i] = string(view)
+	}
+	return out
 }
 
 func TestShow(t *testing.T) {
@@ -261,7 +279,7 @@ func TestBdMissingFromPath(t *testing.T) {
 			return "", "", nil
 		},
 	}
-	_, err := c.List(context.Background(), ViewReady)
+	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil || !strings.Contains(err.Error(), "bd not found in PATH") {
 		t.Fatalf("expected bd-not-found error, got %v", err)
 	}
@@ -271,11 +289,11 @@ func TestBdFailureCarriesStderr(t *testing.T) {
 	c := stubClient(t, func(args []string) (string, string, error) {
 		return "", "No active beads workspace found.\nHint: check BEADS_DIR/worktree setup", errors.New("exit status 1")
 	})
-	_, err := c.List(context.Background(), ViewReady)
+	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{"bd list --ready --json -n 0", "No active beads workspace found", "BEADS_DIR"} {
+	for _, want := range []string{"bd list --status open --json -n 0", "No active beads workspace found", "BEADS_DIR"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
@@ -301,7 +319,7 @@ func TestJsonCallNeverLeaksRawOutput(t *testing.T) {
 		// wrapper, never from dumping raw stdout.
 		return "SECRET-STDOUT garbage {{", "bd: workspace is locked", errors.New("exit status 1")
 	})
-	_, err := c.List(context.Background(), ViewReady)
+	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil {
 		t.Fatal("expected error")
 	}

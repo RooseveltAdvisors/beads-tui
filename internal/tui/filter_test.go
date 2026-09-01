@@ -10,9 +10,9 @@ import (
 
 func TestSortIssuesModes(t *testing.T) {
 	issues := []bd.Issue{
-		{ID: "c", Title: "Charlie", Priority: 2, CreatedAt: "2026-08-01T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z", DependentCount: 3},
-		{ID: "a", Title: "alpha", Priority: 0, CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-01T00:00:00Z", DependentCount: 1},
-		{ID: "b", Title: "Bravo", Priority: 1, CreatedAt: "2026-08-02T00:00:00Z", UpdatedAt: "2026-08-04T00:00:00Z", DependentCount: 3},
+		{ID: "c", Title: "Charlie", Priority: 2, CreatedAt: "2026-08-01T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z", DependencyCount: 1, DependentCount: 3},
+		{ID: "a", Title: "alpha", Priority: 0, CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-01T00:00:00Z", DependencyCount: 0, DependentCount: 1},
+		{ID: "b", Title: "Bravo", Priority: 1, CreatedAt: "2026-08-02T00:00:00Z", UpdatedAt: "2026-08-04T00:00:00Z", DependencyCount: 2, DependentCount: 3},
 	}
 	for _, tc := range []struct {
 		name string
@@ -23,7 +23,8 @@ func TestSortIssuesModes(t *testing.T) {
 		{"created newest first", SortCreated, []string{"a", "b", "c"}},
 		{"updated newest first", SortUpdated, []string{"b", "c", "a"}},
 		{"alphabetical", SortAlphabetical, []string{"a", "b", "c"}},
-		{"leverage with created tie-break", SortLeverage, []string{"b", "c", "a"}},
+		{"dependencies with created tie-break", SortDependencies, []string{"b", "c", "a"}},
+		{"depends with created tie-break", SortDependents, []string{"b", "c", "a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SortIssues(issues, tc.mode)
@@ -68,8 +69,17 @@ func TestFilterMatching(t *testing.T) {
 	}
 }
 
+func TestSlashSearchParsesStructuredAndFreeTextQueries(t *testing.T) {
+	if got := ParseSearchFilter("status:blocked"); got.Kind != FilterStatus || got.Query != "blocked" {
+		t.Fatalf("structured slash search = %+v", got)
+	}
+	if got := ParseSearchFilter("fm-123"); got.Kind != FilterSearch || got.Query != "fm-123" {
+		t.Fatalf("free-text slash search = %+v", got)
+	}
+}
+
 func TestNewKeyDispatchAndStatusBar(t *testing.T) {
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: {
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
 		{ID: "fm-a", Title: "Alpha", Status: "open", Priority: 2, Labels: []string{"frontend"}},
 		{ID: "fm-b", Title: "Beta", Status: "blocked", Priority: 1, Labels: []string{"backend"}},
 	}}}
@@ -81,9 +91,9 @@ func TestNewKeyDispatchAndStatusBar(t *testing.T) {
 	if m.sortMode != SortUpdated || m.rows[0].ID != "fm-a" {
 		t.Fatalf("s sort = %s, first row %q; want updated/fm-a", m.sortMode, m.rows[0].ID)
 	}
-	m = sendKey(t, m, "f")
+	m = sendKey(t, m, "/")
 	if !m.filtering {
-		t.Fatal("f did not open the filter prompt")
+		t.Fatal("/ did not open the search prompt")
 	}
 	m = sendKey(t, m, "status:blocked")
 	m = sendKey(t, m, "enter")
@@ -92,17 +102,44 @@ func TestNewKeyDispatchAndStatusBar(t *testing.T) {
 	}
 	m = sendKey(t, m, "esc")
 	if m.filter.Active() || len(m.rows) != 2 {
-		t.Fatalf("esc did not clear filter: %+v rows=%d", m.filter, len(m.rows))
+		t.Fatalf("esc did not clear search: %+v rows=%d", m.filter, len(m.rows))
 	}
 	m = sendKey(t, m, "t")
 	if m.filter.Kind != FilterLabel || m.filter.Query != "backend" || len(m.rows) != 1 {
 		t.Fatalf("t filter = %+v, rows=%d", m.filter, len(m.rows))
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"sort:updated", "filter:label:backend", "sel:fm-b", "total:1", "scroll:0%"} {
+	for _, want := range []string{"sort:updated", "query:label:backend", "sel:fm-b", "total:1", "scroll:0%"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("status bar missing %q: %s", want, view)
 		}
+	}
+}
+
+func TestResetKeyRestoresBoardDefaults(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	m := drive(t, nil)
+	m.view = bd.ViewClosed
+	m.sortMode = SortDependents
+	m.filter = ParseFilter("status:blocked")
+	m = sendKey(t, m, "R")
+	if m.view != bd.ViewOpen || m.sortMode != SortCreated || m.filter.Active() {
+		t.Fatalf("R state = view:%s sort:%s filter:%s", m.view, m.sortMode, m.filter)
+	}
+}
+
+func TestBoardStatePersistsAcrossModels(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	f := &fakeClient{}
+	m := newTestModel(f)
+	m.view = bd.ViewClosed
+	m.sortMode = SortDependencies
+	m.filter = ParseFilter("priority:P1")
+	m.saveState()
+
+	reloaded := New(f)
+	if reloaded.view != bd.ViewClosed || reloaded.sortMode != SortDependencies || reloaded.filter.String() != "priority:p1" {
+		t.Fatalf("reloaded state = view:%s sort:%s filter:%s", reloaded.view, reloaded.sortMode, reloaded.filter)
 	}
 }
 
@@ -123,8 +160,8 @@ func TestListRowsRenderNativeStatusColumn(t *testing.T) {
 		{ID: "deferred", Title: "Deferred", Status: "deferred", DeferUntil: "2026-09-04T12:00:00Z"},
 	} {
 		row := stripANSI(vocab.ListRow(issue, 80, false))
-		if !strings.Contains(row, issue.Status) {
-			t.Errorf("row for %q missing native status: %q", issue.ID, row)
+		if !strings.Contains(row, vocab.Icon(issue.Status)) {
+			t.Errorf("row for %q missing native status glyph: %q", issue.ID, row)
 		}
 		if strings.Contains(row, "ready") {
 			t.Errorf("row for %q rendered computed ready status: %q", issue.ID, row)
@@ -135,21 +172,42 @@ func TestListRowsRenderNativeStatusColumn(t *testing.T) {
 	}
 }
 
-func TestReadyRowsShowWorkStateInsteadOfComputedOpen(t *testing.T) {
+func TestRowsShowWorkStateInsteadOfComputedOpen(t *testing.T) {
 	vocab := NewVocab(nil)
-	claimable := stripANSI(vocab.ReadyRow(bd.Issue{ID: "claim", Title: "Claim me", Status: "open"}, 80, false))
+	claimable := stripANSI(vocab.ListRow(bd.Issue{ID: "claim", Title: "Claim me", Status: "open"}, 80, false))
 	if !strings.Contains(claimable, "○") || strings.Contains(claimable, " open") {
 		t.Fatalf("claimable Ready row should use only the hollow glyph: %q", claimable)
 	}
-	claimed := stripANSI(vocab.ReadyRow(bd.Issue{
+	claimed := stripANSI(vocab.ListRow(bd.Issue{
 		ID: "claimed", Title: "In flight", Status: "in_progress", Assignee: "ada",
 	}, 80, false))
-	if !strings.Contains(claimed, "●") || !strings.Contains(claimed, "in_progress · ada") {
+	if !strings.Contains(claimed, "●") || !strings.Contains(claimed, "· ada") || strings.Contains(claimed, "in_progress") {
 		t.Fatalf("claimed Ready row lost real work state or owner: %q", claimed)
 	}
-	blocked := stripANSI(vocab.ReadyRow(bd.Issue{ID: "blocked", Title: "Blocked", Status: "blocked"}, 80, false))
+	blocked := stripANSI(vocab.ListRow(bd.Issue{ID: "blocked", Title: "Blocked", Status: "blocked"}, 80, false))
 	if !strings.Contains(blocked, "⊘") || !strings.Contains(blocked, "blocked") {
 		t.Fatalf("blocked Ready row lost its visible state: %q", blocked)
+	}
+}
+
+func TestYankOpensMenuWithIssueValues(t *testing.T) {
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{ID: "fm-yank", Title: "Copy this", Status: "open", URL: "https://example.test/fm-yank"},
+	}}}
+	m := drive(t, f)
+	m = sendKey(t, m, "y")
+	if !m.yank {
+		t.Fatal("y did not open the yank menu")
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Yank", "ID: fm-yank", "Title: Copy this", "URL: https://example.test/fm-yank"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("yank menu missing %q: %s", want, view)
+		}
+	}
+	m = sendKey(t, m, "esc")
+	if m.yank {
+		t.Fatal("esc did not close the yank menu")
 	}
 }
 
@@ -169,7 +227,7 @@ func TestBuiltInStatusGlyphsAndPriorityColors(t *testing.T) {
 		}
 	}
 	for priority, want := range map[int]lipgloss.TerminalColor{
-		0: lipgloss.Color("red"), 1: lipgloss.Color("208"), 2: lipgloss.Color("yellow"), 3: lipgloss.Color("gray"),
+		0: lipgloss.Color("196"), 1: lipgloss.Color("208"), 2: lipgloss.Color("220"), 3: lipgloss.Color("39"),
 	} {
 		if got := priorityStyle(priority).GetForeground(); got != want {
 			t.Errorf("P%d color = %v, want %v", priority, got, want)
@@ -181,7 +239,7 @@ func TestHelpLegendUsesRenderedWorkStateGlyphs(t *testing.T) {
 	m := New(nil)
 	legend := strings.Join(m.helpLines(80), "\n")
 	for status, label := range map[string]string{
-		"open": "claimable", "in_progress": "in_progress", "blocked": "blocked",
+		"open": "open", "in_progress": "in_progress", "blocked": "blocked",
 		"closed": "closed", "deferred": "deferred", "hold": "hold",
 	} {
 		want := m.vocab.Icon(status) + " " + label
@@ -200,8 +258,8 @@ func TestListRowsRenderNativeStatusAtStandardPaneWidth(t *testing.T) {
 		{ID: "deferred", Title: "Deferred", Status: "deferred", DeferUntil: "2026-09-04T12:00:00Z"},
 	} {
 		row := stripANSI(vocab.ListRow(issue, 38, false))
-		if !strings.Contains(row, issue.Status) {
-			t.Errorf("row for %q missing native status at standard width: %q", issue.ID, row)
+		if !strings.Contains(row, vocab.Icon(issue.Status)) {
+			t.Errorf("row for %q missing native status glyph at standard width: %q", issue.ID, row)
 		}
 		if displayWidth(row) > 38 {
 			t.Errorf("row for %q overflowed standard width: %q", issue.ID, row)
@@ -213,6 +271,12 @@ func TestClosedNativeStatusIsFaint(t *testing.T) {
 	vocab := NewVocab(nil)
 	if !vocab.statusStyle("closed").GetFaint() {
 		t.Fatal("closed native status style is not faint")
+	}
+	if got := vocab.statusStyle("blocked").GetForeground(); got != lipgloss.Color("196") {
+		t.Fatalf("blocked native status color = %v, want red 196", got)
+	}
+	if got := vocab.statusStyle("in_progress").GetForeground(); got != lipgloss.Color("39") {
+		t.Fatalf("in_progress native status color = %v, want vibrant 39", got)
 	}
 	if vocab.statusStyle("open").GetFaint() {
 		t.Fatal("open native status style is unexpectedly faint")
@@ -236,12 +300,12 @@ func TestLongNativeStatusPreservesDependencyDirections(t *testing.T) {
 	}
 }
 
-func TestReadyTabNamesComputedView(t *testing.T) {
+func TestStatusTabNames(t *testing.T) {
 	m := New(nil)
 	m.width, m.height = 80, 24
 	view := stripANSI(m.renderTabs())
-	if !strings.Contains(view, "[1]Ready (actionable)") {
-		t.Fatalf("tabs missing actionable Ready label: %q", view)
+	if !strings.Contains(view, "[1]open") || !strings.Contains(view, "[2]in_progress") {
+		t.Fatalf("tabs missing native status labels: %q", view)
 	}
 }
 
@@ -254,7 +318,7 @@ func TestRequiredFooterFieldsSurviveNarrowWidths(t *testing.T) {
 		if displayWidth(footer) > width {
 			t.Fatalf("width %d footer overflowed: %q", width, footer)
 		}
-		for _, field := range []string{"view:", "sort:", "filter:", "sel:", "total:"} {
+		for _, field := range []string{"view:", "sort:", "query:", "sel:", "total:"} {
 			if !strings.Contains(footer, field) {
 				t.Errorf("width %d footer missing %q: %q", width, field, footer)
 			}
@@ -268,7 +332,7 @@ func TestCompactFooterPreservesFallbackFields(t *testing.T) {
 	m.selected = 1
 	m.filter = ParseFilter("status:open")
 	footer := stripANSI(m.renderFooter(40))
-	for _, want := range []string{"Ready", "filter:on", "50%"} {
+	for _, want := range []string{"ope", "query:on", "50%"} {
 		if !strings.Contains(footer, want) {
 			t.Errorf("compact footer missing %q: %q", want, footer)
 		}
@@ -284,9 +348,9 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 	view := stripANSI(m.renderHelp())
 	for _, want := range []string{
 		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
-		"enter/l/→", "h/←", "1 Ready", "2 Open", "3 All", "s cycle",
-		"esc close detail / clear filter", "f prompt", "Enter apply", "status:open",
-		"priority:P1", "label:frontend", "t filter", "r ·", "Help: ?", "q/Ctrl+C",
+		"enter/l/→", "h/←", "1 open", "2 in_progress", "3 blocked", "s cycle",
+		"esc close detail / clear search", "Search:", "Enter apply", "status:open",
+		"priority:P1", "label:frontend", "t search", "r ·", "Reset: R", "Help: ?", "q/Ctrl+C",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("wrapped help missing %q: %s", want, view)
@@ -311,7 +375,7 @@ func TestNarrowHelpScrollMakesEveryBindingReachable(t *testing.T) {
 	}
 	all := strings.Join(strings.Fields(seen.String()), " ")
 	for _, want := range []string{
-		"esc close detail /", "clear filter", "space/PgDn/Ctrl+F", "label:frontend", "q/Ctrl+C", "Read-only:",
+		"esc close detail /", "clear search", "space/PgDn/Ctrl+F", "label:frontend", "q/Ctrl+C", "Read-only:",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("scrollable help never exposed %q", want)
@@ -332,7 +396,7 @@ func TestFilteredEmptyStateNamesActiveFilter(t *testing.T) {
 	m.filter = ParseFilter("status:closed")
 	m.rebuildRows("")
 	got := stripANSI(strings.Join(m.renderListPane(60, 8), "\n"))
-	if !strings.Contains(got, "No matches for filter: status:closed") {
+	if !strings.Contains(got, "No matches for search: status:closed") {
 		t.Fatalf("filtered empty state = %q", got)
 	}
 }

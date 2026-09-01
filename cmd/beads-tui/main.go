@@ -5,7 +5,7 @@
 // With no arguments (and a TTY on stdin) it starts the interactive TUI.
 // Subcommands give agents and scripts the same data without a TTY:
 //
-//	beads-tui list [--view ready|open|all]   # board as JSON
+//	beads-tui list [--status open|in_progress|blocked|closed|deferred] # board as JSON
 //	beads-tui show <id>                      # one bead as JSON
 package main
 
@@ -54,12 +54,12 @@ func run(args []string) error {
 }
 
 // runTUI starts the interactive board. With a non-TTY stdin it degrades to a
-// one-shot JSON dump of the ready board so scripts get content, not a pager.
+// one-shot JSON dump of the open board so scripts get content, not a pager.
 func runTUI() error {
 	if !isTTY(os.Stdin) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		issues, err := bd.New().List(ctx, bd.ViewReady)
+		issues, err := bd.New().List(ctx, bd.ViewOpen)
 		if err != nil {
 			return err
 		}
@@ -72,13 +72,12 @@ func runTUI() error {
 
 func runList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	view := fs.String("view", "ready", "board view: ready, open, all")
+	status := fs.String("status", "open", "native bd status to list")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--view ready|open|all]\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--status STATUS]\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "Print a board as JSON (same data the TUI renders):\n")
-		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list                  # ready work: open issues with no blockers\n")
-		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --view all       # every bead including closed\n")
-		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --view open      # open issues regardless of blockers\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list                  # open status\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --status closed  # closed status\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -87,9 +86,9 @@ func runList(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("list: unexpected argument %q (see 'beads-tui list --help')", fs.Arg(0))
 	}
-	v := bd.View(*view)
+	v := bd.View(*status)
 	if !v.Valid() {
-		return fmt.Errorf("list: unsupported view %q (choose ready, open or all)", *view)
+		return fmt.Errorf("list: status must not be empty")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -144,15 +143,16 @@ func printUsage(w *os.File) {
 	_, _ = fmt.Fprintf(w, `beads-tui %s - read-only board for Beads (bd)
 
 Usage:
-  beads-tui                interactive board (ready work by default)
-  beads-tui list [--view ready|open|all]
+  beads-tui                interactive board (open status by default)
+  beads-tui list [--status STATUS]
   beads-tui show <id>
   beads-tui --version
 
 The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, space/b page, and
 ctrl-u/ctrl-d move half a page. Enter/Tab toggle parent subtrees or Enter opens
 leaf detail; h/left collapses, l/right focuses detail, v toggles tree/flat,
-1/2/3 switch views, s sorts, f filters, t filters by labels,
-r refreshes, / searches id/title/description, ? shows help, and q quits.
+1-9 switch native-status views, s sorts, t searches by labels, y opens a yank
+menu, r refreshes, / searches id/title/description or structured fields,
+R resets view/sort/search, ? shows help, and q quits.
 `, strings.TrimSpace(version))
 }

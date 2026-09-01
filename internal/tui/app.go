@@ -2,8 +2,13 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -46,10 +51,12 @@ type Model struct {
 	backend Backend
 
 	view     bd.View
+	views    []bd.View
 	sortMode SortMode
 	filter   Filter
 	allRows  []bd.Issue
 	deps     map[string][]bd.DepRecord
+	depCache map[string][]bd.DepRecord
 	rows     []bd.Issue
 	treeRows []TreeRow
 	expanded map[string]bool
@@ -83,6 +90,9 @@ type Model struct {
 	searchDown   []bd.DepRecord
 	searchUp     []bd.DepRecord
 	searchDErr   string
+	yank         bool
+	yankIndex    int
+	yankErr      string
 	filterInput  textinput.Model
 	quitting     bool
 	markdown     *markdownRenderer
@@ -98,6 +108,16 @@ type boardMsg struct {
 	issues     []bd.Issue
 	deps       map[string][]bd.DepRecord
 	err        error
+}
+
+// graphMsg carries best-effort dependency enrichment separately from the list
+// snapshot so the first rows paint without waiting on graph subprocesses.
+type graphMsg struct {
+	view       bd.View
+	generation uint64
+	issues     []bd.Issue
+	deps       map[string][]bd.DepRecord
+	cache      map[string][]bd.DepRecord
 }
 
 // statusMsg carries the status vocabulary.
@@ -117,16 +137,105 @@ type detailMsg struct {
 	err        error
 }
 
+type yankItem struct {
+	label string
+	value string
+}
+
+type yankMsg struct {
+	err error
+}
+
+type savedState struct {
+	View     bd.View  `json:"view"`
+	SortMode SortMode `json:"sort_mode"`
+	Filter   Filter   `json:"filter"`
+}
+
+func statePath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("BEADS_TUI_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, "state.json"), nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "beads-tui", "state.json"), nil
+}
+
+func loadState() (savedState, bool) {
+	path, err := statePath()
+	if err != nil {
+		log.Printf("beads-tui: locate state: %v", err)
+		return savedState{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("beads-tui: read state: %v", err)
+		}
+		return savedState{}, false
+	}
+	var state savedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		log.Printf("beads-tui: parse state: %v", err)
+		return savedState{}, false
+	}
+	if !state.View.Valid() {
+		state.View = bd.ViewOpen
+	}
+	if state.SortMode > SortDependents {
+		state.SortMode = SortCreated
+	}
+	if state.Filter.Kind > FilterSearch || len(state.Filter.Query) > 120 {
+		state.Filter = Filter{}
+	}
+	return state, true
+}
+
+func persistenceEnabled(backend Backend) bool {
+	if backend == nil {
+		return false
+	}
+	_, configured := os.LookupEnv("BEADS_TUI_CONFIG_DIR")
+	_, production := backend.(*bd.Client)
+	return configured || production
+}
+
+func (m Model) saveState() {
+	if !persistenceEnabled(m.backend) {
+		return
+	}
+	path, err := statePath()
+	if err != nil {
+		log.Printf("beads-tui: locate state: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(savedState{View: m.view, SortMode: m.sortMode, Filter: m.filter}, "", "  ")
+	if err != nil {
+		log.Printf("beads-tui: encode state: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Printf("beads-tui: create state directory: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		log.Printf("beads-tui: write state: %v", err)
+	}
+}
+
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
 	input := textinput.New()
-	input.Prompt = "Filter › "
+	input.Prompt = "Search / › "
 	input.Placeholder = "status:open  priority:P1  label:frontend  text"
 	input.CharLimit = 120
 	input.Width = 60
-	return Model{
+	m := Model{
 		backend:  backend,
-		view:     bd.ViewReady,
+		view:     bd.ViewOpen,
+		views:    bd.DefaultViews(),
 		loading:  true,
 		boardGen: 1,
 		// Created is newest-first by default; s cycles through the remaining modes.
@@ -140,6 +249,12 @@ func New(backend Backend) Model {
 		expanded:    map[string]bool{},
 		treeMode:    true,
 	}
+	if persistenceEnabled(backend) {
+		if state, ok := loadState(); ok {
+			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
+		}
+	}
+	return m
 }
 
 // Init loads the board and the status vocabulary.
@@ -166,18 +281,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateKey(msg)
 	case boardMsg:
 		return m, m.applyBoard(msg)
+	case graphMsg:
+		if msg.generation != m.boardGen || msg.view != m.view {
+			return m, nil
+		}
+		prev := m.selectedID()
+		m.allRows = append([]bd.Issue(nil), msg.issues...)
+		m.deps = msg.deps
+		m.depCache = msg.cache
+		return m, m.rebuildRows(prev)
 	case statusMsg:
 		if msg.err == nil {
 			m.vocab = NewVocab(msg.statuses)
+			m.views = bd.ViewsFromStatuses(msg.statuses)
+			if !m.hasView(m.view) {
+				m.view = m.views[0]
+				m.saveState()
+				return m, m.startBoardLoad()
+			}
 		}
 	case detailMsg:
 		return m, m.applyDetail(msg)
+	case yankMsg:
+		if msg.err != nil {
+			m.yankErr = msg.err.Error()
+		} else {
+			m.yankErr = "copied"
+		}
 	}
 	return m, nil
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
+		return m, nil
+	}
+	if m.yank {
+		switch msg.String() {
+		case "esc", "y":
+			m.yank = false
+			m.yankErr = ""
+		case "j", "down":
+			if m.yankIndex < len(m.yankItems())-1 {
+				m.yankIndex++
+			}
+		case "k", "up":
+			if m.yankIndex > 0 {
+				m.yankIndex--
+			}
+		case "enter":
+			items := m.yankItems()
+			if len(items) > 0 {
+				return m, copyToClipboard(items[m.yankIndex].value)
+			}
+		}
 		return m, nil
 	}
 	if m.graph {
@@ -189,6 +346,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "ctrl+c" {
 		m.quitting = true
+		m.saveState()
 		return m, tea.Quit
 	}
 	if m.help {
@@ -209,47 +367,37 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.filtering = false
 			m.filterInput.Blur()
-			if m.searching {
-				m.filter = m.searchBase
-				m.searching = false
-				m.detail = m.searchDetail
-				m.down = m.searchDown
-				m.up = m.searchUp
-				m.detailErr = m.searchDErr
-				m.checking = false
-				m.detailGen++
-				cmd := m.rebuildRows(m.searchID)
-				m.focus = m.searchFocus
-				m.dOffset = m.searchDOff
-				return m, cmd
-			} else {
-				m.filter = Filter{}
-			}
+			m.filter = m.searchBase
+			m.detail = m.searchDetail
+			m.down = m.searchDown
+			m.up = m.searchUp
+			m.detailErr = m.searchDErr
+			m.checking = false
+			m.detailGen++
+			cmd := m.rebuildRows(m.searchID)
+			m.focus = m.searchFocus
+			m.dOffset = m.searchDOff
+			m.saveState()
 			m.searching = false
-			return m, m.rebuildRows(m.selectedID())
+			return m, cmd
 		case "enter":
 			m.filtering = false
 			m.filterInput.Blur()
-			if m.searching {
-				m.filter = SearchFilter(m.filterInput.Value())
-			} else {
-				m.filter = ParseFilter(m.filterInput.Value())
-			}
+			m.filter = ParseSearchFilter(m.filterInput.Value())
+			m.saveState()
 			m.searching = false
 			return m, m.rebuildRows(m.selectedID())
 		}
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
-		if m.searching {
-			previousID := m.selectedID()
-			m.filter = SearchFilter(m.filterInput.Value())
-			filterCmd := m.rebuildRows(previousID)
-			if cmd != nil && filterCmd != nil {
-				return m, tea.Batch(cmd, filterCmd)
-			}
-			if filterCmd != nil {
-				return m, filterCmd
-			}
+		previousID := m.selectedID()
+		m.filter = ParseSearchFilter(m.filterInput.Value())
+		filterCmd := m.rebuildRows(previousID)
+		if cmd != nil && filterCmd != nil {
+			return m, tea.Batch(cmd, filterCmd)
+		}
+		if filterCmd != nil {
+			return m, filterCmd
 		}
 		return m, cmd
 	}
@@ -260,10 +408,19 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "q":
 		m.quitting = true
+		m.saveState()
 		return m, tea.Quit
+	case "y":
+		if len(m.yankItems()) > 0 {
+			m.yank = true
+			m.yankIndex = 0
+			m.yankErr = ""
+		}
+		return m, nil
 	case "esc":
 		if m.filter.Active() {
 			m.filter = Filter{}
+			m.saveState()
 			return m, m.rebuildRows(m.selectedID())
 		}
 		if m.focus == FocusDetail {
@@ -272,19 +429,18 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "1":
-		return m.switchView(bd.ViewReady)
+		return m.switchView(m.viewAt(0))
 	case "2":
-		return m.switchView(bd.ViewOpen)
+		return m.switchView(m.viewAt(1))
 	case "3":
-		return m.switchView(bd.ViewAll)
+		return m.switchView(m.viewAt(2))
 	case "s":
 		m.sortMode = m.sortMode.Next()
+		m.saveState()
 		return m, m.rebuildRows(m.selectedID())
-	case "f":
-		return m, m.openPrompt(false)
 	case "/":
 		m.searchBase = m.filter
-		return m, m.openPrompt(true)
+		return m, m.openPrompt()
 	case "t":
 		if id := m.selectedID(); id != "" {
 			for _, issue := range m.rows {
@@ -299,6 +455,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.filter = Filter{Kind: FilterLabel, Query: strings.Join(labels, ",")}
+					m.saveState()
 					return m, m.rebuildRows(id)
 				}
 			}
@@ -310,6 +467,14 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(boardCmd, m.loadDetailCmd(m.rows[m.selected].ID))
 		}
 		return m, boardCmd
+	case "R":
+		wasOpen := m.view == bd.ViewOpen
+		m.view, m.sortMode, m.filter = bd.ViewOpen, SortCreated, Filter{}
+		m.saveState()
+		if !wasOpen {
+			return m, m.startBoardLoad()
+		}
+		return m, m.rebuildRows(m.selectedID())
 	}
 	if m.focus == FocusList {
 		return m.listKey(msg)
@@ -317,22 +482,18 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.detailKey(msg)
 }
 
-func (m *Model) openPrompt(search bool) tea.Cmd {
+func (m *Model) openPrompt() tea.Cmd {
 	m.filtering = true
-	m.searching = search
-	if search {
-		m.searchFocus = m.focus
-		m.searchID = m.selectedID()
-		m.searchDOff = m.dOffset
-		m.searchDetail = m.detail
-		m.searchDown = m.down
-		m.searchUp = m.up
-		m.searchDErr = m.detailErr
-		m.focus = FocusList
-		m.filterInput.Prompt = "Search / › "
-	} else {
-		m.filterInput.Prompt = "Filter › "
-	}
+	m.searching = true
+	m.searchFocus = m.focus
+	m.searchID = m.selectedID()
+	m.searchDOff = m.dOffset
+	m.searchDetail = m.detail
+	m.searchDown = m.down
+	m.searchUp = m.up
+	m.searchDErr = m.detailErr
+	m.focus = FocusList
+	m.filterInput.Prompt = "Search / › "
 	m.filterInput.SetValue("")
 	m.filterInput.Focus()
 	return textinput.Blink
@@ -345,7 +506,24 @@ func (m Model) switchView(view bd.View) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.view = view
+	m.saveState()
 	return m, m.startBoardLoad()
+}
+
+func (m Model) viewAt(index int) bd.View {
+	if index >= 0 && index < len(m.views) {
+		return m.views[index]
+	}
+	return m.view
+}
+
+func (m Model) hasView(view bd.View) bool {
+	for _, candidate := range m.views {
+		if candidate == view {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) selectedID() string {
@@ -353,6 +531,39 @@ func (m Model) selectedID() string {
 		return m.rows[m.selected].ID
 	}
 	return ""
+}
+
+func (m Model) yankItems() []yankItem {
+	if m.selected < 0 || m.selected >= len(m.rows) {
+		return nil
+	}
+	issue := m.rows[m.selected]
+	items := []yankItem{{label: "ID", value: issue.ID}, {label: "Title", value: issue.Title}}
+	if strings.TrimSpace(issue.URL) != "" {
+		items = append(items, yankItem{label: "URL", value: issue.URL})
+	}
+	return items
+}
+
+func copyToClipboard(value string) tea.Cmd {
+	return func() tea.Msg {
+		if path, err := exec.LookPath("clipboard-copy"); err == nil {
+			cmd := exec.Command(path)
+			cmd.Stdin = strings.NewReader(value)
+			if err := cmd.Run(); err == nil {
+				return yankMsg{}
+			} else {
+				log.Printf("beads-tui: clipboard-copy failed: %v", err)
+			}
+		} else {
+			log.Printf("beads-tui: clipboard-copy unavailable: %v", err)
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(value))
+		if _, err := fmt.Fprint(os.Stdout, "\x1b]52;c;"+encoded+"\a"); err != nil {
+			return yankMsg{err: err}
+		}
+		return yankMsg{}
+	}
 }
 
 // rebuildRows applies the current filter and sort while preserving selection
@@ -592,11 +803,23 @@ func (m Model) loadBoardCmd() tea.Cmd {
 		if err != nil {
 			return boardMsg{view: view, generation: generation, err: err}
 		}
-		deps := make(map[string][]bd.DepRecord)
+		return boardMsg{view: view, generation: generation, issues: issues}
+	}
+}
+
+// loadGraphCmd enriches a painted list with one bounded, cached dependency
+// pass. The board never waits for this best-effort metadata before first paint.
+func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) tea.Cmd {
+	backend := m.backend
+	cache := m.depCache
+	return func() tea.Msg {
+		if cache == nil {
+			cache = map[string][]bd.DepRecord{}
+		}
 		type graphResult struct {
-			deps           []bd.DepRecord
-			dependentCount int
-			err            error
+			deps []bd.DepRecord
+			err  error
+			ok   bool
 		}
 		results := make([]graphResult, len(issues))
 		jobs := make(chan int)
@@ -611,19 +834,14 @@ func (m Model) loadBoardCmd() tea.Cmd {
 					if issue.ID == "" {
 						continue
 					}
-					if issue.DependencyCount > 0 {
-						callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-						results[i].deps, results[i].err = backend.Deps(callCtx, issue.ID, false)
-						callCancel()
-						if results[i].err != nil {
-							continue
-						}
+					if deps, ok := cache[issue.ID]; ok {
+						results[i] = graphResult{deps: deps, ok: true}
+						continue
 					}
 					callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-					dependents, depErr := backend.Deps(callCtx, issue.ID, true)
+					deps, err := backend.Deps(callCtx, issue.ID, false)
 					callCancel()
-					results[i].dependentCount = len(dependents)
-					results[i].err = depErr
+					results[i] = graphResult{deps: deps, err: err, ok: err == nil}
 				}
 			}()
 		}
@@ -632,20 +850,32 @@ func (m Model) loadBoardCmd() tea.Cmd {
 		}
 		close(jobs)
 		workers.Wait()
-		// Dependency metadata is best effort: a slow graph query must not hide
-		// the list snapshot that the user can still browse.
+		deps := make(map[string][]bd.DepRecord)
+		derivedDependents := make(map[string]int)
 		for i, result := range results {
-			if result.err != nil {
-				log.Printf("beads-tui: dependency enrichment for %s skipped: %v", issues[i].ID, result.err)
+			if !result.ok {
+				log.Printf("beads-tui: dependencies for %s skipped: %v", issues[i].ID, result.err)
+				continue
 			}
+			cache[issues[i].ID] = result.deps
 			if len(result.deps) > 0 {
 				deps[issues[i].ID] = result.deps
-			}
-			if result.err == nil {
-				issues[i].DependentCount = result.dependentCount
+				for _, dep := range result.deps {
+					if dep.ID != "" {
+						derivedDependents[dep.ID]++
+					}
+				}
 			}
 		}
-		return boardMsg{view: view, generation: generation, issues: issues, deps: deps}
+		for i := range issues {
+			if derived := derivedDependents[issues[i].ID]; derived > issues[i].DependentCount {
+				issues[i].DependentCount = derived
+			}
+			if len(deps[issues[i].ID]) > issues[i].DependencyCount {
+				issues[i].DependencyCount = len(deps[issues[i].ID])
+			}
+		}
+		return graphMsg{view: view, generation: generation, issues: issues, deps: deps, cache: cache}
 	}
 }
 
@@ -695,7 +925,10 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	prev := m.selectedID()
 	m.allRows = append([]bd.Issue(nil), msg.issues...)
 	m.deps = msg.deps
-	return m.rebuildRows(prev)
+	if m.depCache == nil {
+		m.depCache = map[string][]bd.DepRecord{}
+	}
+	return tea.Batch(m.rebuildRows(prev), m.loadGraphCmd(msg.view, msg.generation, msg.issues))
 }
 
 func (m Model) indexOfRow(id string) int {
@@ -749,6 +982,9 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	if m.yank {
+		return m.renderYank()
+	}
 	if m.help {
 		return m.renderHelp()
 	}
@@ -794,13 +1030,26 @@ func (m Model) View() string {
 	return sb.String()
 }
 
-func (m Model) renderFilterPrompt(w int) string {
-	label := "FILTER"
-	if m.searching {
-		label = "SEARCH"
+func (m Model) renderYank() string {
+	items := m.yankItems()
+	lines := []string{"Choose a value to copy:"}
+	for i, item := range items {
+		prefix := "  "
+		if i == m.yankIndex {
+			prefix = "▸ "
+		}
+		lines = append(lines, prefix+item.label+": "+item.value)
 	}
+	lines = append(lines, "", "j/k move · enter copy · esc close")
+	if m.yankErr != "" {
+		lines = append(lines, styleDim.Render(m.yankErr))
+	}
+	return strings.Join(pane("Yank", lines, m.width, m.height), "\n")
+}
+
+func (m Model) renderFilterPrompt(w int) string {
 	input := m.filterInput.View()
-	return truncatePhys(styleDim.Render(label)+"  "+input, w)
+	return truncatePhys(styleDim.Render("SEARCH")+"  "+input, w)
 }
 
 // renderHeader paints the title bar: view name and tabs.
@@ -857,7 +1106,7 @@ func (m Model) vocabViewLabel() string {
 
 func (m Model) renderTabs() string {
 	var parts []string
-	for i, view := range bd.AllViews {
+	for i, view := range m.views {
 		label := fmt.Sprintf("[%d]%s", i+1, view.TabLabel())
 		if view == m.view {
 			parts = append(parts, viewStyle(view).Bold(true).Render(label))
@@ -889,7 +1138,7 @@ func (m Model) renderListPane(w, h int) []string {
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
 		if m.filter.Active() {
-			lines = append(lines, styleDim.Render("No matches for filter: "+m.filter.String()))
+			lines = append(lines, styleDim.Render("No matches for search: "+m.filter.String()))
 		} else {
 			lines = append(lines, styleDim.Render(m.emptyBoardText()))
 		}
@@ -907,17 +1156,9 @@ func (m Model) renderListPane(w, h int) []string {
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
 			if m.treeMode && i < len(m.treeRows) {
-				if m.view == bd.ViewReady {
-					lines = append(lines, m.vocab.ReadyTreeRow(m.treeRows[i], inner, i == m.selected))
-				} else {
-					lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
-				}
+				lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
 			} else {
-				if m.view == bd.ViewReady {
-					lines = append(lines, m.vocab.ReadyRow(m.rows[i], inner, i == m.selected))
-				} else {
-					lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
-				}
+				lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
 			}
 		}
 		if m.loading {
@@ -933,12 +1174,8 @@ func (m Model) renderListPane(w, h int) []string {
 
 func (m Model) emptyBoardText() string {
 	switch m.view {
-	case bd.ViewReady:
-		return "No ready work. Everything unblocked is claimed or done."
-	case bd.ViewOpen:
-		return "No open issues."
 	default:
-		return "No issues in this graph."
+		return "No " + m.view.Label() + " issues."
 	}
 }
 
@@ -1011,9 +1248,9 @@ func (m Model) renderDetailPane(w, h int) []string {
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
 	if w < 48 {
-		filter := "off"
+		query := "off"
 		if m.filter.Active() {
-			filter = "on"
+			query = "on"
 		}
 		percent := 0
 		if len(m.rows) == 1 {
@@ -1021,7 +1258,7 @@ func (m Model) renderFooter(w int) string {
 		} else if len(m.rows) > 1 {
 			percent = m.selected * 100 / (len(m.rows) - 1)
 		}
-		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  filter:%s  %d%%", m.view.Label(), filter, percent)), w)
+		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  query:%s  %d%%", m.view.Label(), query, percent)), w)
 	}
 	selected := m.selectedID()
 	if selected == "" {
@@ -1032,7 +1269,7 @@ func (m Model) renderFooter(w int) string {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
 	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll)
-	hints := styleDim.Render("s sort f filter t tag ? help q quit")
+	hints := styleDim.Render("s sort / search t tag ? help q quit")
 	var left string
 	switch {
 	case m.boardErr != "":
@@ -1060,14 +1297,14 @@ func footerStatus(w int, view, sortMode, filter, selected string, total, scroll 
 		view = truncate(view, 3)
 		sortMode = truncate(sortMode, 3)
 	}
-	fixed := fmt.Sprintf("view:%s sort:%s filter: sel: total:%d scroll:%d%%", view, sortMode, total, scroll)
+	fixed := fmt.Sprintf("view:%s sort:%s query: sel: total:%d scroll:%d%%", view, sortMode, total, scroll)
 	available := max(2, w-runewidth.StringWidth(fixed))
 	filterWidth := max(1, available*2/3)
 	selectedWidth := max(1, available-filterWidth)
 	return strings.Join([]string{
 		lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("view:" + view),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("sort:" + sortMode),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("filter:" + truncate(filter, filterWidth)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("query:" + truncate(filter, filterWidth)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("sel:" + truncate(selected, selectedWidth)),
 		styleDim.Render(fmt.Sprintf("total:%d", total)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render(fmt.Sprintf("scroll:%d%%", scroll)),
@@ -1106,9 +1343,17 @@ func (m Model) helpDimensions() (w, width, height int) {
 }
 
 func (m Model) helpLines(width int) []string {
-	rowLegend := fmt.Sprintf("Rows: %s claimable  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
+	rowLegend := fmt.Sprintf("Rows: %s open  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
 		m.vocab.Icon("open"), m.vocab.Icon("in_progress"), m.vocab.Icon("blocked"),
 		m.vocab.Icon("closed"), m.vocab.Icon("deferred"), m.vocab.Icon("hold"))
+	viewHelp := "  Views:"
+	for i, view := range m.views {
+		if i == 9 {
+			break
+		}
+		viewHelp += fmt.Sprintf(" %d %s ·", i+1, view.Label())
+	}
+	viewHelp = strings.TrimSuffix(viewHelp, " ·")
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
@@ -1116,13 +1361,12 @@ func (m Model) helpLines(width int) []string {
 		"  Half-page:     ctrl-u/d in list and detail",
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
-		"  Navigation:    esc close detail / clear filter",
-		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
-		"  Sort:          s cycle priority · created · updated · alphabetical · leverage",
-		"  Filter:        f prompt · Enter apply · status:open · priority:P1 · label:frontend · text",
-		"  Search:        / incremental id/title/description · Enter commit · Esc cancel",
-		"  Tags:          t filter by the selected bead's labels",
-		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
+		"  Navigation:    esc close detail / clear search",
+		viewHelp,
+		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
+		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
+		"  Tags:          t search by the selected bead's labels",
+		"  Refresh:       r · Reset: R · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
 		rowLegend,
 		"Markers: ⇣N depends on N · ⇡N has N dependents",

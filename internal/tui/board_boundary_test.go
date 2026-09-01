@@ -56,13 +56,16 @@ func TestBoardProbeHelper(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "loadBoardCmd returned %T\n", msg)
 		os.Exit(1)
 	}
-	probe.IssueCount = len(board.issues)
 	updated, _ := m.Update(board)
 	applied, ok := updated.(Model)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "board update returned %T\n", updated)
 		os.Exit(1)
 	}
+	graph := applied.loadGraphCmd(board.view, board.generation, board.issues)()
+	updated, _ = applied.Update(graph)
+	applied = updated.(Model)
+	probe.IssueCount = len(board.issues)
 	if board.err != nil {
 		probe.BoardError = board.err.Error()
 		view := stripANSI(applied.View())
@@ -107,8 +110,8 @@ func TestEmptyWorkspaceUsesRealBdLoadingPath(t *testing.T) {
 	if probe.IssueCount != 0 || probe.RowCount != 0 {
 		t.Fatalf("empty workspace loaded issues=%d rows=%d", probe.IssueCount, probe.RowCount)
 	}
-	if !strings.Contains(probe.BoardError, "bd list --ready --json -n 0") {
-		t.Errorf("workspace error %q missing the ready load command", probe.BoardError)
+	if !strings.Contains(probe.BoardError, "bd list --status open --json -n 0") {
+		t.Errorf("workspace error %q missing the open status load command", probe.BoardError)
 	}
 	lowerError := strings.ToLower(probe.BoardError)
 	if !strings.Contains(lowerError, "beads") || !strings.Contains(probe.BoardError, "BEADS_DIR") {
@@ -147,19 +150,17 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 		t.Fatalf("root dependent count = %d, want 1", probe.RootDependentCount)
 	}
 	calls := readFixtureCalls(t, logPath)
-	listCalls, upCalls, downCalls := 0, 0, 0
+	listCalls, downCalls := 0, 0
 	for _, call := range calls {
 		if call.cwd != workspace || call.beadsDir != beadsDir {
 			t.Fatalf("bd call environment = cwd %q, BEADS_DIR %q; want %q, %q", call.cwd, call.beadsDir, workspace, beadsDir)
 		}
 		switch {
-		case call.args == "list --ready --json -n 0":
+		case call.args == "list --status open --json -n 0":
 			listCalls++
 		case strings.HasPrefix(call.args, "dep list "):
 			fields := strings.Fields(call.args)
 			switch {
-			case len(fields) == 6 && fields[3] == "--json" && fields[4] == "--direction" && fields[5] == "up":
-				upCalls++
 			case len(fields) == 4 && fields[3] == "--json":
 				downCalls++
 			default:
@@ -169,8 +170,8 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 			t.Fatalf("unexpected bd command: %q", call.args)
 		}
 	}
-	if listCalls != 1 || upCalls != len(issues) || downCalls != 1 {
-		t.Fatalf("bd calls list=%d up=%d down=%d, want 1 %d 1", listCalls, upCalls, downCalls, len(issues))
+	if listCalls != 1 || downCalls != len(issues) {
+		t.Fatalf("bd calls list=%d down=%d, want 1 %d", listCalls, downCalls, len(issues))
 	}
 }
 
@@ -224,13 +225,13 @@ func installBoardFixture(t *testing.T, issues []bd.Issue) (workspace, beadsDir, 
 	script := `#!/bin/sh
 set -eu
 printf '%s\t%s\t%s\n' "$PWD" "${BEADS_DIR-}" "$*" >> "$BEADS_TUI_FIXTURE_LOG"
-if [ "${1-}" = "list" ] && [ "${2-}" = "--ready" ] && [ "${3-}" = "--json" ] && [ "${4-}" = "-n" ] && [ "${5-}" = "0" ]; then
+if [ "${1-}" = "list" ] && [ "${2-}" = "--status" ] && [ "${3-}" = "open" ] && [ "${4-}" = "--json" ] && [ "${5-}" = "-n" ] && [ "${6-}" = "0" ]; then
   printf '%s' "$BEADS_TUI_READY_JSON"
   exit 0
 fi
 if [ "${1-}" = "dep" ] && [ "${2-}" = "list" ]; then
-  if [ "${3-}" = "fm-00" ] && [ "${4-}" = "--json" ] && [ "${5-}" = "--direction" ] && [ "${6-}" = "up" ]; then
-    printf '%s' '[{"id":"fm-01","title":"Fleet task 01","status":"open","dependency_type":"blocks"}]'
+  if [ "${3-}" = "fm-01" ] && [ "${4-}" = "--json" ]; then
+    printf '%s' '[{"id":"fm-00","title":"Fleet task 00","status":"open","dependency_type":"blocks"}]'
   else
     printf '[]'
   fi

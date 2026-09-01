@@ -28,10 +28,10 @@ var statusColors = map[string]string{
 // statusOverrides overrides colors per status name (blocked must read as
 // urgent, closed as finished, pinned as sticky).
 var statusOverrides = map[string]string{
-	"blocked":     "red",
+	"blocked":     "196",
 	"in_progress": "39",
 	"deferred":    "208",
-	"closed":      "gray",
+	"closed":      "245",
 	"hold":        "magenta",
 	"on_hold":     "magenta",
 	"held":        "magenta",
@@ -55,17 +55,20 @@ var (
 	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSection  = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true)
 	styleSelected = lipgloss.NewStyle().
-			Background(lipgloss.Color("238")).
-			Foreground(lipgloss.Color("252"))
+			Background(lipgloss.Color("238"))
 )
 
 func viewStyle(view bd.View) lipgloss.Style {
 	color := "39"
-	switch view {
-	case bd.ViewOpen:
-		color = "42"
-	case bd.ViewAll:
-		color = "141"
+	switch strings.ToLower(string(view)) {
+	case "in_progress":
+		color = "39"
+	case "blocked":
+		color = "196"
+	case "closed":
+		color = "245"
+	case "deferred":
+		color = "208"
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
@@ -140,8 +143,12 @@ func NewVocab(statuses []bd.StatusInfo) Vocab {
 		}
 	}
 	for _, s := range statuses {
-		v.icons[s.Name] = s.Icon
-		v.cats[s.Name] = s.Category
+		name := strings.ToLower(strings.TrimSpace(s.Name))
+		if name == "" {
+			continue
+		}
+		v.icons[name] = s.Icon
+		v.cats[name] = strings.ToLower(strings.TrimSpace(s.Category))
 	}
 	return v
 }
@@ -157,7 +164,7 @@ func (v Vocab) Icon(status string) string {
 	if icon, ok := workStateIcons[normalized]; ok {
 		return icon
 	}
-	if icon, ok := v.icons[status]; ok {
+	if icon, ok := v.icons[normalized]; ok {
 		return icon
 	}
 	return "○"
@@ -165,7 +172,7 @@ func (v Vocab) Icon(status string) string {
 
 // Category returns the category for a status name.
 func (v Vocab) Category(status string) string {
-	if cat, ok := v.cats[status]; ok {
+	if cat, ok := v.cats[strings.ToLower(strings.TrimSpace(status))]; ok {
 		return cat
 	}
 	return "active"
@@ -175,7 +182,7 @@ func (v Vocab) Category(status string) string {
 func (v Vocab) statusStyle(status string) lipgloss.Style {
 	cat := v.Category(status)
 	color := statusColors[cat]
-	if c, ok := statusOverrides[status]; ok {
+	if c, ok := statusOverrides[strings.ToLower(strings.TrimSpace(status))]; ok {
 		color = c
 	}
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
@@ -198,27 +205,16 @@ func (v Vocab) StatusPillIssue(issue bd.Issue) string {
 
 // ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
-	return v.renderRow(issue, "", "", width, selected, false)
-}
-
-// ReadyRow renders a row in the computed Ready view. Claimable open beads
-// intentionally have no text status; their hollow glyph is the status signal.
-func (v Vocab) ReadyRow(issue bd.Issue, width int, selected bool) string {
-	return v.renderRow(issue, "", "", width, selected, true)
+	return v.renderRow(issue, "", "", width, selected)
 }
 
 // TreeRow renders one dependency-tree row, including its branch connector
 // and expand/collapse marker.
 func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
-	return v.treeRow(row, width, selected, false)
+	return v.treeRow(row, width, selected)
 }
 
-// ReadyTreeRow is the Ready-view variant of TreeRow.
-func (v Vocab) ReadyTreeRow(row TreeRow, width int, selected bool) string {
-	return v.treeRow(row, width, selected, true)
-}
-
-func (v Vocab) treeRow(row TreeRow, width int, selected, readyView bool) string {
+func (v Vocab) treeRow(row TreeRow, width int, selected bool) string {
 	marker := "  "
 	if row.HasChildren {
 		marker = "▾ "
@@ -226,10 +222,10 @@ func (v Vocab) treeRow(row TreeRow, width int, selected, readyView bool) string 
 			marker = "▸ "
 		}
 	}
-	return v.renderRow(row.Issue, row.Prefix, marker, width, selected, readyView)
+	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected, readyView bool) string {
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected bool) string {
 	usable := width
 	if selected {
 		usable -= 2
@@ -267,7 +263,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-compactCountReserve))
 	statusBudget := max(0, usable-displayWidth(treePrefix)-displayWidth(corePrefix)-reservedCounts-1)
-	status := compactRowStatus(issue, statusBudget, readyView)
+	status := compactRowStatus(issue, statusBudget)
 	prefixWithStatus := func() string {
 		prefix := treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 		if status != "" {
@@ -341,8 +337,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	return line
 }
 
-// rowStatus renders the native bd status. Ready is deliberately never used
-// here: it is a computed board view, not an issue status.
+// rowStatus renders the native bd status.
 func rowStatusText(issue bd.Issue) string {
 	status := strings.TrimSpace(issue.Status)
 	if status == "" {
@@ -358,12 +353,11 @@ func rowStatusText(issue bd.Issue) string {
 	return status
 }
 
-func compactRowStatus(issue bd.Issue, width int, readyView ...bool) string {
+func compactRowStatus(issue bd.Issue, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	ready := len(readyView) > 0 && readyView[0]
-	status := rowStatusTextForView(issue, ready)
+	status := rowStatusTextForView(issue)
 	if displayWidth(status) <= width {
 		return status
 	}
@@ -379,21 +373,30 @@ func compactRowStatus(issue bd.Issue, width int, readyView ...bool) string {
 	return truncate(status, width)
 }
 
-func rowStatusTextForView(issue bd.Issue, readyView bool) string {
+func rowStatusTextForView(issue bd.Issue) string {
 	status := strings.TrimSpace(issue.Status)
-	if readyView && strings.EqualFold(status, "open") {
+	switch strings.ToLower(status) {
+	case "open", "blocked", "closed":
 		return ""
-	}
-	if readyView && strings.EqualFold(status, "in_progress") {
+	case "in_progress":
 		owner := strings.TrimSpace(issue.Assignee)
 		if owner == "" {
 			owner = strings.TrimSpace(issue.Owner)
 		}
 		if owner != "" {
-			return status + " · " + owner
+			return "· " + owner
 		}
+		return ""
+	case "deferred":
+		if until := strings.TrimSpace(issue.DeferUntil); until != "" {
+			if date, _, ok := strings.Cut(until, "T"); ok {
+				until = date
+			}
+			return "until " + until
+		}
+		return ""
 	}
-	return rowStatusText(issue)
+	return status
 }
 
 func compactDependencyCounts(down, up, width int) string {
@@ -453,11 +456,13 @@ func renderTags(labels []string) string {
 func priorityStyle(p int) lipgloss.Style {
 	switch p {
 	case 0:
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red"))
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 	case 1:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 	case 2:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("yellow"))
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	case 3:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	default:
 		return styleDim
 	}
