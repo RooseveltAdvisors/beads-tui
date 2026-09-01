@@ -38,26 +38,10 @@ func (c *Client) List(ctx context.Context, view View) ([]Issue, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("beads-tui: unsupported view %q", view)
 	}
-	args := []string{"list"}
-	switch view {
-	case ViewReady:
-		args = append(args, "--ready")
-	case ViewAll:
-		args = append(args, "--all")
-	case ViewOpen:
-		args = append(args, "--status", "open")
-	}
-	args = append(args, "--json", "-n", "0")
-	var issues []Issue
-	if err := c.jsonCall(ctx, &issues, args...); err != nil {
-		return nil, err
-	}
-	return issues, nil
+	return c.ListStatus(ctx, string(view))
 }
 
-// ListStatus returns issues for any native or custom bd status. Board tabs use
-// List for the Ready/Open/All view contract; this method serves the CLI's
-// explicit --status escape hatch.
+// ListStatus returns issues for any native or custom bd status.
 func (c *Client) ListStatus(ctx context.Context, status string) ([]Issue, error) {
 	status = strings.TrimSpace(status)
 	if status == "" {

@@ -8,12 +8,12 @@ store `bd` works against and never writes to it: beads-tui only ever invokes
 bd's read-only commands (`list`, `show`, `dep list`, `statuses`) and renders
 what they return.
 
-## Board views
+## Status tabs
 
-Tabs are the three board views: `Ready` (actionable work), `Open` (open work),
-and `All` (the complete issue set). Keys `1` through `3` select the view;
-Ready uses `bd list --ready`, Open uses `bd list --status open`, and All uses
-`bd list --all`.
+Tabs are the native `bd` statuses: `open`, `in_progress`, `blocked`, `closed`,
+and `deferred`, followed by configured custom statuses from `bd statuses --json`.
+Keys `1` through `9` select the visible tabs, and each tab loads with
+`bd list --status STATUS`.
 
 The status vocabulary (colors and categories) is loaded live from
 `bd statuses --json`; if that call fails the built-in vocabulary is used.
@@ -51,7 +51,7 @@ The TUI is keyboard-driven:
   the flat list
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
-- `1`-`3` switch Ready/Open/All views, `r` refreshes, `R` resets view/sort/search,
+- `1`-`9` switch native-status tabs, `r` refreshes, `R` resets view/sort/search,
   `?` shows help, and `q` (or `ctrl+c`) quits
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
@@ -87,7 +87,7 @@ Rows and markers:
 When stdin is not a TTY, `beads-tui` degrades to a one-shot JSON dump of the
 open-status board, so scripts and agents get content instead of a pager.
 
-`R` clears the search and restores the Open view with created-newest-first
+`R` clears the search and restores the open status with created-newest-first
 sorting.
 
 ## Read-only guarantee

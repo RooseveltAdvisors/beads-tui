@@ -204,7 +204,8 @@ func loadState() (savedState, bool) {
 		log.Printf("beads-tui: parse state: %v", err)
 		return savedState{}, false
 	}
-	if !state.View.Valid() {
+	state.View = bd.View(strings.ToLower(strings.TrimSpace(string(state.View))))
+	if !state.View.Valid() || state.View == bd.View("ready") || state.View == bd.View("all") {
 		state.View = bd.ViewOpen
 	}
 	if state.SortMode > SortDependents {
@@ -258,7 +259,7 @@ func New(backend Backend) Model {
 	m := Model{
 		backend:  backend,
 		view:     bd.ViewOpen,
-		views:    append([]bd.View(nil), bd.AllViews[:]...),
+		views:    bd.DefaultViews(),
 		loading:  true,
 		boardGen: 1,
 		// Created is newest-first by default; s cycles through the remaining modes.
@@ -317,16 +318,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.graphCache = msg.cache
 		m.graphReady = true
 		if m.detail != nil {
-			for _, issue := range msg.issues {
-				if issue.ID == m.detail.ID {
-					detail := *m.detail
-					detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
-					m.detail = &detail
-					if msg.complete {
+			if msg.complete {
+				for _, issue := range msg.issues {
+					if issue.ID == m.detail.ID {
+						detail := *m.detail
+						detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
+						m.detail = &detail
 						m.down = append([]bd.DepRecord(nil), m.deps[detail.ID]...)
 						m.up = append([]bd.DepRecord(nil), m.reverseDeps[detail.ID]...)
+						break
 					}
-					break
 				}
 			}
 		}
@@ -334,6 +335,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		if msg.err == nil {
 			m.vocab = NewVocab(msg.statuses)
+			m.views = bd.ViewsFromStatuses(msg.statuses)
+			if !m.hasView(m.view) {
+				m.view = m.views[0]
+				m.saveState()
+				return m, m.startBoardLoad()
+			}
 		}
 	case detailMsg:
 		return m, m.applyDetail(msg)
@@ -1574,6 +1581,14 @@ func (m Model) helpLines(width int) []string {
 	rowLegend := fmt.Sprintf("Rows: %s open  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
 		m.vocab.Icon("open"), m.vocab.Icon("in_progress"), m.vocab.Icon("blocked"),
 		m.vocab.Icon("closed"), m.vocab.Icon("deferred"), m.vocab.Icon("hold"))
+	viewHelp := "  Views:"
+	for i, view := range m.views {
+		if i == 9 {
+			break
+		}
+		viewHelp += fmt.Sprintf(" %d %s ·", i+1, view.Label())
+	}
+	viewHelp = strings.TrimSuffix(viewHelp, " ·")
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
@@ -1582,7 +1597,7 @@ func (m Model) helpLines(width int) []string {
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear search",
-		"  Views:         1 Ready (actionable) · 2 Open · 3 All",
+		viewHelp,
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
 		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
 		"  Tags:          t search by the selected bead's labels",

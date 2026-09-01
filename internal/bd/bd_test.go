@@ -145,14 +145,17 @@ func TestListBuildsRightArgs(t *testing.T) {
 	}
 }
 
-func TestListViewVariants(t *testing.T) {
+func TestListStatusVariants(t *testing.T) {
 	for _, tc := range []struct {
 		view View
 		want string
 	}{
-		{ViewReady, "list --ready --json -n 0"},
 		{ViewOpen, "list --status open --json -n 0"},
-		{ViewAll, "list --all --json -n 0"},
+		{ViewInProgress, "list --status in_progress --json -n 0"},
+		{ViewBlocked, "list --status blocked --json -n 0"},
+		{ViewClosed, "list --status closed --json -n 0"},
+		{ViewDeferred, "list --status deferred --json -n 0"},
+		{View("awaiting_review"), "list --status awaiting_review --json -n 0"},
 	} {
 		var gotArgs []string
 		c := stubClient(t, func(args []string) (string, string, error) {
@@ -203,14 +206,30 @@ func TestListInvalidView(t *testing.T) {
 	}
 }
 
-func TestAllViewsAreStableAndDistinct(t *testing.T) {
-	if len(AllViews) != 3 || AllViews[0] != ViewReady || AllViews[1] != ViewOpen || AllViews[2] != ViewAll {
-		t.Fatalf("views = %v, want ready/open/all", AllViews)
+func TestDefaultViewsAreStableAndDistinct(t *testing.T) {
+	want := []View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
+	views := DefaultViews()
+	if len(views) != len(want) {
+		t.Fatalf("views = %v, want %v", views, want)
 	}
-	for _, view := range AllViews {
-		if !view.Valid() || view.Label() == "" {
-			t.Fatalf("invalid board view: %q", view)
+	for i, view := range views {
+		if view != want[i] {
+			t.Fatalf("view %d = %q, want %q", i, view, want[i])
 		}
+		if !view.Valid() || view.Label() == "" {
+			t.Fatalf("invalid status view: %q", view)
+		}
+	}
+}
+
+func TestViewsFromStatusesIncludesCustomStatuses(t *testing.T) {
+	views := ViewsFromStatuses([]StatusInfo{
+		{Name: "open"},
+		{Name: "awaiting_review"},
+		{Name: " AWAITING_REVIEW "},
+	})
+	if len(views) != 6 || views[5] != View("awaiting_review") {
+		t.Fatalf("views = %v, want built-ins plus awaiting_review", views)
 	}
 }
 
