@@ -148,7 +148,7 @@ The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, space/b page, and
 ctrl-u/ctrl-d move half a page. Enter/Tab toggle parent subtrees or Enter opens
 leaf detail; h/left collapses, l/right focuses detail, v toggles tree/flat,
 1-9 switch native-status views, s sorts, t searches by labels, y opens a yank
-menu, r refreshes, / searches id/title/description or structured fields,
+menu, / searches id/title/description or structured fields,
 R resets view/sort/search, ? shows help, and q quits.
 `, strings.TrimSpace(version))
 }

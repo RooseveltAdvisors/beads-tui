@@ -365,23 +365,67 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 	}
 }
 
-func TestRefreshInvalidatesDetailSnapshot(t *testing.T) {
+func TestLowercaseRIsSafeNoOp(t *testing.T) {
 	m := drive(t, nil)
-	id := m.selectedID()
-	m.detail = &bd.Issue{ID: id}
-	m.down = []bd.DepRecord{{ID: "old-down"}}
-	m.up = []bd.DepRecord{{ID: "old-up"}}
-	oldGeneration := m.detailGen
 	updated, cmd := m.Update(teaKeyMsg("r"))
 	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("lowercase r should be a no-op")
+	}
+}
+
+func TestUppercaseRResetsWithoutReloadingDefaultBoard(t *testing.T) {
+	f := &fakeClient{}
+	m := drive(t, f)
+	m.sortMode = SortPriority
+	m.filter = ParseFilter("status:closed")
+	m.detail = nil
+	m.detailPendingID = ""
+	updated, cmd := m.Update(teaKeyMsg("R"))
+	m = updated.(Model)
 	if cmd == nil {
-		t.Fatal("refresh did not return a board load command")
+		t.Fatal("reset should request detail for the selected row")
 	}
-	if m.detail != nil || m.down != nil || m.up != nil {
-		t.Fatalf("refresh retained stale detail snapshot: detail=%+v down=%+v up=%+v", m.detail, m.down, m.up)
+	if f.listCalls != 0 {
+		t.Fatalf("reset on the default board reloaded bd %d times", f.listCalls)
 	}
-	if m.detailGen <= oldGeneration {
-		t.Fatalf("detail generation = %d, want greater than %d", m.detailGen, oldGeneration)
+	if m.view != bd.ViewOpen || m.sortMode != SortCreated || m.filter.Active() {
+		t.Fatalf("reset state = view %q sort %q filter %+v", m.view, m.sortMode, m.filter)
+	}
+	if len(m.rows) != len(m.allRows) {
+		t.Fatalf("reset rows = %d, want %d", len(m.rows), len(m.allRows))
+	}
+	if cmd == nil || m.detailPendingID != m.selectedID() {
+		t.Fatalf("reset did not request selected detail: cmd=%v pending=%q selected=%q", cmd != nil, m.detailPendingID, m.selectedID())
+	}
+}
+
+func TestUppercaseRPreservesPendingDetailRequest(t *testing.T) {
+	m := newTestModel(&fakeClient{issue: testDetailOf("b")})
+	m.treeMode = false
+	m.allRows = []bd.Issue{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}}
+	m.rows = append([]bd.Issue(nil), m.allRows...)
+	m.detail = &bd.Issue{ID: "a"}
+
+	updated, pendingCmd := m.Update(teaKeyMsg("j"))
+	m = updated.(Model)
+	if pendingCmd == nil || m.detailPendingID != "b" {
+		t.Fatalf("selection did not start pending detail: cmd=%v pending=%q", pendingCmd != nil, m.detailPendingID)
+	}
+	pendingGeneration := m.detailGen
+
+	updated, resetCmd := m.Update(teaKeyMsg("R"))
+	m = updated.(Model)
+	if resetCmd != nil {
+		t.Fatal("reset should not reload the default board")
+	}
+	if m.detailGen != pendingGeneration || m.detailPendingID != "b" || !m.checking {
+		t.Fatalf("reset stranded pending detail: generation=%d pending=%q checking=%v", m.detailGen, m.detailPendingID, m.checking)
+	}
+
+	m = applyMsg(t, m, pendingCmd())
+	if m.detail == nil || m.detail.ID != "b" || m.detailPendingID != "" || m.checking {
+		t.Fatalf("pending detail did not apply after reset: detail=%+v pending=%q checking=%v", m.detail, m.detailPendingID, m.checking)
 	}
 }
 
@@ -738,10 +782,8 @@ func TestSameViewStaleBoardResponseDoesNotOverwriteCurrentLoad(t *testing.T) {
 		},
 	}
 	m := newTestModel(f)
-	updated, firstCmd := m.Update(teaKeyMsg("r"))
-	m = updated.(Model)
-	updated, secondCmd := m.Update(teaKeyMsg("r"))
-	m = updated.(Model)
+	firstCmd := m.startBoardLoad()
+	secondCmd := m.startBoardLoad()
 	if m.boardGen != 3 {
 		t.Fatalf("board generation = %d, want 3 after two refreshes", m.boardGen)
 	}

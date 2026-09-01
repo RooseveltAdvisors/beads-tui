@@ -52,7 +52,7 @@ The TUI is keyboard-driven:
   the flat list
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
-- `1`-`9` switch native and custom status tabs, `r` refreshes, `R` resets view/sort/search,
+- `1`-`9` switch native and custom status tabs, `R` resets view/sort/search,
   `?` shows help, and `q` (or `ctrl+c`) quits
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
