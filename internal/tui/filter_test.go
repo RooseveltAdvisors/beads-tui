@@ -333,6 +333,15 @@ func TestRequiredFooterFieldsSurviveNarrowWidths(t *testing.T) {
 	}
 }
 
+func TestFooterReportsLoadedGraphEdges(t *testing.T) {
+	m := New(nil)
+	m.graphEdges = 1
+	footer := stripANSI(m.renderFooter(120))
+	if !strings.Contains(footer, "graph:1 edges") {
+		t.Fatalf("footer omitted loaded graph evidence: %q", footer)
+	}
+}
+
 func TestCompactFooterPreservesFallbackFields(t *testing.T) {
 	m := New(nil)
 	m.rows = []bd.Issue{{ID: "a"}, {ID: "b"}, {ID: "c"}}
