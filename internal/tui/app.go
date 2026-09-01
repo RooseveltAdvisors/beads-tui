@@ -561,12 +561,17 @@ func (m *Model) openPrompt() tea.Cmd {
 	m.filtering = true
 	m.searching = true
 	m.searchFocus = m.focus
-	m.searchID = m.selectedID()
-	m.searchDOff = m.dOffset
-	m.searchDetail = m.detail
-	m.searchDown = m.down
-	m.searchUp = m.up
-	m.searchDErr = m.detailErr
+	id := m.selectedID()
+	// Keep the last visible detail while the same bead's replacement request is
+	// pending; cancelling search should restore the context the user left.
+	if m.detail != nil || m.searchID != id {
+		m.searchDOff = m.dOffset
+		m.searchDetail = m.detail
+		m.searchDown = m.down
+		m.searchUp = m.up
+		m.searchDErr = m.detailErr
+	}
+	m.searchID = id
 	m.focus = FocusList
 	m.filterInput.Prompt = "Search / › "
 	m.filterInput.SetValue("")
