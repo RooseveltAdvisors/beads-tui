@@ -10,7 +10,7 @@ package bd
 
 import "strings"
 
-// View selects which native status a board renders.
+// View selects which native or configured status a board renders.
 type View string
 
 const (

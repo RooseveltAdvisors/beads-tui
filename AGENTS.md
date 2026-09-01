@@ -10,7 +10,7 @@ exact invocation contract lives in `internal/bd/bd.go` (see `Client`):
 `bd show ID --json`, `bd dep list ID --json [--direction up]`,
 `bd statuses --json`. Any change to
 bd's flag surface or JSON field names must be mirrored there and in
-`internal/tui/app.go`'s `Backend` interface.
+`internal/tui/app.go`'s `Backend`/`graphBackend` interfaces.
 
 ## Build
 

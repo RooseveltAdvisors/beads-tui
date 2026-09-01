@@ -16,7 +16,8 @@ Keys `1` through `9` select the visible tabs, and each tab loads with
 `bd list --status STATUS`.
 
 The status vocabulary (colors and categories) is loaded live from
-`bd statuses --json`; if that call fails the built-in vocabulary is used.
+`bd statuses --json`; if that call fails the built-in vocabulary and tabs are
+used.
 Core work-state glyphs remain fixed so rows and the help legend agree.
 
 ## Install / build
@@ -51,7 +52,7 @@ The TUI is keyboard-driven:
   the flat list
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
-- `1`-`9` switch native-status tabs, `r` refreshes, `R` resets view/sort/search,
+- `1`-`9` switch native and custom status tabs, `r` refreshes, `R` resets view/sort/search,
   `?` shows help, and `q` (or `ctrl+c`) quits
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
@@ -62,10 +63,10 @@ The TUI is keyboard-driven:
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);
   `enter` copies through `clipboard-copy` or OSC52.
 
-Each list row carries its native bd status as a glyph (never the word `open`),
+Each list row carries its bd status as a glyph (never the word `open`),
 priority (`P0`-`P4`), id, title, and subdued dim-gray labels, plus
 `⇣N blocked-by`/`⇡N blocks` dependency chips. Deferred rows include their `defer_until` date.
-In-progress rows include the owner beside their glyph when available. Blocked status is red, closed is dim,
+In-progress rows include the owner beside their glyph when available, and the status is vibrant. Blocked status is red, closed is dim,
 and deferred is orange. Priority colors are red, orange, yellow, and cyan for
 P0 through P3. View, search, and sort persist under the user's config directory.
 The footer reports the number of graph edges loaded, so dependency counts are
@@ -80,7 +81,7 @@ directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).
 Rows and markers:
 
 ```
-○ claimable   ● in_progress   ⊘ blocked   ✓ closed   ◷ deferred   📌 hold
+○ open        ● in_progress   ⊘ blocked   ✓ closed   ◷ deferred   📌 hold
 ⇣N depends on N   ⇡N has N dependents
 ```
 

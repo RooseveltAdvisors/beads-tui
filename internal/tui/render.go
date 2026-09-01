@@ -337,7 +337,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	return line
 }
 
-// rowStatus renders the native bd status.
+// rowStatus renders the bd status.
 func rowStatusText(issue bd.Issue) string {
 	status := strings.TrimSpace(issue.Status)
 	if status == "" {
