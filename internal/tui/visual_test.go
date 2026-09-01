@@ -115,8 +115,8 @@ func TestBoardGraphFailureKeepsListRows(t *testing.T) {
 			issues: map[bd.View][]bd.Issue{bd.ViewReady: issues},
 			down:   []bd.DepRecord{{ID: "blocker", Title: "Blocker", Status: "open"}},
 		},
-		failID:    "graph-timeout",
-		failErr:   errors.New("dependency timeout"),
+		failID:  "graph-timeout",
+		failErr: errors.New("dependency timeout"),
 	}
 	m := newTestModel(f.fakeClient)
 	m.backend = f

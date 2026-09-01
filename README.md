@@ -92,9 +92,11 @@ ready board, so scripts and agents get content instead of a pager.
 ## Read-only guarantee
 
 beads-tui never creates, edits, or closes beads. All data comes from read-only
-`bd` invocations; every failure surfaces bd's diagnostic and the UI keeps
-running. Missing `bd`, a store it cannot reach, or an empty board all render
-as explicit states rather than crashes or raw command output.
+`bd` invocations; board-load failures surface bd's diagnostic and the UI keeps
+running. Dependency metadata is best effort: a failed graph lookup is logged
+without hiding the loaded list rows. Missing `bd`, a store it cannot reach, or
+an empty board all render as explicit states rather than crashes or raw command
+output.
 
 ## Planned mapping
 

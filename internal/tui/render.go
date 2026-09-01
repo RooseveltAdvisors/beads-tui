@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/charmbracelet/glamour"
@@ -427,11 +428,11 @@ func truncateDigits(value string, width int) string {
 }
 
 func compactStatusIcon(status string) string {
-	for _, r := range status {
+	if status != "" {
+		r, _ := utf8.DecodeRuneInString(status)
 		if runewidth.RuneWidth(r) == 1 {
 			return string(r)
 		}
-		break
 	}
 	return "•"
 }
