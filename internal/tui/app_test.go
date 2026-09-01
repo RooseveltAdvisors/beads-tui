@@ -385,6 +385,39 @@ func TestRefreshInvalidatesDetailSnapshot(t *testing.T) {
 	}
 }
 
+func TestGraphCompletionDoesNotReplacePendingDetail(t *testing.T) {
+	m := newTestModel(nil)
+	m.treeMode = false
+	m.allRows = []bd.Issue{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}}
+	m.rows = append([]bd.Issue(nil), m.allRows...)
+	m.detail = &bd.Issue{ID: "a"}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+
+	updated, detailCmd := m.Update(teaKeyMsg("j"))
+	m = updated.(Model)
+	if detailCmd == nil || m.detailPendingID != "b" {
+		t.Fatalf("selection did not start the b detail request: cmd=%v pending=%q", detailCmd != nil, m.detailPendingID)
+	}
+	if m.detail != nil {
+		t.Fatalf("stale detail remained selected: %+v", m.detail)
+	}
+	pendingGeneration := m.detailGen
+	updated, graphCmd := m.Update(graphMsg{
+		view:        m.view,
+		generation:  m.boardGen,
+		issues:      m.allRows,
+		graphIssues: m.allRows,
+		deps:        map[string][]bd.DepRecord{"a": {{ID: "graph-down"}}},
+		reverseDeps: map[string][]bd.DepRecord{"a": {{ID: "graph-up"}}},
+		complete:    true,
+	})
+	m = updated.(Model)
+	if graphCmd != nil || m.detailGen != pendingGeneration || m.detailPendingID != "b" {
+		t.Fatalf("graph completion disturbed pending detail: cmd=%v generation=%d pending=%q", graphCmd != nil, m.detailGen, m.detailPendingID)
+	}
+}
+
 func TestCompleteGraphSnapshotUpdatesDetailEdges(t *testing.T) {
 	m := newTestModel(nil)
 	m.rows = []bd.Issue{{ID: "root", Title: "Root"}}

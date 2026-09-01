@@ -151,6 +151,26 @@ func TestBoardStatePersistsAcrossModels(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotLoadsAndReplacesAcrossModels(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	f := &fakeClient{}
+	m := newTestModel(f)
+	cached := []bd.Issue{{ID: "cached", Title: "Cached board", Status: "open"}}
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: cached})
+
+	reloaded := New(f)
+	if len(reloaded.rows) != 1 || reloaded.rows[0].ID != "cached" || !reloaded.loading {
+		t.Fatalf("reloaded snapshot = loading:%v rows:%+v", reloaded.loading, reloaded.rows)
+	}
+
+	live := []bd.Issue{{ID: "live", Title: "Live board", Status: "open"}}
+	reloaded = applyMsg(t, reloaded, boardMsg{view: bd.ViewOpen, generation: reloaded.boardGen, issues: live})
+	latest := New(f)
+	if len(latest.rows) != 1 || latest.rows[0].ID != "live" {
+		t.Fatalf("replaced snapshot rows = %+v", latest.rows)
+	}
+}
+
 func TestListRowsRenderColoredLabels(t *testing.T) {
 	row := NewVocab(nil).ListRow(bd.Issue{ID: "fm-x", Title: "T", Status: "open", Labels: []string{"frontend", "urgent"}}, 50, false)
 	plain := stripANSI(row)

@@ -53,37 +53,39 @@ type graphBackend interface {
 type Model struct {
 	backend Backend
 
-	view        bd.View
-	views       []bd.View
-	sortMode    SortMode
-	filter      Filter
-	allRows     []bd.Issue
-	deps        map[string][]bd.DepRecord
-	reverseDeps map[string][]bd.DepRecord
-	graphRows   []bd.Issue
-	rows        []bd.Issue
-	treeRows    []TreeRow
-	expanded    map[string]bool
-	treeMode    bool
-	vocab       Vocab
-	boardErr    string
-	loading     bool
-	boardGen    uint64
-	graphReady  bool
-	graphEdges  int
-	graphCache  *graphCache
+	view         bd.View
+	views        []bd.View
+	sortMode     SortMode
+	filter       Filter
+	allRows      []bd.Issue
+	deps         map[string][]bd.DepRecord
+	reverseDeps  map[string][]bd.DepRecord
+	graphRows    []bd.Issue
+	rows         []bd.Issue
+	treeRows     []TreeRow
+	expanded     map[string]bool
+	treeMode     bool
+	vocab        Vocab
+	boardErr     string
+	loading      bool
+	boardGen     uint64
+	graphReady   bool
+	graphEdges   int
+	graphCache   *graphCache
+	lastSnapshot *boardSnapshot
 
 	selected int
 	focus    Focus
 	dOffset  int
 
-	detail    *bd.Issue
-	down      []bd.DepRecord
-	up        []bd.DepRecord
-	detailErr string
-	checking  bool
-	detailGen uint64
-	graph     bool
+	detail          *bd.Issue
+	down            []bd.DepRecord
+	up              []bd.DepRecord
+	detailErr       string
+	checking        bool
+	detailGen       uint64
+	detailPendingID string
+	graph           bool
 
 	help         bool
 	helpOffset   int
@@ -143,6 +145,11 @@ type graphCache struct {
 	complete    bool
 }
 
+type boardSnapshot struct {
+	View   bd.View    `json:"view"`
+	Issues []bd.Issue `json:"issues"`
+}
+
 // statusMsg carries the status vocabulary.
 type statusMsg struct {
 	statuses []bd.StatusInfo
@@ -170,9 +177,10 @@ type yankMsg struct {
 }
 
 type savedState struct {
-	View     bd.View  `json:"view"`
-	SortMode SortMode `json:"sort_mode"`
-	Filter   Filter   `json:"filter"`
+	View     bd.View        `json:"view"`
+	SortMode SortMode       `json:"sort_mode"`
+	Filter   Filter         `json:"filter"`
+	Snapshot *boardSnapshot `json:"board_snapshot,omitempty"`
 }
 
 func statePath() (string, error) {
@@ -204,9 +212,17 @@ func loadState() (savedState, bool) {
 		log.Printf("beads-tui: parse state: %v", err)
 		return savedState{}, false
 	}
-	state.View = bd.View(strings.ToLower(strings.TrimSpace(string(state.View))))
-	if !state.View.Valid() || state.View == bd.View("ready") || state.View == bd.View("all") {
+	state.View = normalizeStateView(state.View)
+	if state.View == "" {
 		state.View = bd.ViewOpen
+	}
+	if state.Snapshot != nil {
+		state.Snapshot.View = normalizeStateView(state.Snapshot.View)
+		if state.Snapshot.View == "" {
+			state.Snapshot = nil
+		} else {
+			state.Snapshot.Issues = cloneIssues(state.Snapshot.Issues)
+		}
 	}
 	if state.SortMode > SortDependents {
 		state.SortMode = SortCreated
@@ -215,6 +231,14 @@ func loadState() (savedState, bool) {
 		state.Filter = Filter{}
 	}
 	return state, true
+}
+
+func normalizeStateView(view bd.View) bd.View {
+	view = bd.View(strings.ToLower(strings.TrimSpace(string(view))))
+	if !view.Valid() || view == bd.View("ready") || view == bd.View("all") {
+		return ""
+	}
+	return view
 }
 
 func persistenceEnabled(backend Backend) bool {
@@ -235,7 +259,12 @@ func (m Model) saveState() {
 		log.Printf("beads-tui: locate state: %v", err)
 		return
 	}
-	data, err := json.MarshalIndent(savedState{View: m.view, SortMode: m.sortMode, Filter: m.filter}, "", "  ")
+	data, err := json.MarshalIndent(savedState{
+		View:     m.view,
+		SortMode: m.sortMode,
+		Filter:   m.filter,
+		Snapshot: cloneBoardSnapshot(m.lastSnapshot),
+	}, "", "  ")
 	if err != nil {
 		log.Printf("beads-tui: encode state: %v", err)
 		return
@@ -276,6 +305,11 @@ func New(backend Backend) Model {
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
 			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
+			m.lastSnapshot = cloneBoardSnapshot(state.Snapshot)
+			if m.lastSnapshot != nil && m.lastSnapshot.View == m.view {
+				m.allRows = cloneIssues(m.lastSnapshot.Issues)
+				m.projectRows("")
+			}
 		}
 	}
 	return m
@@ -317,17 +351,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.graphEdges = msg.edgeCount
 		m.graphCache = msg.cache
 		m.graphReady = true
-		if m.detail != nil {
-			if msg.complete {
-				for _, issue := range msg.issues {
-					if issue.ID == m.detail.ID {
-						detail := *m.detail
-						detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
-						m.detail = &detail
-						m.down = append([]bd.DepRecord(nil), m.deps[detail.ID]...)
-						m.up = append([]bd.DepRecord(nil), m.reverseDeps[detail.ID]...)
-						break
-					}
+		if msg.complete && m.detailPendingID == "" && m.detail != nil && m.detail.ID == prev {
+			for _, issue := range msg.issues {
+				if issue.ID == m.detail.ID {
+					detail := *m.detail
+					detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
+					m.detail = &detail
+					m.down = append([]bd.DepRecord(nil), m.deps[detail.ID]...)
+					m.up = append([]bd.DepRecord(nil), m.reverseDeps[detail.ID]...)
+					break
 				}
 			}
 		}
@@ -418,6 +450,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailErr = m.searchDErr
 			m.checking = false
 			m.detailGen++
+			m.detailPendingID = ""
 			cmd := m.rebuildRows(m.searchID)
 			m.focus = m.searchFocus
 			m.dOffset = m.searchDOff
@@ -611,6 +644,33 @@ func copyToClipboard(value string) tea.Cmd {
 // rebuildRows applies the current filter and sort while preserving selection
 // by bead id. It also requests detail if the selected row changed.
 func (m *Model) rebuildRows(previousID string) tea.Cmd {
+	m.projectRows(previousID)
+	if len(m.rows) == 0 {
+		m.detailGen++
+		m.detailPendingID = ""
+		m.detail, m.down, m.up = nil, nil, nil
+		m.detailErr = ""
+		m.checking = false
+		return nil
+	}
+	id := m.rows[m.selected].ID
+	if m.detailPendingID == id {
+		m.checking = true
+		return nil
+	}
+	if m.detailPendingID != "" {
+		m.detailGen++
+		m.detailPendingID = ""
+	}
+	if m.detail == nil || m.detail.ID != id {
+		m.checking = true
+		return m.loadDetailCmd(id)
+	}
+	m.checking = false
+	return nil
+}
+
+func (m *Model) projectRows(previousID string) {
 	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
@@ -639,17 +699,6 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 	if m.filter.Kind == FilterSearch && len(m.rows) > 0 {
 		m.expandAncestors(m.rows[m.selected].ID)
 	}
-	if len(m.rows) == 0 {
-		m.detail, m.down, m.up = nil, nil, nil
-		m.detailErr = ""
-		m.checking = false
-		return nil
-	}
-	if m.detail == nil || m.detail.ID != m.rows[m.selected].ID {
-		m.checking = true
-		return m.loadDetailCmd(m.rows[m.selected].ID)
-	}
-	return nil
 }
 
 func (m *Model) clampYankIndex() {
@@ -868,6 +917,7 @@ func (m Model) loadBoardCmd() tea.Cmd {
 
 func (m *Model) invalidateDetail() {
 	m.detailGen++
+	m.detailPendingID = ""
 	m.detail = nil
 	m.down = nil
 	m.up = nil
@@ -997,6 +1047,13 @@ func cloneIssues(issues []bd.Issue) []bd.Issue {
 	return cloned
 }
 
+func cloneBoardSnapshot(snapshot *boardSnapshot) *boardSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &boardSnapshot{View: snapshot.View, Issues: cloneIssues(snapshot.Issues)}
+}
+
 func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
 	if source == nil {
 		return nil
@@ -1106,6 +1163,15 @@ func (m Model) loadStatusesCmd() tea.Cmd {
 func (m *Model) loadDetailCmd(id string) tea.Cmd {
 	m.detailGen++
 	generation := m.detailGen
+	m.detailPendingID = id
+	m.checking = true
+	if m.detail == nil || m.detail.ID != id {
+		m.detail = nil
+		m.down = nil
+		m.up = nil
+		m.detailErr = ""
+		m.dOffset = 0
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
 		defer cancel()
@@ -1145,6 +1211,8 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	m.graphRows = nil
 	m.allRows = append([]bd.Issue(nil), msg.issues...)
 	m.deps = cloneDepMap(msg.deps)
+	m.lastSnapshot = &boardSnapshot{View: msg.view, Issues: cloneIssues(msg.issues)}
+	m.saveState()
 	return tea.Batch(m.rebuildRows(prev), m.loadGraphCmd(msg.view, msg.generation, msg.issues))
 }
 
@@ -1176,6 +1244,7 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 	if msg.generation != m.detailGen || m.selected >= len(m.rows) || msg.id != m.rows[m.selected].ID {
 		return nil
 	}
+	m.detailPendingID = ""
 	m.checking = false
 	if msg.err != nil {
 		m.detailErr = msg.err.Error()
