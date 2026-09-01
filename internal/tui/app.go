@@ -545,17 +545,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !wasOpen {
 			return m, m.startBoardLoad()
 		}
-		m.projectRows(previousID)
-		if m.detail != nil && m.detail.ID == m.selectedID() {
-			m.checking = false
-			return m, nil
-		}
-		m.detailGen++
-		m.detailPendingID = ""
-		m.detail, m.down, m.up = nil, nil, nil
-		m.detailErr = ""
-		m.checking = false
-		return m, nil
+		return m, m.rebuildRows(previousID)
 	}
 	if m.focus == FocusList {
 		return m.listKey(msg)

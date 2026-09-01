@@ -375,20 +375,57 @@ func TestLowercaseRIsSafeNoOp(t *testing.T) {
 }
 
 func TestUppercaseRResetsWithoutReloadingDefaultBoard(t *testing.T) {
-	m := drive(t, nil)
+	f := &fakeClient{}
+	m := drive(t, f)
 	m.sortMode = SortPriority
 	m.filter = ParseFilter("status:closed")
 	m.detail = nil
+	m.detailPendingID = ""
 	updated, cmd := m.Update(teaKeyMsg("R"))
 	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("reset on the default board should not reload bd")
+	if cmd == nil {
+		t.Fatal("reset should request detail for the selected row")
+	}
+	if f.listCalls != 0 {
+		t.Fatalf("reset on the default board reloaded bd %d times", f.listCalls)
 	}
 	if m.view != bd.ViewOpen || m.sortMode != SortCreated || m.filter.Active() {
 		t.Fatalf("reset state = view %q sort %q filter %+v", m.view, m.sortMode, m.filter)
 	}
 	if len(m.rows) != len(m.allRows) {
 		t.Fatalf("reset rows = %d, want %d", len(m.rows), len(m.allRows))
+	}
+	if cmd == nil || m.detailPendingID != m.selectedID() {
+		t.Fatalf("reset did not request selected detail: cmd=%v pending=%q selected=%q", cmd != nil, m.detailPendingID, m.selectedID())
+	}
+}
+
+func TestUppercaseRPreservesPendingDetailRequest(t *testing.T) {
+	m := newTestModel(&fakeClient{issue: testDetailOf("b")})
+	m.treeMode = false
+	m.allRows = []bd.Issue{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}}
+	m.rows = append([]bd.Issue(nil), m.allRows...)
+	m.detail = &bd.Issue{ID: "a"}
+
+	updated, pendingCmd := m.Update(teaKeyMsg("j"))
+	m = updated.(Model)
+	if pendingCmd == nil || m.detailPendingID != "b" {
+		t.Fatalf("selection did not start pending detail: cmd=%v pending=%q", pendingCmd != nil, m.detailPendingID)
+	}
+	pendingGeneration := m.detailGen
+
+	updated, resetCmd := m.Update(teaKeyMsg("R"))
+	m = updated.(Model)
+	if resetCmd != nil {
+		t.Fatal("reset should not reload the default board")
+	}
+	if m.detailGen != pendingGeneration || m.detailPendingID != "b" || !m.checking {
+		t.Fatalf("reset stranded pending detail: generation=%d pending=%q checking=%v", m.detailGen, m.detailPendingID, m.checking)
+	}
+
+	m = applyMsg(t, m, pendingCmd())
+	if m.detail == nil || m.detail.ID != "b" || m.detailPendingID != "" || m.checking {
+		t.Fatalf("pending detail did not apply after reset: detail=%+v pending=%q checking=%v", m.detail, m.detailPendingID, m.checking)
 	}
 }
 
