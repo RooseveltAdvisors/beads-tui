@@ -124,6 +124,7 @@ func New(backend Backend) Model {
 	return Model{
 		backend: backend,
 		view:    bd.ViewReady,
+		loading: true,
 		// Created is newest-first by default; s cycles through the remaining modes.
 		sortMode:    SortCreated,
 		focus:       FocusList,
@@ -868,7 +869,7 @@ func (m Model) renderListPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(l))
 		}
 		lines = append(lines, styleDim.Render("Check bd is installed and a beads workspace is active (BEADS_DIR)."))
-	case m.loading && len(m.rows) == 0:
+	case m.loading && len(m.rows) == 0 && len(m.allRows) == 0:
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
 		if m.filter.Active() {

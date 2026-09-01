@@ -192,6 +192,17 @@ func TestBoardLoadAndRender(t *testing.T) {
 	}
 }
 
+func TestInitialBoardShowsLoading(t *testing.T) {
+	m := newTestModel(&fakeClient{})
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Loading board") {
+		t.Fatalf("initial board should show loading state:\n%s", view)
+	}
+	if strings.Contains(view, "No ready work") {
+		t.Fatalf("initial board must not claim ready work is empty:\n%s", view)
+	}
+}
+
 func TestSelectionMovesAndLoadsDetail(t *testing.T) {
 	f := &fakeClient{down: []bd.DepRecord{{ID: "fm-aaa", Title: "Alpha task", Status: "open", DependencyType: "blocks"}}}
 	m := drive(t, f)
@@ -474,6 +485,33 @@ func TestBoardErrorRendersAndKeepsLife(t *testing.T) {
 	nm := applyMsg(t, m, teaKeyMsg("q"))
 	if !nm.quitting {
 		t.Error("q after board error should quit")
+	}
+}
+
+func TestEmptyWorkspaceShowsActionableError(t *testing.T) {
+	err := errors.New("bd list --ready --json -n 0: Error: no beads database found\nHint: set BEADS_DIR to point to your .beads directory")
+	m := newTestModel(&fakeClient{})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, err: err})
+	view := strings.ReplaceAll(stripANSI(m.View()), "\n", " ")
+	for _, want := range []string{"Could not load board", "no beads", "database found", "BEADS_DIR", "board error"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("empty-workspace view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestPopulatedGraphRendersRows(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root", Title: "Fleet root", Status: "open"},
+		{ID: "child", Title: "Fleet child", Status: "open", ParentID: "root"},
+	}
+	m := newTestModel(&fakeClient{issue: &issues[0]})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues, deps: map[string][]bd.DepRecord{}})
+	view := stripANSI(m.View())
+	for _, want := range []string{"Fleet root", "Fleet child", "total:2"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("populated graph view missing %q:\n%s", want, view)
+		}
 	}
 }
 
