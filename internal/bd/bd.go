@@ -44,6 +44,15 @@ func (c *Client) List(ctx context.Context, view View) ([]Issue, error) {
 	return issues, nil
 }
 
+// ListAll returns the complete issue set for graph-wide metadata.
+func (c *Client) ListAll(ctx context.Context) ([]Issue, error) {
+	var issues []Issue
+	if err := c.jsonCall(ctx, &issues, "list", "--all", "--json", "-n", "0"); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
 // Show returns the full detail for one bead.
 func (c *Client) Show(ctx context.Context, id string) (*Issue, error) {
 	if id == "" {
@@ -78,15 +87,100 @@ func (c *Client) Deps(ctx context.Context, id string, up bool) ([]DepRecord, err
 	return records, nil
 }
 
+// DepsBatch returns dependency edges grouped by their requested anchor IDs.
+func (c *Client) DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]DepRecord, error) {
+	ids = uniqueIDs(ids)
+	result := make(map[string][]DepRecord, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	args := []string{"dep", "list"}
+	args = append(args, ids...)
+	args = append(args, "--json")
+	if up {
+		args = append(args, "--direction", "up")
+	}
+	var records []batchDepRecord
+	if err := c.jsonCall(ctx, &records, args...); err != nil {
+		return nil, err
+	}
+	requested := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		requested[id] = struct{}{}
+		result[id] = nil
+	}
+	for _, record := range records {
+		anchor, target := record.IssueID, record.ID
+		if anchor == "" {
+			anchor = record.SourceID
+		}
+		if record.DependsOnID != "" {
+			anchor, target = record.IssueID, record.DependsOnID
+			if up {
+				anchor, target = record.DependsOnID, record.IssueID
+			}
+		}
+		if anchor == "" || target == "" {
+			return nil, errors.New("bd dep list batch: record missing issue_id or depends_on_id")
+		}
+		if _, ok := requested[anchor]; !ok {
+			continue
+		}
+		dependencyType := record.Type
+		if dependencyType == "" {
+			dependencyType = record.DependencyType
+		}
+		result[anchor] = append(result[anchor], DepRecord{
+			ID:             target,
+			Title:          record.Title,
+			Status:         record.Status,
+			Priority:       record.Priority,
+			IssueType:      record.IssueType,
+			DependencyType: dependencyType,
+		})
+	}
+	return result, nil
+}
+
 // Statuses loads the status vocabulary (icons and categories).
 func (c *Client) Statuses(ctx context.Context) ([]StatusInfo, error) {
 	var resp struct {
 		BuiltIn []StatusInfo `json:"built_in_statuses"`
+		Custom  []StatusInfo `json:"custom_statuses"`
 	}
 	if err := c.jsonCall(ctx, &resp, "statuses", "--json"); err != nil {
 		return nil, err
 	}
-	return resp.BuiltIn, nil
+	return append(resp.BuiltIn, resp.Custom...), nil
+}
+
+type batchDepRecord struct {
+	IssueID        string `json:"issue_id"`
+	DependsOnID    string `json:"depends_on_id"`
+	SourceID       string `json:"source_id"`
+	Type           string `json:"type"`
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	Priority       int    `json:"priority"`
+	IssueType      string `json:"issue_type"`
+	DependencyType string `json:"dependency_type"`
+}
+
+func uniqueIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 // jsonCall runs a read-only bd invocation, requires JSON on stdout, and

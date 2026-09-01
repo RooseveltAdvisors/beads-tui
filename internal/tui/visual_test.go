@@ -4,19 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 )
-
-type concurrentDepsClient struct {
-	*fakeClient
-	mu     sync.Mutex
-	active int
-	max    int
-}
 
 type failingGraphClient struct {
 	*fakeClient
@@ -31,18 +22,13 @@ func (f *failingGraphClient) Deps(ctx context.Context, id string, up bool) ([]bd
 	return f.fakeClient.Deps(ctx, id, up)
 }
 
-func (f *concurrentDepsClient) Deps(ctx context.Context, id string, up bool) ([]bd.DepRecord, error) {
-	f.mu.Lock()
-	f.active++
-	if f.active > f.max {
-		f.max = f.active
+func (f *failingGraphClient) DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]bd.DepRecord, error) {
+	result, err := f.fakeClient.DepsBatch(ctx, ids, up)
+	if err != nil || up {
+		return result, err
 	}
-	f.mu.Unlock()
-	time.Sleep(10 * time.Millisecond)
-	f.mu.Lock()
-	f.active--
-	f.mu.Unlock()
-	return f.fakeClient.Deps(ctx, id, up)
+	delete(result, f.failID)
+	return result, f.failErr
 }
 
 func TestReadyDependsSortPutsMostBlockingFirst(t *testing.T) {
@@ -90,15 +76,14 @@ func TestBoardDependsUsesReverseDependencyGraph(t *testing.T) {
 }
 
 func TestBoardGraphDerivesDependentsFromDownEdges(t *testing.T) {
-	issues := []bd.Issue{
-		{ID: "blocker", CreatedAt: "2026-09-01T00:00:00Z"},
-		{ID: "dependent", CreatedAt: "2026-09-02T00:00:00Z"},
-	}
+	issues := []bd.Issue{{ID: "blocker", CreatedAt: "2026-09-01T00:00:00Z"}}
 	f := &fakeClient{
-		issues: map[bd.View][]bd.Issue{bd.ViewClosed: issues},
+		issues: map[bd.View][]bd.Issue{
+			bd.ViewClosed: issues,
+			bd.ViewOpen:   {{ID: "dependent", CreatedAt: "2026-09-02T00:00:00Z"}},
+		},
 		downByID: map[string][]bd.DepRecord{
 			"dependent": {{ID: "blocker", DependencyType: "blocks"}},
-			"blocker":   {},
 		},
 	}
 	m := newTestModel(f)
@@ -115,11 +100,11 @@ func TestBoardGraphDerivesDependentsFromDownEdges(t *testing.T) {
 	if len(boardGraph.deps["dependent"]) != 1 {
 		t.Fatalf("down graph edges = %+v, want one dependent edge", boardGraph.deps)
 	}
-	depCalls := f.depCalls
+	batchCalls := f.batchCalls
 	m = applyMsg(t, m, boardGraph)
 	_ = m.loadGraphCmd(board.view, board.generation, board.issues)()
-	if f.depCalls != depCalls {
-		t.Fatalf("cached graph made %d new dependency calls", f.depCalls-depCalls)
+	if f.batchCalls != batchCalls {
+		t.Fatalf("cached graph made %d new dependency calls", f.batchCalls-batchCalls)
 	}
 }
 
@@ -139,25 +124,24 @@ func TestBoardRowsApplyBeforeGraphEnrichment(t *testing.T) {
 	}
 }
 
-func TestBoardGraphLoadsWithBoundedConcurrency(t *testing.T) {
-	issues := make([]bd.Issue, boardGraphWorkers+2)
+func TestBoardGraphUsesSingleBatchedDependencyQuery(t *testing.T) {
+	issues := make([]bd.Issue, 10)
 	for i := range issues {
 		issues[i].ID = "issue-" + itoa(i)
 	}
-	f := &concurrentDepsClient{fakeClient: &fakeClient{
+	f := &fakeClient{
 		issues: map[bd.View][]bd.Issue{bd.ViewClosed: issues},
-	}}
-	m := newTestModel(f.fakeClient)
-	m.backend = f
+	}
+	m := newTestModel(f)
 	m.view = bd.ViewClosed
 	msg := m.loadBoardCmd()()
 	board := msg.(boardMsg)
-	if got := board.err; got != nil {
-		t.Fatalf("load board: %v", got)
-	}
 	_ = m.loadGraphCmd(board.view, board.generation, board.issues)()
-	if f.max <= 1 || f.max > boardGraphWorkers {
-		t.Fatalf("peak dependency calls = %d, want 2..%d", f.max, boardGraphWorkers)
+	if f.batchCalls != 1 {
+		t.Fatalf("batched dependency calls = %d, want 1", f.batchCalls)
+	}
+	if f.depCalls != 0 {
+		t.Fatalf("per-issue dependency calls = %d, want 0", f.depCalls)
 	}
 }
 
@@ -257,6 +241,7 @@ func TestGraphShortcutOpensForDependencyNeighborhood(t *testing.T) {
 	m.rows = []bd.Issue{{ID: "root", Status: "open"}, {ID: "leaf", Status: "open"}}
 	m.allRows = m.rows
 	m.deps = map[string][]bd.DepRecord{"leaf": {{ID: "root"}}}
+	m.graphReady = true
 	m.selected = 1
 	m = sendKey(t, m, "G")
 	if !m.graph {
@@ -265,5 +250,25 @@ func TestGraphShortcutOpensForDependencyNeighborhood(t *testing.T) {
 	m = sendKey(t, m, "esc")
 	if m.graph {
 		t.Fatal("esc did not close graph view")
+	}
+}
+
+func TestDetailCountsUseFetchedReverseEdges(t *testing.T) {
+	m := New(nil)
+	m.rows = []bd.Issue{{ID: "blocker", Status: "closed"}}
+	m.selected = 0
+	m.detailGen = 1
+	m = applyMsg(t, m, detailMsg{
+		id:         "blocker",
+		generation: 1,
+		issue:      &bd.Issue{ID: "blocker", DependentCount: 0},
+		up:         []bd.DepRecord{{ID: "dependent", DependencyType: "blocks"}},
+	})
+	if m.detail == nil || m.detail.DependentCount != 1 {
+		t.Fatalf("detail dependent count = %v, want 1", m.detail)
+	}
+	plain := stripANSI(strings.Join(m.buildDetail(60), "\n"))
+	if !strings.Contains(plain, "Dependents 1") || !strings.Contains(plain, "Dependents (1)") {
+		t.Fatalf("detail counts disagree with fetched edges: %q", plain)
 	}
 }

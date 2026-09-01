@@ -164,7 +164,7 @@ func (v Vocab) Icon(status string) string {
 	if icon, ok := workStateIcons[normalized]; ok {
 		return icon
 	}
-	if icon, ok := v.icons[normalized]; ok {
+	if icon, ok := v.icons[normalized]; ok && strings.TrimSpace(icon) != "" {
 		return icon
 	}
 	return "○"
@@ -497,7 +497,15 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 	if d.CreatedAt != "" {
 		lines = append(lines, styleDim.Render("Created: "+d.CreatedAt+"   Updated: "+orDash(d.UpdatedAt)))
 	}
-	counts := "Depends " + itoa(d.DependencyCount) + " · Dependents " + itoa(d.DependentCount) + " · Comments " + itoa(d.CommentCount)
+	dependencyCount := d.DependencyCount
+	dependentCount := d.DependentCount
+	if len(down) > dependencyCount {
+		dependencyCount = len(down)
+	}
+	if len(up) > dependentCount {
+		dependentCount = len(up)
+	}
+	counts := "Depends " + itoa(dependencyCount) + " · Dependents " + itoa(dependentCount) + " · Comments " + itoa(d.CommentCount)
 	lines = append(lines, styleDim.Render(counts))
 	lines = append(lines, "")
 

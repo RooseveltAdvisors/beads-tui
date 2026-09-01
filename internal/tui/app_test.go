@@ -29,6 +29,7 @@ type fakeClient struct {
 	showCalls   int
 	lastShowID  string
 	queuedLists [][]bd.Issue
+	batchCalls  int
 }
 
 func (f *fakeClient) List(_ context.Context, view bd.View) ([]bd.Issue, error) {
@@ -39,6 +40,24 @@ func (f *fakeClient) List(_ context.Context, view bd.View) ([]bd.Issue, error) {
 		return issues, f.failList
 	}
 	return f.issues[view], f.failList
+}
+
+func (f *fakeClient) ListAll(context.Context) ([]bd.Issue, error) {
+	seen := make(map[string]struct{})
+	var issues []bd.Issue
+	for _, viewIssues := range f.issues {
+		for _, issue := range viewIssues {
+			if issue.ID == "" {
+				continue
+			}
+			if _, ok := seen[issue.ID]; ok {
+				continue
+			}
+			seen[issue.ID] = struct{}{}
+			issues = append(issues, issue)
+		}
+	}
+	return issues, nil
 }
 
 func (f *fakeClient) Show(_ context.Context, id string) (*bd.Issue, error) {
@@ -64,6 +83,29 @@ func (f *fakeClient) Deps(_ context.Context, id string, up bool) ([]bd.DepRecord
 		return f.downByID[id], nil
 	}
 	return f.down, nil
+}
+
+func (f *fakeClient) DepsBatch(_ context.Context, ids []string, up bool) (map[string][]bd.DepRecord, error) {
+	f.mu.Lock()
+	f.batchCalls++
+	f.mu.Unlock()
+	result := make(map[string][]bd.DepRecord, len(ids))
+	for _, id := range ids {
+		if up {
+			if f.upByID != nil {
+				result[id] = f.upByID[id]
+			} else {
+				result[id] = f.up
+			}
+			continue
+		}
+		if f.downByID != nil {
+			result[id] = f.downByID[id]
+		} else {
+			result[id] = f.down
+		}
+	}
+	return result, nil
 }
 
 func (f *fakeClient) Statuses(context.Context) ([]bd.StatusInfo, error) {
@@ -473,6 +515,38 @@ func TestViewSwitching(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "blocked board") || !strings.Contains(view, "fm-ddd") {
 		t.Errorf("switched view missing content:\n%s", view)
+	}
+}
+
+func TestNumericKeysSelectAllVisibleStatusTabs(t *testing.T) {
+	m := newTestModel(nil)
+	m.views = []bd.View{bd.ViewOpen, bd.ViewInProgress, bd.ViewBlocked, bd.ViewClosed, bd.ViewDeferred, "awaiting_review"}
+	for i, key := range []string{"1", "2", "3", "4", "5", "6"} {
+		updated, _ := m.Update(teaKeyMsg(key))
+		m = updated.(Model)
+		if m.view != m.views[i] {
+			t.Fatalf("key %s selected %q, want %q", key, m.view, m.views[i])
+		}
+	}
+}
+
+func TestYankIndexClampsAfterRowsChange(t *testing.T) {
+	m := newTestModel(nil)
+	m.rows = []bd.Issue{{ID: "with-url", Title: "Title", URL: "https://example.test"}}
+	m.selected = 0
+	m.yank = true
+	m.yankIndex = 2
+	m.allRows = []bd.Issue{{ID: "without-url", Title: "Replacement"}}
+	m.rebuildRows("")
+	if m.yankIndex != 1 {
+		t.Fatalf("yank index = %d, want 1 after URL disappeared", m.yankIndex)
+	}
+	updated, cmd := m.Update(teaKeyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("enter did not copy the clamped yank item")
+	}
+	if updated.(Model).yankIndex != 1 {
+		t.Fatalf("enter changed yank index to %d", updated.(Model).yankIndex)
 	}
 }
 

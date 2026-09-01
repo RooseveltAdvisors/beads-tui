@@ -150,7 +150,7 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 		t.Fatalf("root dependent count = %d, want 1", probe.RootDependentCount)
 	}
 	calls := readFixtureCalls(t, logPath)
-	listCalls, downCalls := 0, 0
+	listCalls, allCalls, batchCalls := 0, 0, 0
 	for _, call := range calls {
 		if call.cwd != workspace || call.beadsDir != beadsDir {
 			t.Fatalf("bd call environment = cwd %q, BEADS_DIR %q; want %q, %q", call.cwd, call.beadsDir, workspace, beadsDir)
@@ -158,20 +158,20 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 		switch {
 		case call.args == "list --status open --json -n 0":
 			listCalls++
+		case call.args == "list --all --json -n 0":
+			allCalls++
 		case strings.HasPrefix(call.args, "dep list "):
 			fields := strings.Fields(call.args)
-			switch {
-			case len(fields) == 4 && fields[3] == "--json":
-				downCalls++
-			default:
+			if len(fields) < 4 || fields[len(fields)-1] != "--json" {
 				t.Fatalf("unexpected dependency command: %q", call.args)
 			}
+			batchCalls++
 		default:
 			t.Fatalf("unexpected bd command: %q", call.args)
 		}
 	}
-	if listCalls != 1 || downCalls != len(issues) {
-		t.Fatalf("bd calls list=%d down=%d, want 1 %d", listCalls, downCalls, len(issues))
+	if listCalls != 1 || allCalls != 1 || batchCalls != 1 {
+		t.Fatalf("bd calls list=%d all=%d batch=%d, want 1 1 1", listCalls, allCalls, batchCalls)
 	}
 }
 
@@ -229,12 +229,12 @@ if [ "${1-}" = "list" ] && [ "${2-}" = "--status" ] && [ "${3-}" = "open" ] && [
   printf '%s' "$BEADS_TUI_READY_JSON"
   exit 0
 fi
+if [ "${1-}" = "list" ] && [ "${2-}" = "--all" ] && [ "${3-}" = "--json" ] && [ "${4-}" = "-n" ] && [ "${5-}" = "0" ]; then
+  printf '%s' "$BEADS_TUI_READY_JSON"
+  exit 0
+fi
 if [ "${1-}" = "dep" ] && [ "${2-}" = "list" ]; then
-  if [ "${3-}" = "fm-01" ] && [ "${4-}" = "--json" ]; then
-    printf '%s' '[{"id":"fm-00","title":"Fleet task 00","status":"open","dependency_type":"blocks"}]'
-  else
-    printf '[]'
-  fi
+  printf '%s' '[{"issue_id":"fm-01","depends_on_id":"fm-00","type":"blocks"}]'
   exit 0
 fi
 printf 'unsupported bd command: %s\n' "$*" >&2

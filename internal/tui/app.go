@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -24,8 +23,6 @@ import (
 // bdTimeout caps every bd call so a wedged store (or lock contention) shows
 // an error instead of freezing the UI.
 const bdTimeout = 8 * time.Second
-
-const boardGraphWorkers = 8
 
 // Focus tracks which pane receives the navigation keys.
 type Focus int
@@ -46,25 +43,34 @@ type Backend interface {
 	Statuses(ctx context.Context) ([]bd.StatusInfo, error)
 }
 
+type graphBackend interface {
+	Backend
+	ListAll(ctx context.Context) ([]bd.Issue, error)
+	DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]bd.DepRecord, error)
+}
+
 // Model is the bead board application state.
 type Model struct {
 	backend Backend
 
-	view     bd.View
-	views    []bd.View
-	sortMode SortMode
-	filter   Filter
-	allRows  []bd.Issue
-	deps     map[string][]bd.DepRecord
-	depCache map[string][]bd.DepRecord
-	rows     []bd.Issue
-	treeRows []TreeRow
-	expanded map[string]bool
-	treeMode bool
-	vocab    Vocab
-	boardErr string
-	loading  bool
-	boardGen uint64
+	view        bd.View
+	views       []bd.View
+	sortMode    SortMode
+	filter      Filter
+	allRows     []bd.Issue
+	deps        map[string][]bd.DepRecord
+	reverseDeps map[string][]bd.DepRecord
+	graphRows   []bd.Issue
+	rows        []bd.Issue
+	treeRows    []TreeRow
+	expanded    map[string]bool
+	treeMode    bool
+	vocab       Vocab
+	boardErr    string
+	loading     bool
+	boardGen    uint64
+	graphReady  bool
+	graphCache  *graphCache
 
 	selected int
 	focus    Focus
@@ -113,11 +119,23 @@ type boardMsg struct {
 // graphMsg carries best-effort dependency enrichment separately from the list
 // snapshot so the first rows paint without waiting on graph subprocesses.
 type graphMsg struct {
-	view       bd.View
-	generation uint64
-	issues     []bd.Issue
-	deps       map[string][]bd.DepRecord
-	cache      map[string][]bd.DepRecord
+	view        bd.View
+	generation  uint64
+	issues      []bd.Issue
+	graphIssues []bd.Issue
+	deps        map[string][]bd.DepRecord
+	reverseDeps map[string][]bd.DepRecord
+	cache       *graphCache
+}
+
+type graphCache struct {
+	view        bd.View
+	generation  uint64
+	currentIDs  []string
+	issues      []bd.Issue
+	graphIssues []bd.Issue
+	deps        map[string][]bd.DepRecord
+	reverseDeps map[string][]bd.DepRecord
 }
 
 // statusMsg carries the status vocabulary.
@@ -287,8 +305,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		prev := m.selectedID()
 		m.allRows = append([]bd.Issue(nil), msg.issues...)
-		m.deps = msg.deps
-		m.depCache = msg.cache
+		m.graphRows = append([]bd.Issue(nil), msg.graphIssues...)
+		m.deps = cloneDepMap(msg.deps)
+		m.reverseDeps = cloneDepMap(msg.reverseDeps)
+		m.graphCache = msg.cache
+		m.graphReady = true
+		if m.detail != nil {
+			for _, issue := range msg.issues {
+				if issue.ID == m.detail.ID {
+					detail := *m.detail
+					detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
+					m.detail = &detail
+					break
+				}
+			}
+		}
 		return m, m.rebuildRows(prev)
 	case statusMsg:
 		if msg.err == nil {
@@ -331,9 +362,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			items := m.yankItems()
-			if len(items) > 0 {
-				return m, copyToClipboard(items[m.yankIndex].value)
+			if len(items) == 0 {
+				return m, nil
 			}
+			m.yankIndex = min(max(m.yankIndex, 0), len(items)-1)
+			return m, copyToClipboard(items[m.yankIndex].value)
 		}
 		return m, nil
 	}
@@ -401,7 +434,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-	switch msg.String() {
+	key := msg.String()
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+		return m.switchView(m.viewAt(int(key[0] - '1')))
+	}
+	switch key {
 	case "?":
 		m.help = true
 		m.helpOffset = 0
@@ -428,12 +465,6 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.dOffset = 0
 		}
 		return m, nil
-	case "1":
-		return m.switchView(m.viewAt(0))
-	case "2":
-		return m.switchView(m.viewAt(1))
-	case "3":
-		return m.switchView(m.viewAt(2))
 	case "s":
 		m.sortMode = m.sortMode.Next()
 		m.saveState()
@@ -593,6 +624,7 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 			}
 		}
 	}
+	m.clampYankIndex()
 	if m.filter.Kind == FilterSearch && len(m.rows) > 0 {
 		m.expandAncestors(m.rows[m.selected].ID)
 	}
@@ -607,6 +639,15 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 		return m.loadDetailCmd(m.rows[m.selected].ID)
 	}
 	return nil
+}
+
+func (m *Model) clampYankIndex() {
+	items := m.yankItems()
+	if len(items) == 0 {
+		m.yankIndex = 0
+		return
+	}
+	m.yankIndex = min(max(m.yankIndex, 0), len(items)-1)
 }
 
 func (m *Model) expandAncestors(id string) {
@@ -789,6 +830,11 @@ func (m Model) buildDetail(width int) []string {
 func (m *Model) startBoardLoad() tea.Cmd {
 	m.boardGen++
 	m.loading = true
+	m.graphReady = false
+	m.graphCache = nil
+	m.deps = nil
+	m.reverseDeps = nil
+	m.graphRows = nil
 	return m.loadBoardCmd()
 }
 
@@ -810,73 +856,198 @@ func (m Model) loadBoardCmd() tea.Cmd {
 // loadGraphCmd enriches a painted list with one bounded, cached dependency
 // pass. The board never waits for this best-effort metadata before first paint.
 func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) tea.Cmd {
-	backend := m.backend
-	cache := m.depCache
+	backend, supportsGraph := m.backend.(graphBackend)
+	cache := m.graphCache
+	currentIDs := issueIDs(issues)
 	return func() tea.Msg {
-		if cache == nil {
-			cache = map[string][]bd.DepRecord{}
+		if graphCacheMatches(cache, view, generation, currentIDs) {
+			return graphMsgFromCache(cache)
 		}
-		type graphResult struct {
-			deps []bd.DepRecord
-			err  error
-			ok   bool
+		current := cloneIssues(issues)
+		graphIssues := cloneIssues(issues)
+		deps := map[string][]bd.DepRecord{}
+		reverseDeps := map[string][]bd.DepRecord{}
+		if supportsGraph {
+			ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
+			all, err := backend.ListAll(ctx)
+			if err != nil {
+				log.Printf("beads-tui: graph issue snapshot skipped: %v", err)
+			} else {
+				graphIssues = mergeIssueSnapshots(all, issues)
+			}
+			graphIDs := issueIDs(graphIssues)
+			raw, err := backend.DepsBatch(ctx, graphIDs, false)
+			cancel()
+			if err != nil {
+				log.Printf("beads-tui: graph dependencies skipped: %v", err)
+			}
+			deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
+		} else {
+			log.Printf("beads-tui: backend does not support batched graph loading")
 		}
-		results := make([]graphResult, len(issues))
-		jobs := make(chan int)
-		var workers sync.WaitGroup
-		workerCount := min(boardGraphWorkers, len(issues))
-		workers.Add(workerCount)
-		for range workerCount {
-			go func() {
-				defer workers.Done()
-				for i := range jobs {
-					issue := issues[i]
-					if issue.ID == "" {
-						continue
-					}
-					if deps, ok := cache[issue.ID]; ok {
-						results[i] = graphResult{deps: deps, ok: true}
-						continue
-					}
-					callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-					deps, err := backend.Deps(callCtx, issue.ID, false)
-					callCancel()
-					results[i] = graphResult{deps: deps, err: err, ok: err == nil}
-				}
-			}()
+		current = enrichIssues(current, deps, reverseDeps)
+		cache = &graphCache{
+			view:        view,
+			generation:  generation,
+			currentIDs:  append([]string(nil), currentIDs...),
+			issues:      cloneIssues(current),
+			graphIssues: cloneIssues(graphIssues),
+			deps:        cloneDepMap(deps),
+			reverseDeps: cloneDepMap(reverseDeps),
 		}
-		for i := range issues {
-			jobs <- i
+		return graphMsgFromCache(cache)
+	}
+}
+
+func graphCacheMatches(cache *graphCache, view bd.View, generation uint64, currentIDs []string) bool {
+	return cache != nil && cache.view == view && cache.generation == generation && sameIDs(cache.currentIDs, currentIDs)
+}
+
+func graphMsgFromCache(cache *graphCache) graphMsg {
+	return graphMsg{
+		view:        cache.view,
+		generation:  cache.generation,
+		issues:      cloneIssues(cache.issues),
+		graphIssues: cloneIssues(cache.graphIssues),
+		deps:        cloneDepMap(cache.deps),
+		reverseDeps: cloneDepMap(cache.reverseDeps),
+		cache:       cache,
+	}
+}
+
+func issueIDs(issues []bd.Issue) []string {
+	seen := make(map[string]struct{}, len(issues))
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.ID == "" {
+			continue
 		}
-		close(jobs)
-		workers.Wait()
-		deps := make(map[string][]bd.DepRecord)
-		derivedDependents := make(map[string]int)
-		for i, result := range results {
-			if !result.ok {
-				log.Printf("beads-tui: dependencies for %s skipped: %v", issues[i].ID, result.err)
+		if _, ok := seen[issue.ID]; ok {
+			continue
+		}
+		seen[issue.ID] = struct{}{}
+		ids = append(ids, issue.ID)
+	}
+	return ids
+}
+
+func sameIDs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, id := range a {
+		seen[id] = struct{}{}
+	}
+	for _, id := range b {
+		if _, ok := seen[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneIssues(issues []bd.Issue) []bd.Issue {
+	cloned := append([]bd.Issue(nil), issues...)
+	for i := range cloned {
+		cloned[i].Labels = append([]string(nil), cloned[i].Labels...)
+	}
+	return cloned
+}
+
+func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string][]bd.DepRecord, len(source))
+	for id, records := range source {
+		cloned[id] = append([]bd.DepRecord(nil), records...)
+	}
+	return cloned
+}
+
+func mergeIssueSnapshots(all, current []bd.Issue) []bd.Issue {
+	merged := cloneIssues(all)
+	seen := make(map[string]struct{}, len(merged))
+	for _, issue := range merged {
+		if issue.ID != "" {
+			seen[issue.ID] = struct{}{}
+		}
+	}
+	for _, issue := range current {
+		if issue.ID == "" {
+			continue
+		}
+		if _, ok := seen[issue.ID]; ok {
+			continue
+		}
+		merged = append(merged, issue)
+		seen[issue.ID] = struct{}{}
+	}
+	return merged
+}
+
+func normalizeGraphEdges(issues []bd.Issue, raw map[string][]bd.DepRecord) (map[string][]bd.DepRecord, map[string][]bd.DepRecord) {
+	issueByID := make(map[string]bd.Issue, len(issues))
+	for _, issue := range issues {
+		if issue.ID != "" {
+			issueByID[issue.ID] = issue
+		}
+	}
+	deps := make(map[string][]bd.DepRecord)
+	reverseDeps := make(map[string][]bd.DepRecord)
+	for sourceID, records := range raw {
+		if sourceID == "" {
+			continue
+		}
+		source := issueByID[sourceID]
+		for _, record := range records {
+			if record.ID == "" || record.ID == sourceID {
 				continue
 			}
-			cache[issues[i].ID] = result.deps
-			if len(result.deps) > 0 {
-				deps[issues[i].ID] = result.deps
-				for _, dep := range result.deps {
-					if dep.ID != "" {
-						derivedDependents[dep.ID]++
-					}
-				}
+			target := issueByID[record.ID]
+			if record.Title == "" {
+				record.Title = target.Title
 			}
+			if record.Status == "" {
+				record.Status = target.Status
+			}
+			if record.Priority == 0 {
+				record.Priority = target.Priority
+			}
+			if record.IssueType == "" {
+				record.IssueType = target.IssueType
+			}
+			deps[sourceID] = append(deps[sourceID], record)
+			reverseDeps[record.ID] = append(reverseDeps[record.ID], bd.DepRecord{
+				ID:             sourceID,
+				Title:          source.Title,
+				Status:         source.Status,
+				Priority:       source.Priority,
+				IssueType:      source.IssueType,
+				DependencyType: record.DependencyType,
+			})
 		}
-		for i := range issues {
-			if derived := derivedDependents[issues[i].ID]; derived > issues[i].DependentCount {
-				issues[i].DependentCount = derived
-			}
-			if len(deps[issues[i].ID]) > issues[i].DependencyCount {
-				issues[i].DependencyCount = len(deps[issues[i].ID])
-			}
-		}
-		return graphMsg{view: view, generation: generation, issues: issues, deps: deps, cache: cache}
 	}
+	return deps, reverseDeps
+}
+
+func enrichIssues(issues []bd.Issue, deps, reverseDeps map[string][]bd.DepRecord) []bd.Issue {
+	enriched := cloneIssues(issues)
+	for i := range enriched {
+		enriched[i] = normalizeIssueCounts(enriched[i], deps[enriched[i].ID], reverseDeps[enriched[i].ID])
+	}
+	return enriched
+}
+
+func normalizeIssueCounts(issue bd.Issue, deps, dependents []bd.DepRecord) bd.Issue {
+	if len(deps) > issue.DependencyCount {
+		issue.DependencyCount = len(deps)
+	}
+	if len(dependents) > issue.DependentCount {
+		issue.DependentCount = len(dependents)
+	}
+	return issue
 }
 
 func (m Model) loadStatusesCmd() tea.Cmd {
@@ -923,11 +1094,13 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	// Capture the previous selection from the OLD board before rows are
 	// replaced, then restore it by id if the bead is still present.
 	prev := m.selectedID()
+	m.graphReady = false
+	m.graphCache = nil
+	m.deps = nil
+	m.reverseDeps = nil
+	m.graphRows = nil
 	m.allRows = append([]bd.Issue(nil), msg.issues...)
-	m.deps = msg.deps
-	if m.depCache == nil {
-		m.depCache = map[string][]bd.DepRecord{}
-	}
+	m.deps = cloneDepMap(msg.deps)
 	return tea.Batch(m.rebuildRows(prev), m.loadGraphCmd(msg.view, msg.generation, msg.issues))
 }
 
@@ -963,7 +1136,8 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 	if msg.err != nil {
 		m.detailErr = msg.err.Error()
 		if msg.issue != nil {
-			m.detail = msg.issue
+			issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
+			m.detail = &issue
 			m.down, m.up = msg.down, msg.up
 		} else {
 			m.detail, m.down, m.up = nil, nil, nil
@@ -971,7 +1145,12 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 		return nil
 	}
 	m.detailErr = ""
-	m.detail = msg.issue
+	if msg.issue != nil {
+		issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
+		m.detail = &issue
+	} else {
+		m.detail = nil
+	}
 	m.down, m.up = msg.down, msg.up
 	m.dOffset = 0
 	return nil
@@ -1059,6 +1238,9 @@ func (m Model) renderHeader(w int) string {
 }
 
 func (m Model) hasGraphEdges() bool {
+	if !m.graphReady {
+		return false
+	}
 	if m.selected < 0 || m.selected >= len(m.rows) {
 		return false
 	}
@@ -1066,18 +1248,22 @@ func (m Model) hasGraphEdges() bool {
 	if id == "" {
 		return false
 	}
-	if m.rows[m.selected].ParentID != "" || len(m.deps[id]) > 0 {
+	if m.rows[m.selected].ParentID != "" || len(m.deps[id]) > 0 || len(m.reverseDeps[id]) > 0 {
 		return true
 	}
-	for _, issue := range m.allRows {
+	all := m.graphRows
+	if len(all) == 0 {
+		all = m.allRows
+	}
+	for _, issue := range all {
 		if issue.ParentID == id {
 			return true
 		}
-		for _, records := range m.deps {
-			for _, dep := range records {
-				if dep.ID == id {
-					return true
-				}
+	}
+	for _, records := range m.deps {
+		for _, dep := range records {
+			if dep.ID == id {
+				return true
 			}
 		}
 	}
@@ -1092,7 +1278,11 @@ func (m Model) renderGraph() string {
 	if h <= 0 {
 		h = 24
 	}
-	lines, cycle := graphLines(m.rows, m.allRows, m.deps, m.selectedID(), m.vocab)
+	all := m.graphRows
+	if len(all) == 0 {
+		all = m.allRows
+	}
+	lines, cycle := graphLines(m.rows, all, m.deps, m.selectedID(), m.vocab, m.reverseDeps)
 	title := "Graph · G/esc close"
 	if cycle {
 		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render("⚠ CYCLE") + " · " + title

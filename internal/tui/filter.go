@@ -137,9 +137,16 @@ func ParseSearchFilter(input string) Filter {
 		return Filter{}
 	}
 	lower := strings.ToLower(input)
-	if strings.Contains(lower, ":") || strings.HasPrefix(lower, "p") ||
-		lower == "open" || lower == "in_progress" || lower == "blocked" ||
-		lower == "closed" || lower == "deferred" {
+	for _, prefix := range []string{"status:", "priority:", "label:", "tag:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return ParseFilter(input)
+		}
+	}
+	if isPriority(lower) {
+		return ParseFilter(input)
+	}
+	switch lower {
+	case "open", "in_progress", "blocked", "closed", "deferred":
 		return ParseFilter(input)
 	}
 	return SearchFilter(input)

@@ -105,8 +105,16 @@ const statusesFixture = `{
     {"category": "frozen", "name": "pinned", "icon": "📌"},
     {"category": "wip", "name": "hooked", "icon": "◇"}
   ],
+  "custom_statuses": [
+    {"name": "awaiting_review", "category": "active"}
+  ],
   "schema_version": 1
 }`
+
+const depsBatchFixture = `[
+  {"issue_id":"fm-a","depends_on_id":"fm-b","type":"blocks"},
+  {"issue_id":"fm-c","depends_on_id":"fm-b","type":"tracks"}
+]`
 
 func TestListBuildsRightArgs(t *testing.T) {
 	var gotArgs []string
@@ -166,6 +174,24 @@ func TestListOpenAllVariants(t *testing.T) {
 		if issues[0].Description != "New spawns timed out twice." {
 			t.Errorf("description = %q, want the fixture body", issues[0].Description)
 		}
+	}
+}
+
+func TestListAllBuildsRightArgs(t *testing.T) {
+	var gotArgs []string
+	c := stubClient(t, func(args []string) (string, string, error) {
+		gotArgs = args
+		return allFixture, "", nil
+	})
+	issues, err := c.ListAll(context.Background())
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "list --all --json -n 0" {
+		t.Errorf("ListAll args = %q", gotArgs)
+	}
+	if len(issues) != 1 || issues[0].ID != "fm-rbc" {
+		t.Errorf("ListAll issues = %+v", issues)
 	}
 }
 
@@ -255,6 +281,35 @@ func TestDepsDirections(t *testing.T) {
 	}
 }
 
+func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
+	var gotArgs []string
+	c := stubClient(t, func(args []string) (string, string, error) {
+		gotArgs = args
+		return depsBatchFixture, "", nil
+	})
+	down, err := c.DepsBatch(context.Background(), []string{"fm-a", "fm-c"}, false)
+	if err != nil {
+		t.Fatalf("DepsBatch(down): %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "dep list fm-a fm-c --json" {
+		t.Errorf("down args = %q", gotArgs)
+	}
+	if len(down["fm-a"]) != 1 || down["fm-a"][0].ID != "fm-b" {
+		t.Errorf("down edges = %+v", down)
+	}
+
+	up, err := c.DepsBatch(context.Background(), []string{"fm-b"}, true)
+	if err != nil {
+		t.Fatalf("DepsBatch(up): %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "dep list fm-b --json --direction up" {
+		t.Errorf("up args = %q", gotArgs)
+	}
+	if len(up["fm-b"]) != 2 || up["fm-b"][0].ID != "fm-a" || up["fm-b"][1].DependencyType != "tracks" {
+		t.Errorf("up edges = %+v", up)
+	}
+}
+
 func TestStatuses(t *testing.T) {
 	c := stubClient(t, func(args []string) (string, string, error) {
 		return statusesFixture, "", nil
@@ -263,11 +318,14 @@ func TestStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Statuses: %v", err)
 	}
-	if len(statuses) != 7 {
-		t.Fatalf("got %d statuses, want 7", len(statuses))
+	if len(statuses) != 8 {
+		t.Fatalf("got %d statuses, want 8", len(statuses))
 	}
 	if statuses[2].Name != "blocked" || statuses[2].Icon != "●" || statuses[2].Category != "wip" {
 		t.Errorf("unexpected blocked status: %+v", statuses[2])
+	}
+	if statuses[7].Name != "awaiting_review" || statuses[7].Category != "active" {
+		t.Errorf("unexpected custom status: %+v", statuses[7])
 	}
 }
 

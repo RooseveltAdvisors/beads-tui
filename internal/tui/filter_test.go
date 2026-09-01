@@ -76,6 +76,13 @@ func TestSlashSearchParsesStructuredAndFreeTextQueries(t *testing.T) {
 	if got := ParseSearchFilter("fm-123"); got.Kind != FilterSearch || got.Query != "fm-123" {
 		t.Fatalf("free-text slash search = %+v", got)
 	}
+	issues := []bd.Issue{{ID: "project-42", Title: "Unrelated title"}}
+	if got := FilterIssues(issues, ParseSearchFilter("project")); len(got) != 1 {
+		t.Fatalf("slash search omitted ID-only match: %+v", got)
+	}
+	if got := ParseSearchFilter("project:42"); got.Kind != FilterSearch {
+		t.Fatalf("unknown colon query became structured filter: %+v", got)
+	}
 }
 
 func TestNewKeyDispatchAndStatusBar(t *testing.T) {
