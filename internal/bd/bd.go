@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // DefaultLookPath and DefaultRun are the production wiring for a Client.
@@ -22,6 +23,8 @@ type Client struct {
 	lookPath func(file string) (string, error)
 	run      func(ctx context.Context, path string, args ...string) (stdout, stderr string, err error)
 }
+
+const depsBatchWorkers = 8
 
 // New returns a Client wired to exec `bd` from PATH, inheriting the ambient
 // environment (BEADS_DIR and friends) so the store resolves exactly as it
@@ -114,14 +117,40 @@ func (c *Client) Deps(ctx context.Context, id string, up bool) ([]DepRecord, err
 func (c *Client) DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]DepRecord, error) {
 	ids = uniqueIDs(ids)
 	result := make(map[string][]DepRecord, len(ids))
-	for _, id := range ids {
-		records, err := c.Deps(ctx, id, up)
-		result[id] = records
-		if err != nil {
-			return result, err
+	if len(ids) == 0 {
+		return result, nil
+	}
+	type depResult struct {
+		records []DepRecord
+		err     error
+	}
+	results := make([]depResult, len(ids))
+	jobs := make(chan int)
+	workerCount := min(depsBatchWorkers, len(ids))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				results[i].records, results[i].err = c.Deps(ctx, ids[i], up)
+			}
+		}()
+	}
+	for i := range ids {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+
+	var firstErr error
+	for i, item := range results {
+		result[ids[i]] = item.records
+		if firstErr == nil && item.err != nil {
+			firstErr = item.err
 		}
 	}
-	return result, nil
+	return result, firstErr
 }
 
 // Statuses loads the status vocabulary (icons and categories).

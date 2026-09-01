@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // stubClient wires a Client to a canned exec: it records the arguments given
@@ -272,8 +274,11 @@ func TestDepsDirections(t *testing.T) {
 
 func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
 	var calls []string
+	var callsMu sync.Mutex
 	c := stubClient(t, func(args []string) (string, string, error) {
+		callsMu.Lock()
 		calls = append(calls, strings.Join(args, " "))
+		callsMu.Unlock()
 		switch args[2] {
 		case "fm-a":
 			return `[{"id":"fm-b","dependency_type":"blocks"}]`, "", nil
@@ -289,8 +294,23 @@ func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DepsBatch(down): %v", err)
 	}
-	if strings.Join(calls, " | ") != "dep list fm-a --json | dep list fm-c --json" {
-		t.Errorf("down args = %q", calls)
+	callsMu.Lock()
+	downCalls := append([]string(nil), calls...)
+	callsMu.Unlock()
+	if len(downCalls) != 2 {
+		t.Fatalf("down calls = %q, want two calls", downCalls)
+	}
+	for _, want := range []string{"dep list fm-a --json", "dep list fm-c --json"} {
+		found := false
+		for _, call := range downCalls {
+			if call == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("down args = %q, missing %q", downCalls, want)
+		}
 	}
 	if len(down["fm-a"]) != 1 || down["fm-a"][0].ID != "fm-b" {
 		t.Errorf("down edges = %+v", down)
@@ -300,11 +320,42 @@ func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DepsBatch(up): %v", err)
 	}
-	if calls[len(calls)-1] != "dep list fm-b --json --direction up" {
-		t.Errorf("up args = %q", calls[len(calls)-1])
+	callsMu.Lock()
+	lastCall := calls[len(calls)-1]
+	callsMu.Unlock()
+	if lastCall != "dep list fm-b --json --direction up" {
+		t.Errorf("up args = %q", lastCall)
 	}
 	if len(up["fm-b"]) != 2 || up["fm-b"][0].ID != "fm-a" || up["fm-b"][1].DependencyType != "tracks" {
 		t.Errorf("up edges = %+v", up)
+	}
+}
+
+func TestDepsBatchRunsCallsConcurrently(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	c := stubClient(t, func([]string) (string, string, error) {
+		started <- struct{}{}
+		<-release
+		return `[]`, "", nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.DepsBatch(context.Background(), []string{"fm-a", "fm-b"}, false)
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			<-done
+			t.Fatal("DepsBatch serialized single-ID calls")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("DepsBatch: %v", err)
 	}
 }
 

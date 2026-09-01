@@ -127,6 +127,7 @@ type graphMsg struct {
 	deps        map[string][]bd.DepRecord
 	reverseDeps map[string][]bd.DepRecord
 	edgeCount   int
+	complete    bool
 	cache       *graphCache
 }
 
@@ -139,6 +140,7 @@ type graphCache struct {
 	deps        map[string][]bd.DepRecord
 	reverseDeps map[string][]bd.DepRecord
 	edgeCount   int
+	complete    bool
 }
 
 // statusMsg carries the status vocabulary.
@@ -320,6 +322,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					detail := *m.detail
 					detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
 					m.detail = &detail
+					if msg.complete {
+						m.down = append([]bd.DepRecord(nil), m.deps[detail.ID]...)
+						m.up = append([]bd.DepRecord(nil), m.reverseDeps[detail.ID]...)
+					}
 					break
 				}
 			}
@@ -828,6 +834,7 @@ func (m Model) buildDetail(width int) []string {
 func (m *Model) startBoardLoad() tea.Cmd {
 	m.boardGen++
 	m.loading = true
+	m.invalidateDetail()
 	m.graphReady = false
 	m.graphEdges = 0
 	m.graphCache = nil
@@ -852,6 +859,20 @@ func (m Model) loadBoardCmd() tea.Cmd {
 	}
 }
 
+func (m *Model) invalidateDetail() {
+	m.detailGen++
+	m.detail = nil
+	m.down = nil
+	m.up = nil
+	m.detailErr = ""
+	m.checking = false
+	m.dOffset = 0
+	m.searchDetail = nil
+	m.searchDown = nil
+	m.searchUp = nil
+	m.searchDErr = ""
+}
+
 // loadGraphCmd enriches a painted list with one bounded, cached dependency
 // pass. The board never waits for this best-effort metadata before first paint.
 func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) tea.Cmd {
@@ -866,9 +887,11 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 		graphIssues := cloneIssues(issues)
 		deps := map[string][]bd.DepRecord{}
 		reverseDeps := map[string][]bd.DepRecord{}
+		graphComplete := false
 		if supportsGraph {
 			ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
 			all, err := backend.ListAll(ctx)
+			allLoaded := err == nil
 			if err != nil {
 				log.Printf("beads-tui: graph issue snapshot skipped: %v", err)
 			} else {
@@ -880,6 +903,7 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 			if err != nil {
 				log.Printf("beads-tui: graph dependencies skipped: %v", err)
 			}
+			graphComplete = allLoaded && err == nil
 			deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
 		} else {
 			log.Printf("beads-tui: backend does not support batched graph loading")
@@ -894,6 +918,7 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 			deps:        cloneDepMap(deps),
 			reverseDeps: cloneDepMap(reverseDeps),
 			edgeCount:   countGraphEdges(deps),
+			complete:    graphComplete,
 		}
 		return graphMsgFromCache(cache)
 	}
@@ -912,6 +937,7 @@ func graphMsgFromCache(cache *graphCache) graphMsg {
 		deps:        cloneDepMap(cache.deps),
 		reverseDeps: cloneDepMap(cache.reverseDeps),
 		edgeCount:   cache.edgeCount,
+		complete:    cache.complete,
 		cache:       cache,
 	}
 }
@@ -1094,6 +1120,7 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 		// A newer board superseded this one.
 		return nil
 	}
+	m.invalidateDetail()
 	m.loading = false
 	if msg.err != nil {
 		m.boardErr = msg.err.Error()

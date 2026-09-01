@@ -365,6 +365,48 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 	}
 }
 
+func TestRefreshInvalidatesDetailSnapshot(t *testing.T) {
+	m := drive(t, nil)
+	id := m.selectedID()
+	m.detail = &bd.Issue{ID: id}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+	oldGeneration := m.detailGen
+	updated, cmd := m.Update(teaKeyMsg("r"))
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("refresh did not return a board load command")
+	}
+	if m.detail != nil || m.down != nil || m.up != nil {
+		t.Fatalf("refresh retained stale detail snapshot: detail=%+v down=%+v up=%+v", m.detail, m.down, m.up)
+	}
+	if m.detailGen <= oldGeneration {
+		t.Fatalf("detail generation = %d, want greater than %d", m.detailGen, oldGeneration)
+	}
+}
+
+func TestCompleteGraphSnapshotUpdatesDetailEdges(t *testing.T) {
+	m := newTestModel(nil)
+	m.rows = []bd.Issue{{ID: "root", Title: "Root"}}
+	m.selected = 0
+	m.detail = &bd.Issue{ID: "root"}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+	updated, _ := m.Update(graphMsg{
+		view:        m.view,
+		generation:  m.boardGen,
+		issues:      m.rows,
+		graphIssues: m.rows,
+		deps:        map[string][]bd.DepRecord{"root": {{ID: "new-down"}}},
+		reverseDeps: map[string][]bd.DepRecord{"root": {{ID: "new-up"}}},
+		complete:    true,
+	})
+	m = updated.(Model)
+	if len(m.down) != 1 || m.down[0].ID != "new-down" || len(m.up) != 1 || m.up[0].ID != "new-up" {
+		t.Fatalf("detail edges = down:%+v up:%+v, want graph snapshot", m.down, m.up)
+	}
+}
+
 func TestFocusEnterAndEsc(t *testing.T) {
 	m := drive(t, nil)
 	m = applyMsg(t, m, detailMsg{id: "fm-aaa", generation: m.detailGen, issue: testDetail(), err: nil})
