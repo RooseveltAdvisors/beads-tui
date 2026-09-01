@@ -14,7 +14,7 @@ func TestSlashSearchMatchesIncrementallyAndCommits(t *testing.T) {
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
 
 	m = sendKey(t, m, "/")
 	if !m.filtering || !m.searching {
@@ -53,7 +53,7 @@ func TestSlashSearchNavigationUsesMatches(t *testing.T) {
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
 	m = sendKey(t, m, "/")
 	m = sendKey(t, m, "task")
 	m = sendKey(t, m, "enter")
@@ -72,7 +72,7 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
 	m.selected = 1
 	m.focus = FocusDetail
 	m.dOffset = 7
@@ -131,7 +131,7 @@ func TestSlashSearchFlattensMatchesAndRevealsSelectedTreePath(t *testing.T) {
 	}
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
 	m.expanded["parent"] = false
 	m.rebuildRows("parent")
 

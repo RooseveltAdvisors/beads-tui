@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,7 @@ type Model struct {
 	vocab    Vocab
 	boardErr string
 	loading  bool
+	boardGen uint64
 
 	selected int
 	focus    Focus
@@ -91,10 +93,11 @@ type Model struct {
 
 // boardMsg carries the result of a board load.
 type boardMsg struct {
-	view   bd.View
-	issues []bd.Issue
-	deps   map[string][]bd.DepRecord
-	err    error
+	view       bd.View
+	generation uint64
+	issues     []bd.Issue
+	deps       map[string][]bd.DepRecord
+	err        error
 }
 
 // statusMsg carries the status vocabulary.
@@ -122,8 +125,10 @@ func New(backend Backend) Model {
 	input.CharLimit = 120
 	input.Width = 60
 	return Model{
-		backend: backend,
-		view:    bd.ViewReady,
+		backend:  backend,
+		view:     bd.ViewReady,
+		loading:  true,
+		boardGen: 1,
 		// Created is newest-first by default; s cycles through the remaining modes.
 		sortMode:    SortCreated,
 		focus:       FocusList,
@@ -299,12 +304,12 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "r":
-		m.loading = true
+		boardCmd := m.startBoardLoad()
 		if len(m.rows) > 0 {
 			m.checking = true
-			return m, tea.Batch(m.loadBoardCmd(), m.loadDetailCmd(m.rows[m.selected].ID))
+			return m, tea.Batch(boardCmd, m.loadDetailCmd(m.rows[m.selected].ID))
 		}
-		return m, m.loadBoardCmd()
+		return m, boardCmd
 	}
 	if m.focus == FocusList {
 		return m.listKey(msg)
@@ -340,8 +345,7 @@ func (m Model) switchView(view bd.View) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.view = view
-	m.loading = true
-	return m, m.loadBoardCmd()
+	return m, m.startBoardLoad()
 }
 
 func (m Model) selectedID() string {
@@ -571,13 +575,22 @@ func (m Model) buildDetail(width int) []string {
 	return buildDetail(m.vocab, m.detail, m.down, m.up, width, m.markdown)
 }
 
+func (m *Model) startBoardLoad() tea.Cmd {
+	m.boardGen++
+	m.loading = true
+	return m.loadBoardCmd()
+}
+
 func (m Model) loadBoardCmd() tea.Cmd {
+	view := m.view
+	generation := m.boardGen
+	backend := m.backend
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
-		issues, err := m.backend.List(ctx, m.view)
+		issues, err := backend.List(ctx, view)
 		cancel()
 		if err != nil {
-			return boardMsg{view: m.view, err: err}
+			return boardMsg{view: view, generation: generation, err: err}
 		}
 		deps := make(map[string][]bd.DepRecord)
 		type graphResult struct {
@@ -600,14 +613,14 @@ func (m Model) loadBoardCmd() tea.Cmd {
 					}
 					if issue.DependencyCount > 0 {
 						callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-						results[i].deps, results[i].err = m.backend.Deps(callCtx, issue.ID, false)
+						results[i].deps, results[i].err = backend.Deps(callCtx, issue.ID, false)
 						callCancel()
 						if results[i].err != nil {
 							continue
 						}
 					}
 					callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-					dependents, depErr := m.backend.Deps(callCtx, issue.ID, true)
+					dependents, depErr := backend.Deps(callCtx, issue.ID, true)
 					callCancel()
 					results[i].dependentCount = len(dependents)
 					results[i].err = depErr
@@ -619,16 +632,20 @@ func (m Model) loadBoardCmd() tea.Cmd {
 		}
 		close(jobs)
 		workers.Wait()
+		// Dependency metadata is best effort: a slow graph query must not hide
+		// the list snapshot that the user can still browse.
 		for i, result := range results {
 			if result.err != nil {
-				return boardMsg{view: m.view, err: result.err}
+				log.Printf("beads-tui: dependency enrichment for %s skipped: %v", issues[i].ID, result.err)
 			}
 			if len(result.deps) > 0 {
 				deps[issues[i].ID] = result.deps
 			}
-			issues[i].DependentCount = result.dependentCount
+			if result.err == nil {
+				issues[i].DependentCount = result.dependentCount
+			}
 		}
-		return boardMsg{view: m.view, issues: issues, deps: deps}
+		return boardMsg{view: view, generation: generation, issues: issues, deps: deps}
 	}
 }
 
@@ -663,13 +680,13 @@ func (m *Model) loadDetailCmd(id string) tea.Cmd {
 
 // applyBoard installs a fresh board snapshot.
 func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
+	if msg.generation != m.boardGen || msg.view != m.view {
+		// A newer board superseded this one.
+		return nil
+	}
 	m.loading = false
 	if msg.err != nil {
 		m.boardErr = msg.err.Error()
-		return nil
-	}
-	if msg.view != m.view {
-		// A newer board superseded this one.
 		return nil
 	}
 	m.boardErr = ""
@@ -868,7 +885,7 @@ func (m Model) renderListPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(l))
 		}
 		lines = append(lines, styleDim.Render("Check bd is installed and a beads workspace is active (BEADS_DIR)."))
-	case m.loading && len(m.rows) == 0:
+	case m.loading && len(m.rows) == 0 && len(m.allRows) == 0:
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
 		if m.filter.Active() {
