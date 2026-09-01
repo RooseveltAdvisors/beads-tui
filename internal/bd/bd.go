@@ -35,10 +35,33 @@ func (c *Client) List(ctx context.Context, view View) ([]Issue, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("beads-tui: unsupported view %q", view)
 	}
-	args := []string{"list", "--status", string(view)}
+	args := []string{"list"}
+	switch view {
+	case ViewReady:
+		args = append(args, "--ready")
+	case ViewAll:
+		args = append(args, "--all")
+	case ViewOpen:
+		args = append(args, "--status", "open")
+	}
 	args = append(args, "--json", "-n", "0")
 	var issues []Issue
 	if err := c.jsonCall(ctx, &issues, args...); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
+// ListStatus returns issues for any native or custom bd status. Board tabs use
+// List for the Ready/Open/All view contract; this method serves the CLI's
+// explicit --status escape hatch.
+func (c *Client) ListStatus(ctx context.Context, status string) ([]Issue, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return nil, errors.New("beads-tui: empty status")
+	}
+	var issues []Issue
+	if err := c.jsonCall(ctx, &issues, "list", "--status", status, "--json", "-n", "0"); err != nil {
 		return nil, err
 	}
 	return issues, nil
@@ -91,53 +114,12 @@ func (c *Client) Deps(ctx context.Context, id string, up bool) ([]DepRecord, err
 func (c *Client) DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]DepRecord, error) {
 	ids = uniqueIDs(ids)
 	result := make(map[string][]DepRecord, len(ids))
-	if len(ids) == 0 {
-		return result, nil
-	}
-	args := []string{"dep", "list"}
-	args = append(args, ids...)
-	args = append(args, "--json")
-	if up {
-		args = append(args, "--direction", "up")
-	}
-	var records []batchDepRecord
-	if err := c.jsonCall(ctx, &records, args...); err != nil {
-		return nil, err
-	}
-	requested := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		requested[id] = struct{}{}
-		result[id] = nil
-	}
-	for _, record := range records {
-		anchor, target := record.IssueID, record.ID
-		if anchor == "" {
-			anchor = record.SourceID
+		records, err := c.Deps(ctx, id, up)
+		result[id] = records
+		if err != nil {
+			return result, err
 		}
-		if record.DependsOnID != "" {
-			anchor, target = record.IssueID, record.DependsOnID
-			if up {
-				anchor, target = record.DependsOnID, record.IssueID
-			}
-		}
-		if anchor == "" || target == "" {
-			return nil, errors.New("bd dep list batch: record missing issue_id or depends_on_id")
-		}
-		if _, ok := requested[anchor]; !ok {
-			continue
-		}
-		dependencyType := record.Type
-		if dependencyType == "" {
-			dependencyType = record.DependencyType
-		}
-		result[anchor] = append(result[anchor], DepRecord{
-			ID:             target,
-			Title:          record.Title,
-			Status:         record.Status,
-			Priority:       record.Priority,
-			IssueType:      record.IssueType,
-			DependencyType: dependencyType,
-		})
 	}
 	return result, nil
 }
@@ -152,19 +134,6 @@ func (c *Client) Statuses(ctx context.Context) ([]StatusInfo, error) {
 		return nil, err
 	}
 	return append(resp.BuiltIn, resp.Custom...), nil
-}
-
-type batchDepRecord struct {
-	IssueID        string `json:"issue_id"`
-	DependsOnID    string `json:"depends_on_id"`
-	SourceID       string `json:"source_id"`
-	Type           string `json:"type"`
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Status         string `json:"status"`
-	Priority       int    `json:"priority"`
-	IssueType      string `json:"issue_type"`
-	DependencyType string `json:"dependency_type"`
 }
 
 func uniqueIDs(ids []string) []string {

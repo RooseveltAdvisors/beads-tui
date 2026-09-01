@@ -5,7 +5,7 @@
 // With no arguments (and a TTY on stdin) it starts the interactive TUI.
 // Subcommands give agents and scripts the same data without a TTY:
 //
-//	beads-tui list [--status open|in_progress|blocked|closed|deferred] # board as JSON
+//	beads-tui list [--status STATUS] # native/custom status as JSON
 //	beads-tui show <id>                      # one bead as JSON
 package main
 
@@ -86,13 +86,9 @@ func runList(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("list: unexpected argument %q (see 'beads-tui list --help')", fs.Arg(0))
 	}
-	v := bd.View(*status)
-	if !v.Valid() {
-		return fmt.Errorf("list: status must not be empty")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	issues, err := bd.New().List(ctx, v)
+	issues, err := bd.New().ListStatus(ctx, *status)
 	if err != nil {
 		return err
 	}

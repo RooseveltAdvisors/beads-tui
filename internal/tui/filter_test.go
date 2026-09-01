@@ -126,7 +126,7 @@ func TestNewKeyDispatchAndStatusBar(t *testing.T) {
 func TestResetKeyRestoresBoardDefaults(t *testing.T) {
 	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
 	m := drive(t, nil)
-	m.view = bd.ViewClosed
+	m.view = bd.ViewAll
 	m.sortMode = SortDependents
 	m.filter = ParseFilter("status:blocked")
 	m = sendKey(t, m, "R")
@@ -139,13 +139,13 @@ func TestBoardStatePersistsAcrossModels(t *testing.T) {
 	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
 	f := &fakeClient{}
 	m := newTestModel(f)
-	m.view = bd.ViewClosed
+	m.view = bd.ViewAll
 	m.sortMode = SortDependencies
 	m.filter = ParseFilter("priority:P1")
 	m.saveState()
 
 	reloaded := New(f)
-	if reloaded.view != bd.ViewClosed || reloaded.sortMode != SortDependencies || reloaded.filter.String() != "priority:p1" {
+	if reloaded.view != bd.ViewAll || reloaded.sortMode != SortDependencies || reloaded.filter.String() != "priority:p1" {
 		t.Fatalf("reloaded state = view:%s sort:%s filter:%s", reloaded.view, reloaded.sortMode, reloaded.filter)
 	}
 }
@@ -307,12 +307,12 @@ func TestLongNativeStatusPreservesDependencyDirections(t *testing.T) {
 	}
 }
 
-func TestStatusTabNames(t *testing.T) {
+func TestBoardViewTabNames(t *testing.T) {
 	m := New(nil)
 	m.width, m.height = 80, 24
 	view := stripANSI(m.renderTabs())
-	if !strings.Contains(view, "[1]open") || !strings.Contains(view, "[2]in_progress") {
-		t.Fatalf("tabs missing native status labels: %q", view)
+	if !strings.Contains(view, "[1]Ready (actionable)") || !strings.Contains(view, "[2]Open") || !strings.Contains(view, "[3]All") {
+		t.Fatalf("tabs missing board view labels: %q", view)
 	}
 }
 
@@ -339,7 +339,7 @@ func TestCompactFooterPreservesFallbackFields(t *testing.T) {
 	m.selected = 1
 	m.filter = ParseFilter("status:open")
 	footer := stripANSI(m.renderFooter(40))
-	for _, want := range []string{"ope", "query:on", "50%"} {
+	for _, want := range []string{"Open", "query:on", "50%"} {
 		if !strings.Contains(footer, want) {
 			t.Errorf("compact footer missing %q: %q", want, footer)
 		}
@@ -355,7 +355,7 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 	view := stripANSI(m.renderHelp())
 	for _, want := range []string{
 		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
-		"enter/l/→", "h/←", "1 open", "2 in_progress", "3 blocked", "s cycle",
+		"enter/l/→", "h/←", "1 Ready", "2 Open", "3 All", "s cycle",
 		"esc close detail / clear search", "Search:", "Enter apply", "status:open",
 		"priority:P1", "label:frontend", "t search", "r ·", "Reset: R", "Help: ?", "q/Ctrl+C",
 	} {

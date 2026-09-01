@@ -8,55 +8,53 @@
 // store path.
 package bd
 
-import "strings"
-
-// View selects one native Beads status for a board tab.
+// View selects which slice of the bead graph a board renders.
 type View string
 
 const (
-	// ViewOpen is the default native status view.
-	ViewOpen       View = "open"
-	ViewInProgress View = "in_progress"
-	ViewBlocked    View = "blocked"
-	ViewClosed     View = "closed"
-	ViewDeferred   View = "deferred"
+	// ViewReady lists work that is claimable right now (no active blockers).
+	ViewReady View = "ready"
+	// ViewOpen lists open issues regardless of blockers.
+	ViewOpen View = "open"
+	// ViewAll lists every issue including closed ones.
+	ViewAll View = "all"
 )
 
-var defaultViews = [...]View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
+// AllViews is the ordered set of board views, in tab order.
+var AllViews = [...]View{ViewReady, ViewOpen, ViewAll}
 
-// DefaultViews returns the built-in status tabs used until bd answers.
-func DefaultViews() []View { return append([]View(nil), defaultViews[:]...) }
-
-// ViewsFromStatuses returns stable built-in status tabs followed by custom
-// statuses reported by bd.
-func ViewsFromStatuses(statuses []StatusInfo) []View {
-	views := DefaultViews()
-	seen := make(map[View]bool, len(views))
-	for _, view := range views {
-		seen[view] = true
-	}
-	for _, status := range statuses {
-		view := View(strings.ToLower(strings.TrimSpace(status.Name)))
-		if view != "" && !seen[view] {
-			views = append(views, view)
-			seen[view] = true
-		}
-	}
-	return views
-}
-
-// Valid reports whether v names a native Beads status.
+// Valid reports whether v is a supported board view.
 func (v View) Valid() bool {
-	return v != ""
+	switch v {
+	case ViewReady, ViewOpen, ViewAll:
+		return true
+	default:
+		return false
+	}
 }
 
 // Label is the human-readable title shown for the view.
 func (v View) Label() string {
-	return string(v)
+	switch v {
+	case ViewReady:
+		return "Ready"
+	case ViewOpen:
+		return "Open"
+	case ViewAll:
+		return "All"
+	default:
+		return string(v)
+	}
 }
 
-// TabLabel is the concise, user-facing label used in the board's status tabs.
-func (v View) TabLabel() string { return v.Label() }
+// TabLabel is the concise, user-facing label used in the board's view tabs.
+// Ready is a computed actionable view, not a bead status.
+func (v View) TabLabel() string {
+	if v == ViewReady {
+		return "Ready (actionable)"
+	}
+	return v.Label()
+}
 
 // Issue is one bead in the graph. Which fields are populated depends on the
 // command that produced the record. `bd list ... --json` fills the board row

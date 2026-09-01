@@ -237,9 +237,9 @@ func TestBoardLoadAndRender(t *testing.T) {
 	}
 	view := stripANSI(m.View())
 	for _, want := range []string{
-		"beads-tui", "open board", "fm-aaa", "Alpha task", "fm-bbb",
-		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]open", "[2]in_progress",
-		"[3]blocked", "q quit",
+		"beads-tui", "Open board", "fm-aaa", "Alpha task", "fm-bbb",
+		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]Ready (actionable)", "[2]Open",
+		"[3]All",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q", want)
@@ -497,31 +497,31 @@ func TestViewSwitching(t *testing.T) {
 	f := &fakeClient{
 		issue: testDetail(),
 		issues: map[bd.View][]bd.Issue{
-			bd.ViewOpen:    testIssues(),
-			bd.ViewBlocked: append(testIssues(), bd.Issue{ID: "fm-ddd", Title: "Delta", Status: "blocked", Priority: 2}),
+			bd.ViewOpen: testIssues(),
+			bd.ViewAll:  append(testIssues(), bd.Issue{ID: "fm-ddd", Title: "Delta", Status: "blocked", Priority: 2}),
 		},
 	}
 	m := newTestModel(f)
-	m.views = []bd.View{bd.ViewOpen, bd.ViewInProgress, bd.ViewBlocked}
+	m.views = append([]bd.View(nil), bd.AllViews[:]...)
 	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
 	m = sendKey(t, m, "3")
-	if m.view != bd.ViewBlocked {
-		t.Fatalf("view = %v, want blocked", m.view)
+	if m.view != bd.ViewAll {
+		t.Fatalf("view = %v, want all", m.view)
 	}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewBlocked, generation: m.boardGen, issues: f.issues[bd.ViewBlocked], err: nil})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewAll, generation: m.boardGen, issues: f.issues[bd.ViewAll], err: nil})
 	if len(m.rows) != 4 {
 		t.Fatalf("rows = %d, want 4 after switch", len(m.rows))
 	}
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "blocked board") || !strings.Contains(view, "fm-ddd") {
+	if !strings.Contains(view, "All") || !strings.Contains(view, "fm-ddd") {
 		t.Errorf("switched view missing content:\n%s", view)
 	}
 }
 
-func TestNumericKeysSelectAllVisibleStatusTabs(t *testing.T) {
+func TestNumericKeysSelectAllBoardViews(t *testing.T) {
 	m := newTestModel(nil)
-	m.views = []bd.View{bd.ViewOpen, bd.ViewInProgress, bd.ViewBlocked, bd.ViewClosed, bd.ViewDeferred, "awaiting_review"}
-	for i, key := range []string{"1", "2", "3", "4", "5", "6"} {
+	m.views = append([]bd.View(nil), bd.AllViews[:]...)
+	for i, key := range []string{"1", "2", "3"} {
 		updated, _ := m.Update(teaKeyMsg(key))
 		m = updated.(Model)
 		if m.view != m.views[i] {
@@ -584,7 +584,7 @@ func TestStaleBoardResponseDoesNotEndCurrentLoad(t *testing.T) {
 	m.view = bd.ViewOpen
 	m.loading = true
 	m.boardErr = ""
-	m = applyMsg(t, m, boardMsg{view: bd.ViewInProgress, generation: m.boardGen, issues: testIssues()})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewAll, generation: m.boardGen, issues: testIssues()})
 	if !m.loading {
 		t.Fatal("stale board response ended the active load")
 	}
@@ -627,8 +627,8 @@ func TestSameViewStaleBoardResponseDoesNotOverwriteCurrentLoad(t *testing.T) {
 func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
 	f := &fakeClient{
 		issues: map[bd.View][]bd.Issue{
-			bd.ViewOpen:       {{ID: "ready", Title: "Ready board", Status: "open"}},
-			bd.ViewInProgress: {{ID: "open", Title: "In progress board", Status: "in_progress"}},
+			bd.ViewOpen:  {{ID: "ready", Title: "Ready board", Status: "open"}},
+			bd.ViewReady: {{ID: "open", Title: "In progress board", Status: "in_progress"}},
 		},
 	}
 	m := newTestModel(f)
@@ -637,7 +637,7 @@ func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
 		generation: m.boardGen,
 		issues:     f.issues[bd.ViewOpen],
 	})
-	updated, cmd := m.Update(teaKeyMsg("2"))
+	updated, cmd := m.Update(teaKeyMsg("1"))
 	m = updated.(Model)
 	if !m.loading {
 		t.Fatal("view switch did not mark the board as loading")
@@ -646,7 +646,7 @@ func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
 		t.Fatal("view switch did not return a board load command")
 	}
 	m = applyMsg(t, m, cmd())
-	if m.loading || m.view != bd.ViewInProgress || len(m.rows) != 1 || m.rows[0].ID != "open" {
+	if m.loading || m.view != bd.ViewReady || len(m.rows) != 1 || m.rows[0].ID != "open" {
 		t.Fatalf("view switch load was discarded: loading=%v view=%s rows=%+v generation=%d", m.loading, m.view, m.rows, m.boardGen)
 	}
 }
@@ -658,7 +658,7 @@ func TestHelpToggle(t *testing.T) {
 		t.Fatal("? should open help")
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"1 open", "2 in_progress", "3 blocked", "ctrl-u/d", "h/l", "Read-only", "⇣", "⇡"} {
+	for _, want := range []string{"1 Ready", "2 Open", "3 All", "ctrl-u/d", "h/l", "Read-only", "⇣", "⇡"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help missing %q", want)
 		}
@@ -684,7 +684,7 @@ func TestEmptyBoardStates(t *testing.T) {
 	m := newTestModel(f)
 	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: nil, err: nil})
 	view := stripANSI(m.View())
-	for _, want := range []string{"No open issues", "Select a bead for details"} {
+	for _, want := range []string{"No Open issues", "Select a bead for details"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("empty board missing %q", want)
 		}

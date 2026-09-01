@@ -79,15 +79,15 @@ func TestBoardGraphDerivesDependentsFromDownEdges(t *testing.T) {
 	issues := []bd.Issue{{ID: "blocker", CreatedAt: "2026-09-01T00:00:00Z"}}
 	f := &fakeClient{
 		issues: map[bd.View][]bd.Issue{
-			bd.ViewClosed: issues,
-			bd.ViewOpen:   {{ID: "dependent", CreatedAt: "2026-09-02T00:00:00Z"}},
+			bd.ViewAll:  issues,
+			bd.ViewOpen: {{ID: "dependent", CreatedAt: "2026-09-02T00:00:00Z"}},
 		},
 		downByID: map[string][]bd.DepRecord{
 			"dependent": {{ID: "blocker", DependencyType: "blocks"}},
 		},
 	}
 	m := newTestModel(f)
-	m.view = bd.ViewClosed
+	m.view = bd.ViewAll
 	msg := m.loadBoardCmd()()
 	board := msg.(boardMsg)
 	m = applyMsg(t, m, board)
@@ -130,10 +130,10 @@ func TestBoardGraphUsesSingleBatchedDependencyQuery(t *testing.T) {
 		issues[i].ID = "issue-" + itoa(i)
 	}
 	f := &fakeClient{
-		issues: map[bd.View][]bd.Issue{bd.ViewClosed: issues},
+		issues: map[bd.View][]bd.Issue{bd.ViewAll: issues},
 	}
 	m := newTestModel(f)
-	m.view = bd.ViewClosed
+	m.view = bd.ViewAll
 	msg := m.loadBoardCmd()()
 	board := msg.(boardMsg)
 	_ = m.loadGraphCmd(board.view, board.generation, board.issues)()

@@ -111,11 +111,6 @@ const statusesFixture = `{
   "schema_version": 1
 }`
 
-const depsBatchFixture = `[
-  {"issue_id":"fm-a","depends_on_id":"fm-b","type":"blocks"},
-  {"issue_id":"fm-c","depends_on_id":"fm-b","type":"tracks"}
-]`
-
 func TestListBuildsRightArgs(t *testing.T) {
 	var gotArgs []string
 	c := stubClient(t, func(args []string) (string, string, error) {
@@ -148,13 +143,14 @@ func TestListBuildsRightArgs(t *testing.T) {
 	}
 }
 
-func TestListOpenAllVariants(t *testing.T) {
+func TestListViewVariants(t *testing.T) {
 	for _, tc := range []struct {
 		view View
 		want string
 	}{
-		{ViewInProgress, "list --status in_progress --json -n 0"},
-		{ViewClosed, "list --status closed --json -n 0"},
+		{ViewReady, "list --ready --json -n 0"},
+		{ViewOpen, "list --status open --json -n 0"},
+		{ViewAll, "list --all --json -n 0"},
 	} {
 		var gotArgs []string
 		c := stubClient(t, func(args []string) (string, string, error) {
@@ -205,22 +201,15 @@ func TestListInvalidView(t *testing.T) {
 	}
 }
 
-func TestViewsFromStatusesKeepsNativeOrderAndAddsCustomStatuses(t *testing.T) {
-	got := ViewsFromStatuses([]StatusInfo{
-		{Name: "closed"}, {Name: "Awaiting_Review"}, {Name: " awaiting_review "},
-	})
-	want := []View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred, "awaiting_review"}
-	if strings.Join(viewsToStrings(got), ",") != strings.Join(viewsToStrings(want), ",") {
-		t.Fatalf("views = %v, want %v", got, want)
+func TestAllViewsAreStableAndDistinct(t *testing.T) {
+	if len(AllViews) != 3 || AllViews[0] != ViewReady || AllViews[1] != ViewOpen || AllViews[2] != ViewAll {
+		t.Fatalf("views = %v, want ready/open/all", AllViews)
 	}
-}
-
-func viewsToStrings(views []View) []string {
-	out := make([]string, len(views))
-	for i, view := range views {
-		out[i] = string(view)
+	for _, view := range AllViews {
+		if !view.Valid() || view.Label() == "" {
+			t.Fatalf("invalid board view: %q", view)
+		}
 	}
-	return out
 }
 
 func TestShow(t *testing.T) {
@@ -282,17 +271,26 @@ func TestDepsDirections(t *testing.T) {
 }
 
 func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
-	var gotArgs []string
+	var calls []string
 	c := stubClient(t, func(args []string) (string, string, error) {
-		gotArgs = args
-		return depsBatchFixture, "", nil
+		calls = append(calls, strings.Join(args, " "))
+		switch args[2] {
+		case "fm-a":
+			return `[{"id":"fm-b","dependency_type":"blocks"}]`, "", nil
+		case "fm-c":
+			return `[{"id":"fm-b","dependency_type":"tracks"}]`, "", nil
+		case "fm-b":
+			return `[{"id":"fm-a","dependency_type":"blocks"},{"id":"fm-c","dependency_type":"tracks"}]`, "", nil
+		default:
+			return `[]`, "", nil
+		}
 	})
 	down, err := c.DepsBatch(context.Background(), []string{"fm-a", "fm-c"}, false)
 	if err != nil {
 		t.Fatalf("DepsBatch(down): %v", err)
 	}
-	if strings.Join(gotArgs, " ") != "dep list fm-a fm-c --json" {
-		t.Errorf("down args = %q", gotArgs)
+	if strings.Join(calls, " | ") != "dep list fm-a --json | dep list fm-c --json" {
+		t.Errorf("down args = %q", calls)
 	}
 	if len(down["fm-a"]) != 1 || down["fm-a"][0].ID != "fm-b" {
 		t.Errorf("down edges = %+v", down)
@@ -302,8 +300,8 @@ func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DepsBatch(up): %v", err)
 	}
-	if strings.Join(gotArgs, " ") != "dep list fm-b --json --direction up" {
-		t.Errorf("up args = %q", gotArgs)
+	if calls[len(calls)-1] != "dep list fm-b --json --direction up" {
+		t.Errorf("up args = %q", calls[len(calls)-1])
 	}
 	if len(up["fm-b"]) != 2 || up["fm-b"][0].ID != "fm-a" || up["fm-b"][1].DependencyType != "tracks" {
 		t.Errorf("up edges = %+v", up)

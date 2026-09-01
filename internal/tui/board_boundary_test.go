@@ -150,7 +150,7 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 		t.Fatalf("root dependent count = %d, want 1", probe.RootDependentCount)
 	}
 	calls := readFixtureCalls(t, logPath)
-	listCalls, allCalls, batchCalls := 0, 0, 0
+	listCalls, allCalls, depCalls := 0, 0, 0
 	for _, call := range calls {
 		if call.cwd != workspace || call.beadsDir != beadsDir {
 			t.Fatalf("bd call environment = cwd %q, BEADS_DIR %q; want %q, %q", call.cwd, call.beadsDir, workspace, beadsDir)
@@ -162,16 +162,16 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 			allCalls++
 		case strings.HasPrefix(call.args, "dep list "):
 			fields := strings.Fields(call.args)
-			if len(fields) < 4 || fields[len(fields)-1] != "--json" {
+			if len(fields) != 4 && len(fields) != 6 {
 				t.Fatalf("unexpected dependency command: %q", call.args)
 			}
-			batchCalls++
+			depCalls++
 		default:
 			t.Fatalf("unexpected bd command: %q", call.args)
 		}
 	}
-	if listCalls != 1 || allCalls != 1 || batchCalls != 1 {
-		t.Fatalf("bd calls list=%d all=%d batch=%d, want 1 1 1", listCalls, allCalls, batchCalls)
+	if listCalls != 1 || allCalls != 1 || depCalls != len(issues) {
+		t.Fatalf("bd calls list=%d all=%d deps=%d, want 1 1 %d", listCalls, allCalls, depCalls, len(issues))
 	}
 }
 
@@ -233,8 +233,12 @@ if [ "${1-}" = "list" ] && [ "${2-}" = "--all" ] && [ "${3-}" = "--json" ] && [ 
   printf '%s' "$BEADS_TUI_READY_JSON"
   exit 0
 fi
+if [ "${1-}" = "dep" ] && [ "${2-}" = "list" ] && [ "${3-}" = "fm-01" ]; then
+  printf '%s' '[{"id":"fm-00","dependency_type":"blocks"}]'
+  exit 0
+fi
 if [ "${1-}" = "dep" ] && [ "${2-}" = "list" ]; then
-  printf '%s' '[{"issue_id":"fm-01","depends_on_id":"fm-00","type":"blocks"}]'
+  printf '%s' '[]'
   exit 0
 fi
 printf 'unsupported bd command: %s\n' "$*" >&2

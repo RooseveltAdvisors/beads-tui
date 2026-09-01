@@ -8,12 +8,12 @@ store `bd` works against and never writes to it: beads-tui only ever invokes
 bd's read-only commands (`list`, `show`, `dep list`, `statuses`) and renders
 what they return.
 
-## Status views
+## Board views
 
-Tabs are the native status enumeration reported by `bd statuses --json`:
-`open`, `in_progress`, `blocked`, `closed`, `deferred`, followed by any custom
-statuses in the store. Keys `1` through `9` select the corresponding status;
-each tab loads that status with `bd list --status STATUS`.
+Tabs are the three board views: `Ready` (actionable work), `Open` (open work),
+and `All` (the complete issue set). Keys `1` through `3` select the view;
+Ready uses `bd list --ready`, Open uses `bd list --status open`, and All uses
+`bd list --all`.
 
 The status vocabulary (colors and categories) is loaded live from
 `bd statuses --json`; if that call fails the built-in vocabulary is used.
@@ -51,7 +51,7 @@ The TUI is keyboard-driven:
   the flat list
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
-- `1`-`9` switch native status views, `r` refreshes, `R` resets view/sort/search,
+- `1`-`3` switch Ready/Open/All views, `r` refreshes, `R` resets view/sort/search,
   `?` shows help, and `q` (or `ctrl+c`) quits
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
@@ -68,6 +68,8 @@ priority (`P0`-`P4`), id, title, and subdued dim-gray labels, plus
 In-progress rows include the owner beside their glyph when available. Blocked status is red, closed is dim,
 and deferred is orange. Priority colors are red, orange, yellow, and cyan for
 P0 through P3. View, search, and sort persist under the user's config directory.
+The footer reports the number of graph edges loaded, so dependency counts are
+observable rather than inferred from the list response.
 At normal terminal widths, the
 persistent bottom bar shows the view, sort, active search,
 selection, total count, and scroll position; below 48 columns it compacts to the view, search
@@ -85,8 +87,8 @@ Rows and markers:
 When stdin is not a TTY, `beads-tui` degrades to a one-shot JSON dump of the
 open-status board, so scripts and agents get content instead of a pager.
 
-View, search, and sort persist under the user's config directory. `R` clears
-the search and restores the open view with created-newest-first sorting.
+`R` clears the search and restores the Open view with created-newest-first
+sorting.
 
 ## Read-only guarantee
 

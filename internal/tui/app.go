@@ -70,6 +70,7 @@ type Model struct {
 	loading     bool
 	boardGen    uint64
 	graphReady  bool
+	graphEdges  int
 	graphCache  *graphCache
 
 	selected int
@@ -125,6 +126,7 @@ type graphMsg struct {
 	graphIssues []bd.Issue
 	deps        map[string][]bd.DepRecord
 	reverseDeps map[string][]bd.DepRecord
+	edgeCount   int
 	cache       *graphCache
 }
 
@@ -136,6 +138,7 @@ type graphCache struct {
 	graphIssues []bd.Issue
 	deps        map[string][]bd.DepRecord
 	reverseDeps map[string][]bd.DepRecord
+	edgeCount   int
 }
 
 // statusMsg carries the status vocabulary.
@@ -253,7 +256,7 @@ func New(backend Backend) Model {
 	m := Model{
 		backend:  backend,
 		view:     bd.ViewOpen,
-		views:    bd.DefaultViews(),
+		views:    append([]bd.View(nil), bd.AllViews[:]...),
 		loading:  true,
 		boardGen: 1,
 		// Created is newest-first by default; s cycles through the remaining modes.
@@ -308,6 +311,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.graphRows = append([]bd.Issue(nil), msg.graphIssues...)
 		m.deps = cloneDepMap(msg.deps)
 		m.reverseDeps = cloneDepMap(msg.reverseDeps)
+		m.graphEdges = msg.edgeCount
 		m.graphCache = msg.cache
 		m.graphReady = true
 		if m.detail != nil {
@@ -324,12 +328,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		if msg.err == nil {
 			m.vocab = NewVocab(msg.statuses)
-			m.views = bd.ViewsFromStatuses(msg.statuses)
-			if !m.hasView(m.view) {
-				m.view = m.views[0]
-				m.saveState()
-				return m, m.startBoardLoad()
-			}
 		}
 	case detailMsg:
 		return m, m.applyDetail(msg)
@@ -831,6 +829,7 @@ func (m *Model) startBoardLoad() tea.Cmd {
 	m.boardGen++
 	m.loading = true
 	m.graphReady = false
+	m.graphEdges = 0
 	m.graphCache = nil
 	m.deps = nil
 	m.reverseDeps = nil
@@ -894,6 +893,7 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 			graphIssues: cloneIssues(graphIssues),
 			deps:        cloneDepMap(deps),
 			reverseDeps: cloneDepMap(reverseDeps),
+			edgeCount:   countGraphEdges(deps),
 		}
 		return graphMsgFromCache(cache)
 	}
@@ -911,8 +911,17 @@ func graphMsgFromCache(cache *graphCache) graphMsg {
 		graphIssues: cloneIssues(cache.graphIssues),
 		deps:        cloneDepMap(cache.deps),
 		reverseDeps: cloneDepMap(cache.reverseDeps),
+		edgeCount:   cache.edgeCount,
 		cache:       cache,
 	}
+}
+
+func countGraphEdges(deps map[string][]bd.DepRecord) int {
+	count := 0
+	for _, records := range deps {
+		count += len(records)
+	}
+	return count
 }
 
 func issueIDs(issues []bd.Issue) []string {
@@ -1095,6 +1104,7 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	// replaced, then restore it by id if the bead is still present.
 	prev := m.selectedID()
 	m.graphReady = false
+	m.graphEdges = 0
 	m.graphCache = nil
 	m.deps = nil
 	m.reverseDeps = nil
@@ -1458,7 +1468,7 @@ func (m Model) renderFooter(w int) string {
 	if len(m.rows) > 1 {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
-	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll)
+	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
 	hints := styleDim.Render("s sort / search t tag ? help q quit")
 	var left string
 	switch {
@@ -1479,7 +1489,7 @@ func (m Model) renderFooter(w int) string {
 	return truncatePhys(left, w)
 }
 
-func footerStatus(w int, view, sortMode, filter, selected string, total, scroll int) string {
+func footerStatus(w int, view, sortMode, filter, selected string, total, scroll, graphEdges int) string {
 	if filter == "" {
 		filter = "-"
 	}
@@ -1487,7 +1497,7 @@ func footerStatus(w int, view, sortMode, filter, selected string, total, scroll 
 		view = truncate(view, 3)
 		sortMode = truncate(sortMode, 3)
 	}
-	fixed := fmt.Sprintf("view:%s sort:%s query: sel: total:%d scroll:%d%%", view, sortMode, total, scroll)
+	fixed := fmt.Sprintf("view:%s sort:%s query: sel: total:%d graph:%d scroll:%d%%", view, sortMode, total, graphEdges, scroll)
 	available := max(2, w-runewidth.StringWidth(fixed))
 	filterWidth := max(1, available*2/3)
 	selectedWidth := max(1, available-filterWidth)
@@ -1497,6 +1507,7 @@ func footerStatus(w int, view, sortMode, filter, selected string, total, scroll 
 		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("query:" + truncate(filter, filterWidth)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("sel:" + truncate(selected, selectedWidth)),
 		styleDim.Render(fmt.Sprintf("total:%d", total)),
+		styleDim.Render(fmt.Sprintf("graph:%d edges", graphEdges)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render(fmt.Sprintf("scroll:%d%%", scroll)),
 	}, " ")
 }
@@ -1536,14 +1547,6 @@ func (m Model) helpLines(width int) []string {
 	rowLegend := fmt.Sprintf("Rows: %s open  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
 		m.vocab.Icon("open"), m.vocab.Icon("in_progress"), m.vocab.Icon("blocked"),
 		m.vocab.Icon("closed"), m.vocab.Icon("deferred"), m.vocab.Icon("hold"))
-	viewHelp := "  Views:"
-	for i, view := range m.views {
-		if i == 9 {
-			break
-		}
-		viewHelp += fmt.Sprintf(" %d %s ·", i+1, view.Label())
-	}
-	viewHelp = strings.TrimSuffix(viewHelp, " ·")
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
@@ -1552,7 +1555,7 @@ func (m Model) helpLines(width int) []string {
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear search",
-		viewHelp,
+		"  Views:         1 Ready (actionable) · 2 Open · 3 All",
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
 		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
 		"  Tags:          t search by the selected bead's labels",
