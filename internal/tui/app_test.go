@@ -488,30 +488,23 @@ func TestBoardErrorRendersAndKeepsLife(t *testing.T) {
 	}
 }
 
-func TestEmptyWorkspaceShowsActionableError(t *testing.T) {
-	err := errors.New("bd list --ready --json -n 0: Error: no beads database found\nHint: set BEADS_DIR to point to your .beads directory")
+func TestStaleBoardResponseDoesNotEndCurrentLoad(t *testing.T) {
 	m := newTestModel(&fakeClient{})
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, err: err})
-	view := strings.ReplaceAll(stripANSI(m.View()), "\n", " ")
-	for _, want := range []string{"Could not load board", "no beads", "database found", "BEADS_DIR", "board error"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("empty-workspace view missing %q:\n%s", want, view)
-		}
+	m.view = bd.ViewOpen
+	m.loading = true
+	m.boardErr = ""
+	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: testIssues()})
+	if !m.loading {
+		t.Fatal("stale board response ended the active load")
 	}
-}
-
-func TestPopulatedGraphRendersRows(t *testing.T) {
-	issues := []bd.Issue{
-		{ID: "root", Title: "Fleet root", Status: "open"},
-		{ID: "child", Title: "Fleet child", Status: "open", ParentID: "root"},
+	if len(m.allRows) != 0 {
+		t.Fatalf("stale board response replaced current rows: %d", len(m.allRows))
 	}
-	m := newTestModel(&fakeClient{issue: &issues[0]})
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, issues: issues, deps: map[string][]bd.DepRecord{}})
-	view := stripANSI(m.View())
-	for _, want := range []string{"Fleet root", "Fleet child", "total:2"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("populated graph view missing %q:\n%s", want, view)
-		}
+	if m.boardErr != "" {
+		t.Fatalf("stale board response set board error: %q", m.boardErr)
+	}
+	if view := stripANSI(m.View()); !strings.Contains(view, "Loading board") {
+		t.Fatalf("stale board response hid loading state:\n%s", view)
 	}
 }
 

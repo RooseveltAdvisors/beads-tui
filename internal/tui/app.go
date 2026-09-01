@@ -664,13 +664,13 @@ func (m *Model) loadDetailCmd(id string) tea.Cmd {
 
 // applyBoard installs a fresh board snapshot.
 func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
+	if msg.view != m.view {
+		// A newer board superseded this one.
+		return nil
+	}
 	m.loading = false
 	if msg.err != nil {
 		m.boardErr = msg.err.Error()
-		return nil
-	}
-	if msg.view != m.view {
-		// A newer board superseded this one.
 		return nil
 	}
 	m.boardErr = ""
