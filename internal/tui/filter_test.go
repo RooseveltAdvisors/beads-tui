@@ -404,7 +404,7 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
 		"enter/l/→", "h/←", "1 open", "2 in_progress", "3 blocked", "4 closed", "5 deferred", "s cycle",
 		"esc close detail / clear search", "Search:", "Enter apply", "status:open",
-		"priority:P1", "label:frontend", "t search", "r ·", "Reset: R", "Help: ?", "q/Ctrl+C",
+		"priority:P1", "label:frontend", "t search", "Reset: R", "Help: ?", "q/Ctrl+C",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("wrapped help missing %q: %s", want, view)

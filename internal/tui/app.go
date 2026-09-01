@@ -536,20 +536,26 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "r":
-		boardCmd := m.startBoardLoad()
-		if len(m.rows) > 0 {
-			m.checking = true
-			return m, tea.Batch(boardCmd, m.loadDetailCmd(m.rows[m.selected].ID))
-		}
-		return m, boardCmd
+		return m, nil
 	case "R":
 		wasOpen := m.view == bd.ViewOpen
+		previousID := m.selectedID()
 		m.view, m.sortMode, m.filter = bd.ViewOpen, SortCreated, Filter{}
 		m.saveState()
 		if !wasOpen {
 			return m, m.startBoardLoad()
 		}
-		return m, m.rebuildRows(m.selectedID())
+		m.projectRows(previousID)
+		if m.detail != nil && m.detail.ID == m.selectedID() {
+			m.checking = false
+			return m, nil
+		}
+		m.detailGen++
+		m.detailPendingID = ""
+		m.detail, m.down, m.up = nil, nil, nil
+		m.detailErr = ""
+		m.checking = false
+		return m, nil
 	}
 	if m.focus == FocusList {
 		return m.listKey(msg)
@@ -1675,7 +1681,7 @@ func (m Model) helpLines(width int) []string {
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
 		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
 		"  Tags:          t search by the selected bead's labels",
-		"  Refresh:       r · Reset: R · Help: ? (any key closes) · Quit: q/Ctrl+C",
+		"  Reset:         R · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
 		rowLegend,
 		"Markers: ⇣N depends on N · ⇡N has N dependents",
