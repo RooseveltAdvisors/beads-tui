@@ -539,6 +539,33 @@ func TestSameViewStaleBoardResponseDoesNotOverwriteCurrentLoad(t *testing.T) {
 	}
 }
 
+func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
+	f := &fakeClient{
+		issues: map[bd.View][]bd.Issue{
+			bd.ViewReady: {{ID: "ready", Title: "Ready board", Status: "open"}},
+			bd.ViewOpen:  {{ID: "open", Title: "Open board", Status: "open"}},
+		},
+	}
+	m := newTestModel(f)
+	m = applyMsg(t, m, boardMsg{
+		view:       bd.ViewReady,
+		generation: m.boardGen,
+		issues:     f.issues[bd.ViewReady],
+	})
+	updated, cmd := m.Update(teaKeyMsg("2"))
+	m = updated.(Model)
+	if !m.loading {
+		t.Fatal("view switch did not mark the board as loading")
+	}
+	if cmd == nil {
+		t.Fatal("view switch did not return a board load command")
+	}
+	m = applyMsg(t, m, cmd())
+	if m.loading || m.view != bd.ViewOpen || len(m.rows) != 1 || m.rows[0].ID != "open" {
+		t.Fatalf("view switch load was discarded: loading=%v view=%s rows=%+v generation=%d", m.loading, m.view, m.rows, m.boardGen)
+	}
+}
+
 func TestHelpToggle(t *testing.T) {
 	m := drive(t, nil)
 	m = sendKey(t, m, "?")

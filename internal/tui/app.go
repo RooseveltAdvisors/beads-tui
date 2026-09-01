@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -631,14 +632,18 @@ func (m Model) loadBoardCmd() tea.Cmd {
 		}
 		close(jobs)
 		workers.Wait()
+		// Dependency metadata is best effort: a slow graph query must not hide
+		// the list snapshot that the user can still browse.
 		for i, result := range results {
 			if result.err != nil {
-				return boardMsg{view: view, generation: generation, err: result.err}
+				log.Printf("beads-tui: dependency enrichment for %s skipped: %v", issues[i].ID, result.err)
 			}
 			if len(result.deps) > 0 {
 				deps[issues[i].ID] = result.deps
 			}
-			issues[i].DependentCount = result.dependentCount
+			if result.err == nil {
+				issues[i].DependentCount = result.dependentCount
+			}
 		}
 		return boardMsg{view: view, generation: generation, issues: issues, deps: deps}
 	}

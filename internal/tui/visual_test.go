@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,19 @@ type concurrentDepsClient struct {
 	mu     sync.Mutex
 	active int
 	max    int
+}
+
+type failingGraphClient struct {
+	*fakeClient
+	failID  string
+	failErr error
+}
+
+func (f *failingGraphClient) Deps(ctx context.Context, id string, up bool) ([]bd.DepRecord, error) {
+	if up && id == f.failID {
+		return nil, f.failErr
+	}
+	return f.fakeClient.Deps(ctx, id, up)
 }
 
 func (f *concurrentDepsClient) Deps(ctx context.Context, id string, up bool) ([]bd.DepRecord, error) {
@@ -88,6 +102,41 @@ func TestBoardGraphLoadsWithBoundedConcurrency(t *testing.T) {
 	}
 	if f.max <= 1 || f.max > boardGraphWorkers {
 		t.Fatalf("peak dependency calls = %d, want 2..%d", f.max, boardGraphWorkers)
+	}
+}
+
+func TestBoardGraphFailureKeepsListRows(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "ready", Title: "Ready row", Status: "open", DependentCount: 3},
+		{ID: "graph-timeout", Title: "Graph timeout row", Status: "open", DependencyCount: 1, DependentCount: 4},
+	}
+	f := &failingGraphClient{
+		fakeClient: &fakeClient{
+			issues: map[bd.View][]bd.Issue{bd.ViewReady: issues},
+			down:   []bd.DepRecord{{ID: "blocker", Title: "Blocker", Status: "open"}},
+		},
+		failID:    "graph-timeout",
+		failErr:   errors.New("dependency timeout"),
+	}
+	m := newTestModel(f.fakeClient)
+	m.backend = f
+	msg := m.loadBoardCmd()()
+	board, ok := msg.(boardMsg)
+	if !ok {
+		t.Fatalf("load board returned %T, want boardMsg", msg)
+	}
+	if board.err != nil {
+		t.Fatalf("graph enrichment error hid board rows: %v", board.err)
+	}
+	if len(board.issues) != len(issues) || board.issues[1].DependentCount != issues[1].DependentCount {
+		t.Fatalf("board issues = %+v, want list rows and preserved fallback count", board.issues)
+	}
+	if len(board.deps["graph-timeout"]) != 1 || board.deps["graph-timeout"][0].ID != "blocker" {
+		t.Fatalf("successful dependency enrichment was discarded: %+v", board.deps)
+	}
+	m = applyMsg(t, m, board)
+	if len(m.rows) != len(issues) {
+		t.Fatalf("visible rows = %d, want %d", len(m.rows), len(issues))
 	}
 }
 
