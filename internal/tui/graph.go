@@ -15,7 +15,7 @@ type graphEdge struct {
 // graphLines renders a compact, deterministic two-hop neighborhood for the
 // focused bead. Edges retain their direction so the graph is useful even when
 // the dependency tree is collapsed.
-func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus string, vocab Vocab) ([]string, bool) {
+func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus string, vocab Vocab, reverse ...map[string][]bd.DepRecord) ([]string, bool) {
 	issues := make(map[string]bd.Issue, len(all)+len(rows))
 	for _, issue := range all {
 		issues[issue.ID] = issue
@@ -63,6 +63,15 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 			addAdj(issue.ID, dep.ID, "blocked-by")
 			addAdj(dep.ID, issue.ID, "blocks")
 			addDirected(issue.ID, dep.ID)
+		}
+		if len(reverse) > 0 {
+			for _, dependent := range reverse[0][issue.ID] {
+				if _, exists := issues[dependent.ID]; !exists {
+					issues[dependent.ID] = bd.Issue{ID: dependent.ID, Title: dependent.Title, Status: dependent.Status, Priority: dependent.Priority}
+				}
+				addAdj(issue.ID, dependent.ID, "blocks")
+				addDirected(dependent.ID, issue.ID)
+			}
 		}
 	}
 	for id := range adj {

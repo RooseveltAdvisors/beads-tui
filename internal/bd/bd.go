@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // DefaultLookPath and DefaultRun are the production wiring for a Client.
@@ -23,6 +24,8 @@ type Client struct {
 	run      func(ctx context.Context, path string, args ...string) (stdout, stderr string, err error)
 }
 
+const depsBatchWorkers = 8
+
 // New returns a Client wired to exec `bd` from PATH, inheriting the ambient
 // environment (BEADS_DIR and friends) so the store resolves exactly as it
 // would for the user.
@@ -35,16 +38,26 @@ func (c *Client) List(ctx context.Context, view View) ([]Issue, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("beads-tui: unsupported view %q", view)
 	}
-	args := []string{"list"}
-	switch view {
-	case ViewReady:
-		args = append(args, "--ready")
-	case ViewAll:
-		args = append(args, "--all")
+	return c.ListStatus(ctx, string(view))
+}
+
+// ListStatus returns issues for any native or custom bd status.
+func (c *Client) ListStatus(ctx context.Context, status string) ([]Issue, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return nil, errors.New("beads-tui: empty status")
 	}
-	args = append(args, "--json", "-n", "0")
 	var issues []Issue
-	if err := c.jsonCall(ctx, &issues, args...); err != nil {
+	if err := c.jsonCall(ctx, &issues, "list", "--status", status, "--json", "-n", "0"); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
+// ListAll returns the complete issue set for graph-wide metadata.
+func (c *Client) ListAll(ctx context.Context) ([]Issue, error) {
+	var issues []Issue
+	if err := c.jsonCall(ctx, &issues, "list", "--all", "--json", "-n", "0"); err != nil {
 		return nil, err
 	}
 	return issues, nil
@@ -84,15 +97,72 @@ func (c *Client) Deps(ctx context.Context, id string, up bool) ([]DepRecord, err
 	return records, nil
 }
 
+// DepsBatch returns dependency edges grouped by their requested anchor IDs.
+func (c *Client) DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]DepRecord, error) {
+	ids = uniqueIDs(ids)
+	result := make(map[string][]DepRecord, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	type depResult struct {
+		records []DepRecord
+		err     error
+	}
+	results := make([]depResult, len(ids))
+	jobs := make(chan int)
+	workerCount := min(depsBatchWorkers, len(ids))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				results[i].records, results[i].err = c.Deps(ctx, ids[i], up)
+			}
+		}()
+	}
+	for i := range ids {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+
+	var firstErr error
+	for i, item := range results {
+		result[ids[i]] = item.records
+		if firstErr == nil && item.err != nil {
+			firstErr = item.err
+		}
+	}
+	return result, firstErr
+}
+
 // Statuses loads the status vocabulary (icons and categories).
 func (c *Client) Statuses(ctx context.Context) ([]StatusInfo, error) {
 	var resp struct {
 		BuiltIn []StatusInfo `json:"built_in_statuses"`
+		Custom  []StatusInfo `json:"custom_statuses"`
 	}
 	if err := c.jsonCall(ctx, &resp, "statuses", "--json"); err != nil {
 		return nil, err
 	}
-	return resp.BuiltIn, nil
+	return append(resp.BuiltIn, resp.Custom...), nil
+}
+
+func uniqueIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 // jsonCall runs a read-only bd invocation, requires JSON on stdout, and

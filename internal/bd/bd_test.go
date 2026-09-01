@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // stubClient wires a Client to a canned exec: it records the arguments given
@@ -105,6 +107,9 @@ const statusesFixture = `{
     {"category": "frozen", "name": "pinned", "icon": "📌"},
     {"category": "wip", "name": "hooked", "icon": "◇"}
   ],
+  "custom_statuses": [
+    {"name": "awaiting_review", "category": "active"}
+  ],
   "schema_version": 1
 }`
 
@@ -114,11 +119,11 @@ func TestListBuildsRightArgs(t *testing.T) {
 		gotArgs = args
 		return readyFixture, "", nil
 	})
-	issues, err := c.List(context.Background(), ViewReady)
+	issues, err := c.List(context.Background(), ViewOpen)
 	if err != nil {
-		t.Fatalf("List(ready): %v", err)
+		t.Fatalf("List(open): %v", err)
 	}
-	want := []string{"list", "--ready", "--json", "-n", "0"}
+	want := []string{"list", "--status", "open", "--json", "-n", "0"}
 	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
 		t.Errorf("args = %q, want %q", gotArgs, want)
 	}
@@ -140,13 +145,17 @@ func TestListBuildsRightArgs(t *testing.T) {
 	}
 }
 
-func TestListOpenAllVariants(t *testing.T) {
+func TestListStatusVariants(t *testing.T) {
 	for _, tc := range []struct {
 		view View
 		want string
 	}{
-		{ViewOpen, "list --json -n 0"},
-		{ViewAll, "list --all --json -n 0"},
+		{ViewOpen, "list --status open --json -n 0"},
+		{ViewInProgress, "list --status in_progress --json -n 0"},
+		{ViewBlocked, "list --status blocked --json -n 0"},
+		{ViewClosed, "list --status closed --json -n 0"},
+		{ViewDeferred, "list --status deferred --json -n 0"},
+		{View("awaiting_review"), "list --status awaiting_review --json -n 0"},
 	} {
 		var gotArgs []string
 		c := stubClient(t, func(args []string) (string, string, error) {
@@ -169,13 +178,58 @@ func TestListOpenAllVariants(t *testing.T) {
 	}
 }
 
+func TestListAllBuildsRightArgs(t *testing.T) {
+	var gotArgs []string
+	c := stubClient(t, func(args []string) (string, string, error) {
+		gotArgs = args
+		return allFixture, "", nil
+	})
+	issues, err := c.ListAll(context.Background())
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "list --all --json -n 0" {
+		t.Errorf("ListAll args = %q", gotArgs)
+	}
+	if len(issues) != 1 || issues[0].ID != "fm-rbc" {
+		t.Errorf("ListAll issues = %+v", issues)
+	}
+}
+
 func TestListInvalidView(t *testing.T) {
 	c := stubClient(t, func(args []string) (string, string, error) {
 		t.Error("run must not be called for an invalid view")
 		return "", "", nil
 	})
-	if _, err := c.List(context.Background(), View("bogus")); err == nil {
+	if _, err := c.List(context.Background(), View("")); err == nil {
 		t.Fatal("expected error for invalid view")
+	}
+}
+
+func TestDefaultViewsAreStableAndDistinct(t *testing.T) {
+	want := []View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
+	views := DefaultViews()
+	if len(views) != len(want) {
+		t.Fatalf("views = %v, want %v", views, want)
+	}
+	for i, view := range views {
+		if view != want[i] {
+			t.Fatalf("view %d = %q, want %q", i, view, want[i])
+		}
+		if !view.Valid() || view.Label() == "" {
+			t.Fatalf("invalid status view: %q", view)
+		}
+	}
+}
+
+func TestViewsFromStatusesIncludesCustomStatuses(t *testing.T) {
+	views := ViewsFromStatuses([]StatusInfo{
+		{Name: "open"},
+		{Name: "awaiting_review"},
+		{Name: " AWAITING_REVIEW "},
+	})
+	if len(views) != 6 || views[5] != View("awaiting_review") {
+		t.Fatalf("views = %v, want built-ins plus awaiting_review", views)
 	}
 }
 
@@ -237,6 +291,93 @@ func TestDepsDirections(t *testing.T) {
 	}
 }
 
+func TestDepsBatchGroupsEdgesByAnchor(t *testing.T) {
+	var calls []string
+	var callsMu sync.Mutex
+	c := stubClient(t, func(args []string) (string, string, error) {
+		callsMu.Lock()
+		calls = append(calls, strings.Join(args, " "))
+		callsMu.Unlock()
+		switch args[2] {
+		case "fm-a":
+			return `[{"id":"fm-b","dependency_type":"blocks"}]`, "", nil
+		case "fm-c":
+			return `[{"id":"fm-b","dependency_type":"tracks"}]`, "", nil
+		case "fm-b":
+			return `[{"id":"fm-a","dependency_type":"blocks"},{"id":"fm-c","dependency_type":"tracks"}]`, "", nil
+		default:
+			return `[]`, "", nil
+		}
+	})
+	down, err := c.DepsBatch(context.Background(), []string{"fm-a", "fm-c"}, false)
+	if err != nil {
+		t.Fatalf("DepsBatch(down): %v", err)
+	}
+	callsMu.Lock()
+	downCalls := append([]string(nil), calls...)
+	callsMu.Unlock()
+	if len(downCalls) != 2 {
+		t.Fatalf("down calls = %q, want two calls", downCalls)
+	}
+	for _, want := range []string{"dep list fm-a --json", "dep list fm-c --json"} {
+		found := false
+		for _, call := range downCalls {
+			if call == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("down args = %q, missing %q", downCalls, want)
+		}
+	}
+	if len(down["fm-a"]) != 1 || down["fm-a"][0].ID != "fm-b" {
+		t.Errorf("down edges = %+v", down)
+	}
+
+	up, err := c.DepsBatch(context.Background(), []string{"fm-b"}, true)
+	if err != nil {
+		t.Fatalf("DepsBatch(up): %v", err)
+	}
+	callsMu.Lock()
+	lastCall := calls[len(calls)-1]
+	callsMu.Unlock()
+	if lastCall != "dep list fm-b --json --direction up" {
+		t.Errorf("up args = %q", lastCall)
+	}
+	if len(up["fm-b"]) != 2 || up["fm-b"][0].ID != "fm-a" || up["fm-b"][1].DependencyType != "tracks" {
+		t.Errorf("up edges = %+v", up)
+	}
+}
+
+func TestDepsBatchRunsCallsConcurrently(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	c := stubClient(t, func([]string) (string, string, error) {
+		started <- struct{}{}
+		<-release
+		return `[]`, "", nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.DepsBatch(context.Background(), []string{"fm-a", "fm-b"}, false)
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			<-done
+			t.Fatal("DepsBatch serialized single-ID calls")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("DepsBatch: %v", err)
+	}
+}
+
 func TestStatuses(t *testing.T) {
 	c := stubClient(t, func(args []string) (string, string, error) {
 		return statusesFixture, "", nil
@@ -245,11 +386,14 @@ func TestStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Statuses: %v", err)
 	}
-	if len(statuses) != 7 {
-		t.Fatalf("got %d statuses, want 7", len(statuses))
+	if len(statuses) != 8 {
+		t.Fatalf("got %d statuses, want 8", len(statuses))
 	}
 	if statuses[2].Name != "blocked" || statuses[2].Icon != "●" || statuses[2].Category != "wip" {
 		t.Errorf("unexpected blocked status: %+v", statuses[2])
+	}
+	if statuses[7].Name != "awaiting_review" || statuses[7].Category != "active" {
+		t.Errorf("unexpected custom status: %+v", statuses[7])
 	}
 }
 
@@ -261,7 +405,7 @@ func TestBdMissingFromPath(t *testing.T) {
 			return "", "", nil
 		},
 	}
-	_, err := c.List(context.Background(), ViewReady)
+	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil || !strings.Contains(err.Error(), "bd not found in PATH") {
 		t.Fatalf("expected bd-not-found error, got %v", err)
 	}
@@ -271,11 +415,11 @@ func TestBdFailureCarriesStderr(t *testing.T) {
 	c := stubClient(t, func(args []string) (string, string, error) {
 		return "", "No active beads workspace found.\nHint: check BEADS_DIR/worktree setup", errors.New("exit status 1")
 	})
-	_, err := c.List(context.Background(), ViewReady)
+	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{"bd list --ready --json -n 0", "No active beads workspace found", "BEADS_DIR"} {
+	for _, want := range []string{"bd list --status open --json -n 0", "No active beads workspace found", "BEADS_DIR"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
@@ -301,7 +445,7 @@ func TestJsonCallNeverLeaksRawOutput(t *testing.T) {
 		// wrapper, never from dumping raw stdout.
 		return "SECRET-STDOUT garbage {{", "bd: workspace is locked", errors.New("exit status 1")
 	})
-	_, err := c.List(context.Background(), ViewReady)
+	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -2,10 +2,14 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -19,8 +23,6 @@ import (
 // bdTimeout caps every bd call so a wedged store (or lock contention) shows
 // an error instead of freezing the UI.
 const bdTimeout = 8 * time.Second
-
-const boardGraphWorkers = 8
 
 // Focus tracks which pane receives the navigation keys.
 type Focus int
@@ -41,35 +43,49 @@ type Backend interface {
 	Statuses(ctx context.Context) ([]bd.StatusInfo, error)
 }
 
+type graphBackend interface {
+	Backend
+	ListAll(ctx context.Context) ([]bd.Issue, error)
+	DepsBatch(ctx context.Context, ids []string, up bool) (map[string][]bd.DepRecord, error)
+}
+
 // Model is the bead board application state.
 type Model struct {
 	backend Backend
 
-	view     bd.View
-	sortMode SortMode
-	filter   Filter
-	allRows  []bd.Issue
-	deps     map[string][]bd.DepRecord
-	rows     []bd.Issue
-	treeRows []TreeRow
-	expanded map[string]bool
-	treeMode bool
-	vocab    Vocab
-	boardErr string
-	loading  bool
-	boardGen uint64
+	view         bd.View
+	views        []bd.View
+	sortMode     SortMode
+	filter       Filter
+	allRows      []bd.Issue
+	deps         map[string][]bd.DepRecord
+	reverseDeps  map[string][]bd.DepRecord
+	graphRows    []bd.Issue
+	rows         []bd.Issue
+	treeRows     []TreeRow
+	expanded     map[string]bool
+	treeMode     bool
+	vocab        Vocab
+	boardErr     string
+	loading      bool
+	boardGen     uint64
+	graphReady   bool
+	graphEdges   int
+	graphCache   *graphCache
+	lastSnapshot *boardSnapshot
 
 	selected int
 	focus    Focus
 	dOffset  int
 
-	detail    *bd.Issue
-	down      []bd.DepRecord
-	up        []bd.DepRecord
-	detailErr string
-	checking  bool
-	detailGen uint64
-	graph     bool
+	detail          *bd.Issue
+	down            []bd.DepRecord
+	up              []bd.DepRecord
+	detailErr       string
+	checking        bool
+	detailGen       uint64
+	detailPendingID string
+	graph           bool
 
 	help         bool
 	helpOffset   int
@@ -83,6 +99,9 @@ type Model struct {
 	searchDown   []bd.DepRecord
 	searchUp     []bd.DepRecord
 	searchDErr   string
+	yank         bool
+	yankIndex    int
+	yankErr      string
 	filterInput  textinput.Model
 	quitting     bool
 	markdown     *markdownRenderer
@@ -98,6 +117,37 @@ type boardMsg struct {
 	issues     []bd.Issue
 	deps       map[string][]bd.DepRecord
 	err        error
+}
+
+// graphMsg carries best-effort dependency enrichment separately from the list
+// snapshot so the first rows paint without waiting on graph subprocesses.
+type graphMsg struct {
+	view        bd.View
+	generation  uint64
+	issues      []bd.Issue
+	graphIssues []bd.Issue
+	deps        map[string][]bd.DepRecord
+	reverseDeps map[string][]bd.DepRecord
+	edgeCount   int
+	complete    bool
+	cache       *graphCache
+}
+
+type graphCache struct {
+	view        bd.View
+	generation  uint64
+	currentIDs  []string
+	issues      []bd.Issue
+	graphIssues []bd.Issue
+	deps        map[string][]bd.DepRecord
+	reverseDeps map[string][]bd.DepRecord
+	edgeCount   int
+	complete    bool
+}
+
+type boardSnapshot struct {
+	View   bd.View    `json:"view"`
+	Issues []bd.Issue `json:"issues"`
 }
 
 // statusMsg carries the status vocabulary.
@@ -117,16 +167,128 @@ type detailMsg struct {
 	err        error
 }
 
+type yankItem struct {
+	label string
+	value string
+}
+
+type yankMsg struct {
+	err error
+}
+
+type savedState struct {
+	View     bd.View        `json:"view"`
+	SortMode SortMode       `json:"sort_mode"`
+	Filter   Filter         `json:"filter"`
+	Snapshot *boardSnapshot `json:"board_snapshot,omitempty"`
+}
+
+func statePath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("BEADS_TUI_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, "state.json"), nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "beads-tui", "state.json"), nil
+}
+
+func loadState() (savedState, bool) {
+	path, err := statePath()
+	if err != nil {
+		log.Printf("beads-tui: locate state: %v", err)
+		return savedState{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("beads-tui: read state: %v", err)
+		}
+		return savedState{}, false
+	}
+	var state savedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		log.Printf("beads-tui: parse state: %v", err)
+		return savedState{}, false
+	}
+	state.View = normalizeStateView(state.View)
+	if state.View == "" {
+		state.View = bd.ViewOpen
+	}
+	if state.Snapshot != nil {
+		state.Snapshot.View = normalizeStateView(state.Snapshot.View)
+		if state.Snapshot.View == "" {
+			state.Snapshot = nil
+		} else {
+			state.Snapshot.Issues = cloneIssues(state.Snapshot.Issues)
+		}
+	}
+	if state.SortMode > SortDependents {
+		state.SortMode = SortCreated
+	}
+	if state.Filter.Kind > FilterSearch || len(state.Filter.Query) > 120 {
+		state.Filter = Filter{}
+	}
+	return state, true
+}
+
+func normalizeStateView(view bd.View) bd.View {
+	view = bd.View(strings.ToLower(strings.TrimSpace(string(view))))
+	if !view.Valid() || view == bd.View("ready") || view == bd.View("all") {
+		return ""
+	}
+	return view
+}
+
+func persistenceEnabled(backend Backend) bool {
+	if backend == nil {
+		return false
+	}
+	_, configured := os.LookupEnv("BEADS_TUI_CONFIG_DIR")
+	_, production := backend.(*bd.Client)
+	return configured || production
+}
+
+func (m Model) saveState() {
+	if !persistenceEnabled(m.backend) {
+		return
+	}
+	path, err := statePath()
+	if err != nil {
+		log.Printf("beads-tui: locate state: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(savedState{
+		View:     m.view,
+		SortMode: m.sortMode,
+		Filter:   m.filter,
+		Snapshot: cloneBoardSnapshot(m.lastSnapshot),
+	}, "", "  ")
+	if err != nil {
+		log.Printf("beads-tui: encode state: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Printf("beads-tui: create state directory: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		log.Printf("beads-tui: write state: %v", err)
+	}
+}
+
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
 	input := textinput.New()
-	input.Prompt = "Filter › "
+	input.Prompt = "Search / › "
 	input.Placeholder = "status:open  priority:P1  label:frontend  text"
 	input.CharLimit = 120
 	input.Width = 60
-	return Model{
+	m := Model{
 		backend:  backend,
-		view:     bd.ViewReady,
+		view:     bd.ViewOpen,
+		views:    bd.DefaultViews(),
 		loading:  true,
 		boardGen: 1,
 		// Created is newest-first by default; s cycles through the remaining modes.
@@ -140,6 +302,17 @@ func New(backend Backend) Model {
 		expanded:    map[string]bool{},
 		treeMode:    true,
 	}
+	if persistenceEnabled(backend) {
+		if state, ok := loadState(); ok {
+			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
+			m.lastSnapshot = cloneBoardSnapshot(state.Snapshot)
+			if m.lastSnapshot != nil && m.lastSnapshot.View == m.view {
+				m.allRows = cloneIssues(m.lastSnapshot.Issues)
+				m.projectRows("")
+			}
+		}
+	}
+	return m
 }
 
 // Init loads the board and the status vocabulary.
@@ -166,18 +339,78 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateKey(msg)
 	case boardMsg:
 		return m, m.applyBoard(msg)
+	case graphMsg:
+		if msg.generation != m.boardGen || msg.view != m.view {
+			return m, nil
+		}
+		prev := m.selectedID()
+		m.allRows = append([]bd.Issue(nil), msg.issues...)
+		m.graphRows = append([]bd.Issue(nil), msg.graphIssues...)
+		m.deps = cloneDepMap(msg.deps)
+		m.reverseDeps = cloneDepMap(msg.reverseDeps)
+		m.graphEdges = msg.edgeCount
+		m.graphCache = msg.cache
+		m.graphReady = true
+		if msg.complete && m.detailPendingID == "" && m.detail != nil && m.detail.ID == prev {
+			for _, issue := range msg.issues {
+				if issue.ID == m.detail.ID {
+					detail := *m.detail
+					detail = normalizeIssueCounts(detail, m.deps[detail.ID], m.reverseDeps[detail.ID])
+					m.detail = &detail
+					m.down = append([]bd.DepRecord(nil), m.deps[detail.ID]...)
+					m.up = append([]bd.DepRecord(nil), m.reverseDeps[detail.ID]...)
+					break
+				}
+			}
+		}
+		return m, m.rebuildRows(prev)
 	case statusMsg:
 		if msg.err == nil {
 			m.vocab = NewVocab(msg.statuses)
+			m.views = bd.ViewsFromStatuses(msg.statuses)
+			if !m.hasView(m.view) {
+				m.view = m.views[0]
+				m.saveState()
+				return m, m.startBoardLoad()
+			}
 		}
 	case detailMsg:
 		return m, m.applyDetail(msg)
+	case yankMsg:
+		if msg.err != nil {
+			m.yankErr = msg.err.Error()
+		} else {
+			m.yankErr = "copied"
+		}
 	}
 	return m, nil
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
+		return m, nil
+	}
+	if m.yank {
+		switch msg.String() {
+		case "esc", "y":
+			m.yank = false
+			m.yankErr = ""
+		case "j", "down":
+			if m.yankIndex < len(m.yankItems())-1 {
+				m.yankIndex++
+			}
+		case "k", "up":
+			if m.yankIndex > 0 {
+				m.yankIndex--
+			}
+		case "enter":
+			items := m.yankItems()
+			if len(items) == 0 {
+				return m, nil
+			}
+			m.yankIndex = min(max(m.yankIndex, 0), len(items)-1)
+			return m, copyToClipboard(items[m.yankIndex].value)
+		}
 		return m, nil
 	}
 	if m.graph {
@@ -189,6 +422,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "ctrl+c" {
 		m.quitting = true
+		m.saveState()
 		return m, tea.Quit
 	}
 	if m.help {
@@ -209,61 +443,65 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.filtering = false
 			m.filterInput.Blur()
-			if m.searching {
-				m.filter = m.searchBase
-				m.searching = false
-				m.detail = m.searchDetail
-				m.down = m.searchDown
-				m.up = m.searchUp
-				m.detailErr = m.searchDErr
-				m.checking = false
-				m.detailGen++
-				cmd := m.rebuildRows(m.searchID)
-				m.focus = m.searchFocus
-				m.dOffset = m.searchDOff
-				return m, cmd
-			} else {
-				m.filter = Filter{}
-			}
+			m.filter = m.searchBase
+			m.detail = m.searchDetail
+			m.down = m.searchDown
+			m.up = m.searchUp
+			m.detailErr = m.searchDErr
+			m.checking = false
+			m.detailGen++
+			m.detailPendingID = ""
+			cmd := m.rebuildRows(m.searchID)
+			m.focus = m.searchFocus
+			m.dOffset = m.searchDOff
+			m.saveState()
 			m.searching = false
-			return m, m.rebuildRows(m.selectedID())
+			return m, cmd
 		case "enter":
 			m.filtering = false
 			m.filterInput.Blur()
-			if m.searching {
-				m.filter = SearchFilter(m.filterInput.Value())
-			} else {
-				m.filter = ParseFilter(m.filterInput.Value())
-			}
+			m.filter = ParseSearchFilter(m.filterInput.Value())
+			m.saveState()
 			m.searching = false
 			return m, m.rebuildRows(m.selectedID())
 		}
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
-		if m.searching {
-			previousID := m.selectedID()
-			m.filter = SearchFilter(m.filterInput.Value())
-			filterCmd := m.rebuildRows(previousID)
-			if cmd != nil && filterCmd != nil {
-				return m, tea.Batch(cmd, filterCmd)
-			}
-			if filterCmd != nil {
-				return m, filterCmd
-			}
+		previousID := m.selectedID()
+		m.filter = ParseSearchFilter(m.filterInput.Value())
+		filterCmd := m.rebuildRows(previousID)
+		if cmd != nil && filterCmd != nil {
+			return m, tea.Batch(cmd, filterCmd)
+		}
+		if filterCmd != nil {
+			return m, filterCmd
 		}
 		return m, cmd
 	}
-	switch msg.String() {
+	key := msg.String()
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+		return m.switchView(m.viewAt(int(key[0] - '1')))
+	}
+	switch key {
 	case "?":
 		m.help = true
 		m.helpOffset = 0
 		return m, nil
 	case "q":
 		m.quitting = true
+		m.saveState()
 		return m, tea.Quit
+	case "y":
+		if len(m.yankItems()) > 0 {
+			m.yank = true
+			m.yankIndex = 0
+			m.yankErr = ""
+		}
+		return m, nil
 	case "esc":
 		if m.filter.Active() {
 			m.filter = Filter{}
+			m.saveState()
 			return m, m.rebuildRows(m.selectedID())
 		}
 		if m.focus == FocusDetail {
@@ -271,20 +509,13 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.dOffset = 0
 		}
 		return m, nil
-	case "1":
-		return m.switchView(bd.ViewReady)
-	case "2":
-		return m.switchView(bd.ViewOpen)
-	case "3":
-		return m.switchView(bd.ViewAll)
 	case "s":
 		m.sortMode = m.sortMode.Next()
+		m.saveState()
 		return m, m.rebuildRows(m.selectedID())
-	case "f":
-		return m, m.openPrompt(false)
 	case "/":
 		m.searchBase = m.filter
-		return m, m.openPrompt(true)
+		return m, m.openPrompt()
 	case "t":
 		if id := m.selectedID(); id != "" {
 			for _, issue := range m.rows {
@@ -299,6 +530,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.filter = Filter{Kind: FilterLabel, Query: strings.Join(labels, ",")}
+					m.saveState()
 					return m, m.rebuildRows(id)
 				}
 			}
@@ -310,6 +542,14 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(boardCmd, m.loadDetailCmd(m.rows[m.selected].ID))
 		}
 		return m, boardCmd
+	case "R":
+		wasOpen := m.view == bd.ViewOpen
+		m.view, m.sortMode, m.filter = bd.ViewOpen, SortCreated, Filter{}
+		m.saveState()
+		if !wasOpen {
+			return m, m.startBoardLoad()
+		}
+		return m, m.rebuildRows(m.selectedID())
 	}
 	if m.focus == FocusList {
 		return m.listKey(msg)
@@ -317,22 +557,23 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.detailKey(msg)
 }
 
-func (m *Model) openPrompt(search bool) tea.Cmd {
+func (m *Model) openPrompt() tea.Cmd {
 	m.filtering = true
-	m.searching = search
-	if search {
-		m.searchFocus = m.focus
-		m.searchID = m.selectedID()
+	m.searching = true
+	m.searchFocus = m.focus
+	id := m.selectedID()
+	// Keep the last visible detail while the same bead's replacement request is
+	// pending; cancelling search should restore the context the user left.
+	if m.detail != nil || m.searchID != id {
 		m.searchDOff = m.dOffset
 		m.searchDetail = m.detail
 		m.searchDown = m.down
 		m.searchUp = m.up
 		m.searchDErr = m.detailErr
-		m.focus = FocusList
-		m.filterInput.Prompt = "Search / › "
-	} else {
-		m.filterInput.Prompt = "Filter › "
 	}
+	m.searchID = id
+	m.focus = FocusList
+	m.filterInput.Prompt = "Search / › "
 	m.filterInput.SetValue("")
 	m.filterInput.Focus()
 	return textinput.Blink
@@ -345,7 +586,24 @@ func (m Model) switchView(view bd.View) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.view = view
+	m.saveState()
 	return m, m.startBoardLoad()
+}
+
+func (m Model) viewAt(index int) bd.View {
+	if index >= 0 && index < len(m.views) {
+		return m.views[index]
+	}
+	return m.view
+}
+
+func (m Model) hasView(view bd.View) bool {
+	for _, candidate := range m.views {
+		if candidate == view {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) selectedID() string {
@@ -355,9 +613,69 @@ func (m Model) selectedID() string {
 	return ""
 }
 
+func (m Model) yankItems() []yankItem {
+	if m.selected < 0 || m.selected >= len(m.rows) {
+		return nil
+	}
+	issue := m.rows[m.selected]
+	items := []yankItem{{label: "ID", value: issue.ID}, {label: "Title", value: issue.Title}}
+	if strings.TrimSpace(issue.URL) != "" {
+		items = append(items, yankItem{label: "URL", value: issue.URL})
+	}
+	return items
+}
+
+func copyToClipboard(value string) tea.Cmd {
+	return func() tea.Msg {
+		if path, err := exec.LookPath("clipboard-copy"); err == nil {
+			cmd := exec.Command(path)
+			cmd.Stdin = strings.NewReader(value)
+			if err := cmd.Run(); err == nil {
+				return yankMsg{}
+			} else {
+				log.Printf("beads-tui: clipboard-copy failed: %v", err)
+			}
+		} else {
+			log.Printf("beads-tui: clipboard-copy unavailable: %v", err)
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(value))
+		if _, err := fmt.Fprint(os.Stdout, "\x1b]52;c;"+encoded+"\a"); err != nil {
+			return yankMsg{err: err}
+		}
+		return yankMsg{}
+	}
+}
+
 // rebuildRows applies the current filter and sort while preserving selection
 // by bead id. It also requests detail if the selected row changed.
 func (m *Model) rebuildRows(previousID string) tea.Cmd {
+	m.projectRows(previousID)
+	if len(m.rows) == 0 {
+		m.detailGen++
+		m.detailPendingID = ""
+		m.detail, m.down, m.up = nil, nil, nil
+		m.detailErr = ""
+		m.checking = false
+		return nil
+	}
+	id := m.rows[m.selected].ID
+	if m.detailPendingID == id {
+		m.checking = true
+		return nil
+	}
+	if m.detailPendingID != "" {
+		m.detailGen++
+		m.detailPendingID = ""
+	}
+	if m.detail == nil || m.detail.ID != id {
+		m.checking = true
+		return m.loadDetailCmd(id)
+	}
+	m.checking = false
+	return nil
+}
+
+func (m *Model) projectRows(previousID string) {
 	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
@@ -382,20 +700,19 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 			}
 		}
 	}
+	m.clampYankIndex()
 	if m.filter.Kind == FilterSearch && len(m.rows) > 0 {
 		m.expandAncestors(m.rows[m.selected].ID)
 	}
-	if len(m.rows) == 0 {
-		m.detail, m.down, m.up = nil, nil, nil
-		m.detailErr = ""
-		m.checking = false
-		return nil
+}
+
+func (m *Model) clampYankIndex() {
+	items := m.yankItems()
+	if len(items) == 0 {
+		m.yankIndex = 0
+		return
 	}
-	if m.detail == nil || m.detail.ID != m.rows[m.selected].ID {
-		m.checking = true
-		return m.loadDetailCmd(m.rows[m.selected].ID)
-	}
-	return nil
+	m.yankIndex = min(max(m.yankIndex, 0), len(items)-1)
 }
 
 func (m *Model) expandAncestors(id string) {
@@ -578,6 +895,13 @@ func (m Model) buildDetail(width int) []string {
 func (m *Model) startBoardLoad() tea.Cmd {
 	m.boardGen++
 	m.loading = true
+	m.invalidateDetail()
+	m.graphReady = false
+	m.graphEdges = 0
+	m.graphCache = nil
+	m.deps = nil
+	m.reverseDeps = nil
+	m.graphRows = nil
 	return m.loadBoardCmd()
 }
 
@@ -592,61 +916,242 @@ func (m Model) loadBoardCmd() tea.Cmd {
 		if err != nil {
 			return boardMsg{view: view, generation: generation, err: err}
 		}
-		deps := make(map[string][]bd.DepRecord)
-		type graphResult struct {
-			deps           []bd.DepRecord
-			dependentCount int
-			err            error
-		}
-		results := make([]graphResult, len(issues))
-		jobs := make(chan int)
-		var workers sync.WaitGroup
-		workerCount := min(boardGraphWorkers, len(issues))
-		workers.Add(workerCount)
-		for range workerCount {
-			go func() {
-				defer workers.Done()
-				for i := range jobs {
-					issue := issues[i]
-					if issue.ID == "" {
-						continue
-					}
-					if issue.DependencyCount > 0 {
-						callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-						results[i].deps, results[i].err = backend.Deps(callCtx, issue.ID, false)
-						callCancel()
-						if results[i].err != nil {
-							continue
-						}
-					}
-					callCtx, callCancel := context.WithTimeout(context.Background(), bdTimeout)
-					dependents, depErr := backend.Deps(callCtx, issue.ID, true)
-					callCancel()
-					results[i].dependentCount = len(dependents)
-					results[i].err = depErr
-				}
-			}()
-		}
-		for i := range issues {
-			jobs <- i
-		}
-		close(jobs)
-		workers.Wait()
-		// Dependency metadata is best effort: a slow graph query must not hide
-		// the list snapshot that the user can still browse.
-		for i, result := range results {
-			if result.err != nil {
-				log.Printf("beads-tui: dependency enrichment for %s skipped: %v", issues[i].ID, result.err)
-			}
-			if len(result.deps) > 0 {
-				deps[issues[i].ID] = result.deps
-			}
-			if result.err == nil {
-				issues[i].DependentCount = result.dependentCount
-			}
-		}
-		return boardMsg{view: view, generation: generation, issues: issues, deps: deps}
+		return boardMsg{view: view, generation: generation, issues: issues}
 	}
+}
+
+func (m *Model) invalidateDetail() {
+	m.detailGen++
+	m.detailPendingID = ""
+	m.detail = nil
+	m.down = nil
+	m.up = nil
+	m.detailErr = ""
+	m.checking = false
+	m.dOffset = 0
+	m.searchDetail = nil
+	m.searchDown = nil
+	m.searchUp = nil
+	m.searchDErr = ""
+}
+
+// loadGraphCmd enriches a painted list with one bounded, cached dependency
+// pass. The board never waits for this best-effort metadata before first paint.
+func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) tea.Cmd {
+	backend, supportsGraph := m.backend.(graphBackend)
+	cache := m.graphCache
+	currentIDs := issueIDs(issues)
+	return func() tea.Msg {
+		if graphCacheMatches(cache, view, generation, currentIDs) {
+			return graphMsgFromCache(cache)
+		}
+		current := cloneIssues(issues)
+		graphIssues := cloneIssues(issues)
+		deps := map[string][]bd.DepRecord{}
+		reverseDeps := map[string][]bd.DepRecord{}
+		graphComplete := false
+		if supportsGraph {
+			ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
+			all, err := backend.ListAll(ctx)
+			allLoaded := err == nil
+			if err != nil {
+				log.Printf("beads-tui: graph issue snapshot skipped: %v", err)
+			} else {
+				graphIssues = mergeIssueSnapshots(all, issues)
+			}
+			graphIDs := issueIDs(graphIssues)
+			raw, err := backend.DepsBatch(ctx, graphIDs, false)
+			cancel()
+			if err != nil {
+				log.Printf("beads-tui: graph dependencies skipped: %v", err)
+			}
+			graphComplete = allLoaded && err == nil
+			deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
+		} else {
+			log.Printf("beads-tui: backend does not support batched graph loading")
+		}
+		current = enrichIssues(current, deps, reverseDeps)
+		cache = &graphCache{
+			view:        view,
+			generation:  generation,
+			currentIDs:  append([]string(nil), currentIDs...),
+			issues:      cloneIssues(current),
+			graphIssues: cloneIssues(graphIssues),
+			deps:        cloneDepMap(deps),
+			reverseDeps: cloneDepMap(reverseDeps),
+			edgeCount:   countGraphEdges(deps),
+			complete:    graphComplete,
+		}
+		return graphMsgFromCache(cache)
+	}
+}
+
+func graphCacheMatches(cache *graphCache, view bd.View, generation uint64, currentIDs []string) bool {
+	return cache != nil && cache.view == view && cache.generation == generation && sameIDs(cache.currentIDs, currentIDs)
+}
+
+func graphMsgFromCache(cache *graphCache) graphMsg {
+	return graphMsg{
+		view:        cache.view,
+		generation:  cache.generation,
+		issues:      cloneIssues(cache.issues),
+		graphIssues: cloneIssues(cache.graphIssues),
+		deps:        cloneDepMap(cache.deps),
+		reverseDeps: cloneDepMap(cache.reverseDeps),
+		edgeCount:   cache.edgeCount,
+		complete:    cache.complete,
+		cache:       cache,
+	}
+}
+
+func countGraphEdges(deps map[string][]bd.DepRecord) int {
+	count := 0
+	for _, records := range deps {
+		count += len(records)
+	}
+	return count
+}
+
+func issueIDs(issues []bd.Issue) []string {
+	seen := make(map[string]struct{}, len(issues))
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.ID == "" {
+			continue
+		}
+		if _, ok := seen[issue.ID]; ok {
+			continue
+		}
+		seen[issue.ID] = struct{}{}
+		ids = append(ids, issue.ID)
+	}
+	return ids
+}
+
+func sameIDs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, id := range a {
+		seen[id] = struct{}{}
+	}
+	for _, id := range b {
+		if _, ok := seen[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneIssues(issues []bd.Issue) []bd.Issue {
+	cloned := append([]bd.Issue(nil), issues...)
+	for i := range cloned {
+		cloned[i].Labels = append([]string(nil), cloned[i].Labels...)
+	}
+	return cloned
+}
+
+func cloneBoardSnapshot(snapshot *boardSnapshot) *boardSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &boardSnapshot{View: snapshot.View, Issues: cloneIssues(snapshot.Issues)}
+}
+
+func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string][]bd.DepRecord, len(source))
+	for id, records := range source {
+		cloned[id] = append([]bd.DepRecord(nil), records...)
+	}
+	return cloned
+}
+
+func mergeIssueSnapshots(all, current []bd.Issue) []bd.Issue {
+	merged := cloneIssues(all)
+	seen := make(map[string]struct{}, len(merged))
+	for _, issue := range merged {
+		if issue.ID != "" {
+			seen[issue.ID] = struct{}{}
+		}
+	}
+	for _, issue := range current {
+		if issue.ID == "" {
+			continue
+		}
+		if _, ok := seen[issue.ID]; ok {
+			continue
+		}
+		merged = append(merged, issue)
+		seen[issue.ID] = struct{}{}
+	}
+	return merged
+}
+
+func normalizeGraphEdges(issues []bd.Issue, raw map[string][]bd.DepRecord) (map[string][]bd.DepRecord, map[string][]bd.DepRecord) {
+	issueByID := make(map[string]bd.Issue, len(issues))
+	for _, issue := range issues {
+		if issue.ID != "" {
+			issueByID[issue.ID] = issue
+		}
+	}
+	deps := make(map[string][]bd.DepRecord)
+	reverseDeps := make(map[string][]bd.DepRecord)
+	for sourceID, records := range raw {
+		if sourceID == "" {
+			continue
+		}
+		source := issueByID[sourceID]
+		for _, record := range records {
+			if record.ID == "" || record.ID == sourceID {
+				continue
+			}
+			target := issueByID[record.ID]
+			if record.Title == "" {
+				record.Title = target.Title
+			}
+			if record.Status == "" {
+				record.Status = target.Status
+			}
+			if record.Priority == 0 {
+				record.Priority = target.Priority
+			}
+			if record.IssueType == "" {
+				record.IssueType = target.IssueType
+			}
+			deps[sourceID] = append(deps[sourceID], record)
+			reverseDeps[record.ID] = append(reverseDeps[record.ID], bd.DepRecord{
+				ID:             sourceID,
+				Title:          source.Title,
+				Status:         source.Status,
+				Priority:       source.Priority,
+				IssueType:      source.IssueType,
+				DependencyType: record.DependencyType,
+			})
+		}
+	}
+	return deps, reverseDeps
+}
+
+func enrichIssues(issues []bd.Issue, deps, reverseDeps map[string][]bd.DepRecord) []bd.Issue {
+	enriched := cloneIssues(issues)
+	for i := range enriched {
+		enriched[i] = normalizeIssueCounts(enriched[i], deps[enriched[i].ID], reverseDeps[enriched[i].ID])
+	}
+	return enriched
+}
+
+func normalizeIssueCounts(issue bd.Issue, deps, dependents []bd.DepRecord) bd.Issue {
+	if len(deps) > issue.DependencyCount {
+		issue.DependencyCount = len(deps)
+	}
+	if len(dependents) > issue.DependentCount {
+		issue.DependentCount = len(dependents)
+	}
+	return issue
 }
 
 func (m Model) loadStatusesCmd() tea.Cmd {
@@ -663,6 +1168,15 @@ func (m Model) loadStatusesCmd() tea.Cmd {
 func (m *Model) loadDetailCmd(id string) tea.Cmd {
 	m.detailGen++
 	generation := m.detailGen
+	m.detailPendingID = id
+	m.checking = true
+	if m.detail == nil || m.detail.ID != id {
+		m.detail = nil
+		m.down = nil
+		m.up = nil
+		m.detailErr = ""
+		m.dOffset = 0
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
 		defer cancel()
@@ -684,6 +1198,7 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 		// A newer board superseded this one.
 		return nil
 	}
+	m.invalidateDetail()
 	m.loading = false
 	if msg.err != nil {
 		m.boardErr = msg.err.Error()
@@ -693,9 +1208,17 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	// Capture the previous selection from the OLD board before rows are
 	// replaced, then restore it by id if the bead is still present.
 	prev := m.selectedID()
+	m.graphReady = false
+	m.graphEdges = 0
+	m.graphCache = nil
+	m.deps = nil
+	m.reverseDeps = nil
+	m.graphRows = nil
 	m.allRows = append([]bd.Issue(nil), msg.issues...)
-	m.deps = msg.deps
-	return m.rebuildRows(prev)
+	m.deps = cloneDepMap(msg.deps)
+	m.lastSnapshot = &boardSnapshot{View: msg.view, Issues: cloneIssues(msg.issues)}
+	m.saveState()
+	return tea.Batch(m.rebuildRows(prev), m.loadGraphCmd(msg.view, msg.generation, msg.issues))
 }
 
 func (m Model) indexOfRow(id string) int {
@@ -726,11 +1249,13 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 	if msg.generation != m.detailGen || m.selected >= len(m.rows) || msg.id != m.rows[m.selected].ID {
 		return nil
 	}
+	m.detailPendingID = ""
 	m.checking = false
 	if msg.err != nil {
 		m.detailErr = msg.err.Error()
 		if msg.issue != nil {
-			m.detail = msg.issue
+			issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
+			m.detail = &issue
 			m.down, m.up = msg.down, msg.up
 		} else {
 			m.detail, m.down, m.up = nil, nil, nil
@@ -738,7 +1263,12 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 		return nil
 	}
 	m.detailErr = ""
-	m.detail = msg.issue
+	if msg.issue != nil {
+		issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
+		m.detail = &issue
+	} else {
+		m.detail = nil
+	}
 	m.down, m.up = msg.down, msg.up
 	m.dOffset = 0
 	return nil
@@ -748,6 +1278,9 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 func (m Model) View() string {
 	if m.quitting {
 		return ""
+	}
+	if m.yank {
+		return m.renderYank()
 	}
 	if m.help {
 		return m.renderHelp()
@@ -794,13 +1327,26 @@ func (m Model) View() string {
 	return sb.String()
 }
 
-func (m Model) renderFilterPrompt(w int) string {
-	label := "FILTER"
-	if m.searching {
-		label = "SEARCH"
+func (m Model) renderYank() string {
+	items := m.yankItems()
+	lines := []string{"Choose a value to copy:"}
+	for i, item := range items {
+		prefix := "  "
+		if i == m.yankIndex {
+			prefix = "▸ "
+		}
+		lines = append(lines, prefix+item.label+": "+item.value)
 	}
+	lines = append(lines, "", "j/k move · enter copy · esc close")
+	if m.yankErr != "" {
+		lines = append(lines, styleDim.Render(m.yankErr))
+	}
+	return strings.Join(pane("Yank", lines, m.width, m.height), "\n")
+}
+
+func (m Model) renderFilterPrompt(w int) string {
 	input := m.filterInput.View()
-	return truncatePhys(styleDim.Render(label)+"  "+input, w)
+	return truncatePhys(styleDim.Render("SEARCH")+"  "+input, w)
 }
 
 // renderHeader paints the title bar: view name and tabs.
@@ -810,6 +1356,9 @@ func (m Model) renderHeader(w int) string {
 }
 
 func (m Model) hasGraphEdges() bool {
+	if !m.graphReady {
+		return false
+	}
 	if m.selected < 0 || m.selected >= len(m.rows) {
 		return false
 	}
@@ -817,18 +1366,22 @@ func (m Model) hasGraphEdges() bool {
 	if id == "" {
 		return false
 	}
-	if m.rows[m.selected].ParentID != "" || len(m.deps[id]) > 0 {
+	if m.rows[m.selected].ParentID != "" || len(m.deps[id]) > 0 || len(m.reverseDeps[id]) > 0 {
 		return true
 	}
-	for _, issue := range m.allRows {
+	all := m.graphRows
+	if len(all) == 0 {
+		all = m.allRows
+	}
+	for _, issue := range all {
 		if issue.ParentID == id {
 			return true
 		}
-		for _, records := range m.deps {
-			for _, dep := range records {
-				if dep.ID == id {
-					return true
-				}
+	}
+	for _, records := range m.deps {
+		for _, dep := range records {
+			if dep.ID == id {
+				return true
 			}
 		}
 	}
@@ -843,7 +1396,11 @@ func (m Model) renderGraph() string {
 	if h <= 0 {
 		h = 24
 	}
-	lines, cycle := graphLines(m.rows, m.allRows, m.deps, m.selectedID(), m.vocab)
+	all := m.graphRows
+	if len(all) == 0 {
+		all = m.allRows
+	}
+	lines, cycle := graphLines(m.rows, all, m.deps, m.selectedID(), m.vocab, m.reverseDeps)
 	title := "Graph · G/esc close"
 	if cycle {
 		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render("⚠ CYCLE") + " · " + title
@@ -857,7 +1414,7 @@ func (m Model) vocabViewLabel() string {
 
 func (m Model) renderTabs() string {
 	var parts []string
-	for i, view := range bd.AllViews {
+	for i, view := range m.views {
 		label := fmt.Sprintf("[%d]%s", i+1, view.TabLabel())
 		if view == m.view {
 			parts = append(parts, viewStyle(view).Bold(true).Render(label))
@@ -889,7 +1446,7 @@ func (m Model) renderListPane(w, h int) []string {
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
 		if m.filter.Active() {
-			lines = append(lines, styleDim.Render("No matches for filter: "+m.filter.String()))
+			lines = append(lines, styleDim.Render("No matches for search: "+m.filter.String()))
 		} else {
 			lines = append(lines, styleDim.Render(m.emptyBoardText()))
 		}
@@ -907,17 +1464,9 @@ func (m Model) renderListPane(w, h int) []string {
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
 			if m.treeMode && i < len(m.treeRows) {
-				if m.view == bd.ViewReady {
-					lines = append(lines, m.vocab.ReadyTreeRow(m.treeRows[i], inner, i == m.selected))
-				} else {
-					lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
-				}
+				lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
 			} else {
-				if m.view == bd.ViewReady {
-					lines = append(lines, m.vocab.ReadyRow(m.rows[i], inner, i == m.selected))
-				} else {
-					lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
-				}
+				lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
 			}
 		}
 		if m.loading {
@@ -933,12 +1482,8 @@ func (m Model) renderListPane(w, h int) []string {
 
 func (m Model) emptyBoardText() string {
 	switch m.view {
-	case bd.ViewReady:
-		return "No ready work. Everything unblocked is claimed or done."
-	case bd.ViewOpen:
-		return "No open issues."
 	default:
-		return "No issues in this graph."
+		return "No " + m.view.Label() + " issues."
 	}
 }
 
@@ -1011,9 +1556,9 @@ func (m Model) renderDetailPane(w, h int) []string {
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
 	if w < 48 {
-		filter := "off"
+		query := "off"
 		if m.filter.Active() {
-			filter = "on"
+			query = "on"
 		}
 		percent := 0
 		if len(m.rows) == 1 {
@@ -1021,7 +1566,7 @@ func (m Model) renderFooter(w int) string {
 		} else if len(m.rows) > 1 {
 			percent = m.selected * 100 / (len(m.rows) - 1)
 		}
-		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  filter:%s  %d%%", m.view.Label(), filter, percent)), w)
+		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  query:%s  %d%%", m.view.Label(), query, percent)), w)
 	}
 	selected := m.selectedID()
 	if selected == "" {
@@ -1031,8 +1576,8 @@ func (m Model) renderFooter(w int) string {
 	if len(m.rows) > 1 {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
-	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll)
-	hints := styleDim.Render("s sort f filter t tag ? help q quit")
+	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
+	hints := styleDim.Render("s sort / search t tag ? help q quit")
 	var left string
 	switch {
 	case m.boardErr != "":
@@ -1052,7 +1597,7 @@ func (m Model) renderFooter(w int) string {
 	return truncatePhys(left, w)
 }
 
-func footerStatus(w int, view, sortMode, filter, selected string, total, scroll int) string {
+func footerStatus(w int, view, sortMode, filter, selected string, total, scroll, graphEdges int) string {
 	if filter == "" {
 		filter = "-"
 	}
@@ -1060,16 +1605,17 @@ func footerStatus(w int, view, sortMode, filter, selected string, total, scroll 
 		view = truncate(view, 3)
 		sortMode = truncate(sortMode, 3)
 	}
-	fixed := fmt.Sprintf("view:%s sort:%s filter: sel: total:%d scroll:%d%%", view, sortMode, total, scroll)
+	fixed := fmt.Sprintf("view:%s sort:%s query: sel: total:%d graph:%d scroll:%d%%", view, sortMode, total, graphEdges, scroll)
 	available := max(2, w-runewidth.StringWidth(fixed))
 	filterWidth := max(1, available*2/3)
 	selectedWidth := max(1, available-filterWidth)
 	return strings.Join([]string{
 		lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("view:" + view),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("sort:" + sortMode),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("filter:" + truncate(filter, filterWidth)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("query:" + truncate(filter, filterWidth)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("sel:" + truncate(selected, selectedWidth)),
 		styleDim.Render(fmt.Sprintf("total:%d", total)),
+		styleDim.Render(fmt.Sprintf("graph:%d edges", graphEdges)),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render(fmt.Sprintf("scroll:%d%%", scroll)),
 	}, " ")
 }
@@ -1106,9 +1652,17 @@ func (m Model) helpDimensions() (w, width, height int) {
 }
 
 func (m Model) helpLines(width int) []string {
-	rowLegend := fmt.Sprintf("Rows: %s claimable  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
+	rowLegend := fmt.Sprintf("Rows: %s open  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
 		m.vocab.Icon("open"), m.vocab.Icon("in_progress"), m.vocab.Icon("blocked"),
 		m.vocab.Icon("closed"), m.vocab.Icon("deferred"), m.vocab.Icon("hold"))
+	viewHelp := "  Views:"
+	for i, view := range m.views {
+		if i == 9 {
+			break
+		}
+		viewHelp += fmt.Sprintf(" %d %s ·", i+1, view.Label())
+	}
+	viewHelp = strings.TrimSuffix(viewHelp, " ·")
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
@@ -1116,13 +1670,12 @@ func (m Model) helpLines(width int) []string {
 		"  Half-page:     ctrl-u/d in list and detail",
 		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
-		"  Navigation:    esc close detail / clear filter",
-		"  Views:         1 Ready · 2 Open · 3 All (work with no blockers / open / everything)",
-		"  Sort:          s cycle priority · created · updated · alphabetical · leverage",
-		"  Filter:        f prompt · Enter apply · status:open · priority:P1 · label:frontend · text",
-		"  Search:        / incremental id/title/description · Enter commit · Esc cancel",
-		"  Tags:          t filter by the selected bead's labels",
-		"  Refresh:       r · Help: ? (any key closes) · Quit: q/Ctrl+C",
+		"  Navigation:    esc close detail / clear search",
+		viewHelp,
+		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
+		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
+		"  Tags:          t search by the selected bead's labels",
+		"  Refresh:       r · Reset: R · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
 		rowLegend,
 		"Markers: ⇣N depends on N · ⇡N has N dependents",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
@@ -12,9 +13,11 @@ import (
 
 // fakeClient serves canned data without touching a real Beads store.
 type fakeClient struct {
+	mu       sync.Mutex
 	issues   map[bd.View][]bd.Issue
 	issue    *bd.Issue
 	down     []bd.DepRecord
+	downByID map[string][]bd.DepRecord
 	up       []bd.DepRecord
 	upByID   map[string][]bd.DepRecord
 	statuses []bd.StatusInfo
@@ -22,9 +25,11 @@ type fakeClient struct {
 	failList    error
 	failShow    error
 	listCalls   int
+	depCalls    int
 	showCalls   int
 	lastShowID  string
 	queuedLists [][]bd.Issue
+	batchCalls  int
 }
 
 func (f *fakeClient) List(_ context.Context, view bd.View) ([]bd.Issue, error) {
@@ -37,6 +42,24 @@ func (f *fakeClient) List(_ context.Context, view bd.View) ([]bd.Issue, error) {
 	return f.issues[view], f.failList
 }
 
+func (f *fakeClient) ListAll(context.Context) ([]bd.Issue, error) {
+	seen := make(map[string]struct{})
+	var issues []bd.Issue
+	for _, viewIssues := range f.issues {
+		for _, issue := range viewIssues {
+			if issue.ID == "" {
+				continue
+			}
+			if _, ok := seen[issue.ID]; ok {
+				continue
+			}
+			seen[issue.ID] = struct{}{}
+			issues = append(issues, issue)
+		}
+	}
+	return issues, nil
+}
+
 func (f *fakeClient) Show(_ context.Context, id string) (*bd.Issue, error) {
 	f.showCalls++
 	f.lastShowID = id
@@ -47,13 +70,42 @@ func (f *fakeClient) Show(_ context.Context, id string) (*bd.Issue, error) {
 }
 
 func (f *fakeClient) Deps(_ context.Context, id string, up bool) ([]bd.DepRecord, error) {
+	f.mu.Lock()
+	f.depCalls++
+	f.mu.Unlock()
 	if up {
 		if f.upByID != nil {
 			return f.upByID[id], nil
 		}
 		return f.up, nil
 	}
+	if f.downByID != nil {
+		return f.downByID[id], nil
+	}
 	return f.down, nil
+}
+
+func (f *fakeClient) DepsBatch(_ context.Context, ids []string, up bool) (map[string][]bd.DepRecord, error) {
+	f.mu.Lock()
+	f.batchCalls++
+	f.mu.Unlock()
+	result := make(map[string][]bd.DepRecord, len(ids))
+	for _, id := range ids {
+		if up {
+			if f.upByID != nil {
+				result[id] = f.upByID[id]
+			} else {
+				result[id] = f.up
+			}
+			continue
+		}
+		if f.downByID != nil {
+			result[id] = f.downByID[id]
+		} else {
+			result[id] = f.down
+		}
+	}
+	return result, nil
 }
 
 func (f *fakeClient) Statuses(context.Context) ([]bd.StatusInfo, error) {
@@ -89,7 +141,7 @@ func newTestModel(f *fakeClient) Model {
 		f = &fakeClient{}
 	}
 	if f.issues == nil {
-		f.issues = map[bd.View][]bd.Issue{bd.ViewReady: testIssues()}
+		f.issues = map[bd.View][]bd.Issue{bd.ViewOpen: testIssues()}
 	}
 	if f.issue == nil {
 		f.issue = testDetail()
@@ -106,7 +158,7 @@ func drive(t *testing.T, f *fakeClient) Model {
 		f = &fakeClient{}
 	}
 	m := newTestModel(f)
-	updated, cmd := m.Update(boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: f.issues[bd.ViewReady], err: nil})
+	updated, cmd := m.Update(boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
 	m = updated.(Model)
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
@@ -185,9 +237,9 @@ func TestBoardLoadAndRender(t *testing.T) {
 	}
 	view := stripANSI(m.View())
 	for _, want := range []string{
-		"beads-tui", "Ready board", "fm-aaa", "Alpha task", "fm-bbb",
-		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]Ready (actionable)", "[2]Open",
-		"[3]All", "q quit",
+		"beads-tui", "open board", "fm-aaa", "Alpha task", "fm-bbb",
+		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]open", "[2]in_progress",
+		"[3]blocked", "[4]closed", "[5]deferred",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q", want)
@@ -204,8 +256,8 @@ func TestInitialBoardShowsLoading(t *testing.T) {
 	if !strings.Contains(view, "Loading board") {
 		t.Fatalf("initial board should show loading state:\n%s", view)
 	}
-	if strings.Contains(view, "No ready work") {
-		t.Fatalf("initial board must not claim ready work is empty:\n%s", view)
+	if strings.Contains(view, "No open issues") {
+		t.Fatalf("initial board must not claim open work is empty:\n%s", view)
 	}
 }
 
@@ -238,7 +290,7 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 		{ID: "root", Title: "Root", Status: "open", Priority: 1},
 		{ID: "child", Title: "Child", Status: "open", Priority: 2, ParentID: "root"},
 	}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
 	if !m.treeMode || len(m.rows) != 2 {
 		t.Fatalf("initial tree = %v rows, want expanded tree", m.rows)
 	}
@@ -264,7 +316,7 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 
 func TestTreeEnterOpensLeafDetail(t *testing.T) {
 	m := newTestModel(nil)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: []bd.Issue{{ID: "leaf", Status: "open"}}})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: []bd.Issue{{ID: "leaf", Status: "open"}}})
 	m = sendKey(t, m, "enter")
 	if m.focus != FocusDetail {
 		t.Fatalf("leaf enter focus = %v, want detail", m.focus)
@@ -313,6 +365,106 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 	}
 }
 
+func TestRefreshInvalidatesDetailSnapshot(t *testing.T) {
+	m := drive(t, nil)
+	id := m.selectedID()
+	m.detail = &bd.Issue{ID: id}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+	oldGeneration := m.detailGen
+	updated, cmd := m.Update(teaKeyMsg("r"))
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("refresh did not return a board load command")
+	}
+	if m.detail != nil || m.down != nil || m.up != nil {
+		t.Fatalf("refresh retained stale detail snapshot: detail=%+v down=%+v up=%+v", m.detail, m.down, m.up)
+	}
+	if m.detailGen <= oldGeneration {
+		t.Fatalf("detail generation = %d, want greater than %d", m.detailGen, oldGeneration)
+	}
+}
+
+func TestGraphCompletionDoesNotReplacePendingDetail(t *testing.T) {
+	m := newTestModel(nil)
+	m.treeMode = false
+	m.allRows = []bd.Issue{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}}
+	m.rows = append([]bd.Issue(nil), m.allRows...)
+	m.detail = &bd.Issue{ID: "a"}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+
+	updated, detailCmd := m.Update(teaKeyMsg("j"))
+	m = updated.(Model)
+	if detailCmd == nil || m.detailPendingID != "b" {
+		t.Fatalf("selection did not start the b detail request: cmd=%v pending=%q", detailCmd != nil, m.detailPendingID)
+	}
+	if m.detail != nil {
+		t.Fatalf("stale detail remained selected: %+v", m.detail)
+	}
+	pendingGeneration := m.detailGen
+	updated, graphCmd := m.Update(graphMsg{
+		view:        m.view,
+		generation:  m.boardGen,
+		issues:      m.allRows,
+		graphIssues: m.allRows,
+		deps:        map[string][]bd.DepRecord{"a": {{ID: "graph-down"}}},
+		reverseDeps: map[string][]bd.DepRecord{"a": {{ID: "graph-up"}}},
+		complete:    true,
+	})
+	m = updated.(Model)
+	if graphCmd != nil || m.detailGen != pendingGeneration || m.detailPendingID != "b" {
+		t.Fatalf("graph completion disturbed pending detail: cmd=%v generation=%d pending=%q", graphCmd != nil, m.detailGen, m.detailPendingID)
+	}
+}
+
+func TestCompleteGraphSnapshotUpdatesDetailEdges(t *testing.T) {
+	m := newTestModel(nil)
+	m.rows = []bd.Issue{{ID: "root", Title: "Root"}}
+	m.selected = 0
+	m.detail = &bd.Issue{ID: "root"}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+	updated, _ := m.Update(graphMsg{
+		view:        m.view,
+		generation:  m.boardGen,
+		issues:      m.rows,
+		graphIssues: m.rows,
+		deps:        map[string][]bd.DepRecord{"root": {{ID: "new-down"}}},
+		reverseDeps: map[string][]bd.DepRecord{"root": {{ID: "new-up"}}},
+		complete:    true,
+	})
+	m = updated.(Model)
+	if len(m.down) != 1 || m.down[0].ID != "new-down" || len(m.up) != 1 || m.up[0].ID != "new-up" {
+		t.Fatalf("detail edges = down:%+v up:%+v, want graph snapshot", m.down, m.up)
+	}
+}
+
+func TestPartialGraphSnapshotLeavesDetailCoherent(t *testing.T) {
+	m := newTestModel(nil)
+	m.rows = []bd.Issue{{ID: "root", Title: "Root"}}
+	m.selected = 0
+	m.detail = &bd.Issue{ID: "root"}
+	m.down = []bd.DepRecord{{ID: "old-down"}}
+	m.up = []bd.DepRecord{{ID: "old-up"}}
+	updated, _ := m.Update(graphMsg{
+		view:        m.view,
+		generation:  m.boardGen,
+		issues:      m.rows,
+		graphIssues: m.rows,
+		deps:        map[string][]bd.DepRecord{"root": {{ID: "partial-down-1"}, {ID: "partial-down-2"}}},
+		reverseDeps: map[string][]bd.DepRecord{"root": {{ID: "partial-up-1"}, {ID: "partial-up-2"}}},
+		complete:    false,
+	})
+	m = updated.(Model)
+	if m.detail == nil || m.detail.DependencyCount != 0 || m.detail.DependentCount != 0 {
+		t.Fatalf("partial graph changed detail counts: %+v", m.detail)
+	}
+	if len(m.down) != 1 || m.down[0].ID != "old-down" || len(m.up) != 1 || m.up[0].ID != "old-up" {
+		t.Fatalf("partial graph changed detail edges: down:%+v up:%+v", m.down, m.up)
+	}
+}
+
 func TestFocusEnterAndEsc(t *testing.T) {
 	m := drive(t, nil)
 	m = applyMsg(t, m, detailMsg{id: "fm-aaa", generation: m.detailGen, issue: testDetail(), err: nil})
@@ -356,9 +508,9 @@ func TestHalfPageScrollingInListAndDetail(t *testing.T) {
 	for i := range issues {
 		issues[i] = bd.Issue{ID: "fm-" + strings.Repeat("x", i+1), Title: "Task", Status: "open"}
 	}
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues, err: nil})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, err: nil})
 	half := m.halfPageStep()
 	m = sendKey(t, m, "ctrl+d")
 	if m.selected != half {
@@ -445,23 +597,87 @@ func TestViewSwitching(t *testing.T) {
 	f := &fakeClient{
 		issue: testDetail(),
 		issues: map[bd.View][]bd.Issue{
-			bd.ViewReady: testIssues(),
-			bd.ViewAll:   append(testIssues(), bd.Issue{ID: "fm-ddd", Title: "Delta", Status: "closed", Priority: 2}),
+			bd.ViewOpen:   testIssues(),
+			bd.ViewClosed: append(testIssues(), bd.Issue{ID: "fm-ddd", Title: "Delta", Status: "blocked", Priority: 2}),
 		},
 	}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: f.issues[bd.ViewReady], err: nil})
-	m = sendKey(t, m, "3")
-	if m.view != bd.ViewAll {
-		t.Fatalf("view = %v, want all", m.view)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
+	m = sendKey(t, m, "4")
+	if m.view != bd.ViewClosed {
+		t.Fatalf("view = %v, want closed", m.view)
 	}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewAll, generation: m.boardGen, issues: f.issues[bd.ViewAll], err: nil})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewClosed, generation: m.boardGen, issues: f.issues[bd.ViewClosed], err: nil})
 	if len(m.rows) != 4 {
 		t.Fatalf("rows = %d, want 4 after switch", len(m.rows))
 	}
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "All board") || !strings.Contains(view, "fm-ddd") {
+	if !strings.Contains(view, "closed") || !strings.Contains(view, "fm-ddd") {
 		t.Errorf("switched view missing content:\n%s", view)
+	}
+}
+
+func TestNumericKeysSelectNativeAndCustomStatusViews(t *testing.T) {
+	m := newTestModel(nil)
+	m.views = bd.ViewsFromStatuses([]bd.StatusInfo{{Name: "awaiting_review"}})
+	for i, key := range []string{"1", "2", "3", "4", "5", "6"} {
+		updated, _ := m.Update(teaKeyMsg(key))
+		m = updated.(Model)
+		if m.view != m.views[i] {
+			t.Fatalf("key %s selected %q, want %q", key, m.view, m.views[i])
+		}
+	}
+}
+
+func TestStatusMessagePopulatesNativeAndCustomTabs(t *testing.T) {
+	m := newTestModel(nil)
+	updated, cmd := m.Update(statusMsg{statuses: []bd.StatusInfo{
+		{Name: "open"},
+		{Name: "in_progress"},
+		{Name: "blocked"},
+		{Name: "closed"},
+		{Name: "deferred"},
+		{Name: "awaiting_review"},
+	}})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("status refresh unexpectedly reloaded the current view")
+	}
+	want := []bd.View{
+		bd.ViewOpen,
+		bd.ViewInProgress,
+		bd.ViewBlocked,
+		bd.ViewClosed,
+		bd.ViewDeferred,
+		bd.View("awaiting_review"),
+	}
+	if len(m.views) != len(want) {
+		t.Fatalf("status tabs = %v, want %v", m.views, want)
+	}
+	for i, view := range want {
+		if m.views[i] != view {
+			t.Fatalf("status tab %d = %q, want %q", i, m.views[i], view)
+		}
+	}
+}
+
+func TestYankIndexClampsAfterRowsChange(t *testing.T) {
+	m := newTestModel(nil)
+	m.rows = []bd.Issue{{ID: "with-url", Title: "Title", URL: "https://example.test"}}
+	m.selected = 0
+	m.yank = true
+	m.yankIndex = 2
+	m.allRows = []bd.Issue{{ID: "without-url", Title: "Replacement"}}
+	m.rebuildRows("")
+	if m.yankIndex != 1 {
+		t.Fatalf("yank index = %d, want 1 after URL disappeared", m.yankIndex)
+	}
+	updated, cmd := m.Update(teaKeyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("enter did not copy the clamped yank item")
+	}
+	if updated.(Model).yankIndex != 1 {
+		t.Fatalf("enter changed yank index to %d", updated.(Model).yankIndex)
 	}
 }
 
@@ -472,7 +688,7 @@ func TestSelectionSurvivesRefreshByID(t *testing.T) {
 		t.Fatalf("pre-refresh selection = %q", m.rows[m.selected].ID)
 	}
 	reordered := []bd.Issue{testIssues()[2], testIssues()[0], testIssues()[1]}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: reordered, err: nil})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: reordered, err: nil})
 	if m.rows[m.selected].ID != "fm-bbb" {
 		t.Errorf("selection lost after refresh: %q", m.rows[m.selected].ID)
 	}
@@ -481,7 +697,7 @@ func TestSelectionSurvivesRefreshByID(t *testing.T) {
 func TestBoardErrorRendersAndKeepsLife(t *testing.T) {
 	f := &fakeClient{failList: errors.New("deadline exceeded")}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: nil, err: f.failList})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: nil, err: f.failList})
 	view := stripANSI(m.View())
 	for _, want := range []string{"Could not load board", "deadline exceeded", "q quit"} {
 		if !strings.Contains(view, want) {
@@ -499,7 +715,7 @@ func TestStaleBoardResponseDoesNotEndCurrentLoad(t *testing.T) {
 	m.view = bd.ViewOpen
 	m.loading = true
 	m.boardErr = ""
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: testIssues()})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewClosed, generation: m.boardGen, issues: testIssues()})
 	if !m.loading {
 		t.Fatal("stale board response ended the active load")
 	}
@@ -542,15 +758,15 @@ func TestSameViewStaleBoardResponseDoesNotOverwriteCurrentLoad(t *testing.T) {
 func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
 	f := &fakeClient{
 		issues: map[bd.View][]bd.Issue{
-			bd.ViewReady: {{ID: "ready", Title: "Ready board", Status: "open"}},
-			bd.ViewOpen:  {{ID: "open", Title: "Open board", Status: "open"}},
+			bd.ViewOpen:       {{ID: "ready", Title: "Ready board", Status: "open"}},
+			bd.ViewInProgress: {{ID: "open", Title: "In progress board", Status: "in_progress"}},
 		},
 	}
 	m := newTestModel(f)
 	m = applyMsg(t, m, boardMsg{
-		view:       bd.ViewReady,
+		view:       bd.ViewOpen,
 		generation: m.boardGen,
-		issues:     f.issues[bd.ViewReady],
+		issues:     f.issues[bd.ViewOpen],
 	})
 	updated, cmd := m.Update(teaKeyMsg("2"))
 	m = updated.(Model)
@@ -561,7 +777,7 @@ func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
 		t.Fatal("view switch did not return a board load command")
 	}
 	m = applyMsg(t, m, cmd())
-	if m.loading || m.view != bd.ViewOpen || len(m.rows) != 1 || m.rows[0].ID != "open" {
+	if m.loading || m.view != bd.ViewInProgress || len(m.rows) != 1 || m.rows[0].ID != "open" {
 		t.Fatalf("view switch load was discarded: loading=%v view=%s rows=%+v generation=%d", m.loading, m.view, m.rows, m.boardGen)
 	}
 }
@@ -573,7 +789,7 @@ func TestHelpToggle(t *testing.T) {
 		t.Fatal("? should open help")
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"1 Ready", "2 Open", "3 All", "ctrl-u/d", "h/l", "Read-only", "⇣", "⇡"} {
+	for _, want := range []string{"1 open", "2 in_progress", "3 blocked", "4 closed", "5 deferred", "ctrl-u/d", "h/l", "Read-only", "⇣", "⇡"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help missing %q", want)
 		}
@@ -595,11 +811,11 @@ func TestQuitKeys(t *testing.T) {
 }
 
 func TestEmptyBoardStates(t *testing.T) {
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: nil}, issue: testDetail()}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: nil}, issue: testDetail()}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: nil, err: nil})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: nil, err: nil})
 	view := stripANSI(m.View())
-	for _, want := range []string{"No ready work", "Select a bead for details"} {
+	for _, want := range []string{"No open issues", "Select a bead for details"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("empty board missing %q", want)
 		}

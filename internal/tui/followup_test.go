@@ -11,10 +11,10 @@ func TestSlashSearchMatchesIncrementallyAndCommits(t *testing.T) {
 		{ID: "fm-known", Title: "Unrelated", Description: "needle in the notes", Status: "open"},
 		{ID: "fm-other", Title: "Another task", Description: "No match", Status: "open"},
 	}
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues})
 
 	m = sendKey(t, m, "/")
 	if !m.filtering || !m.searching {
@@ -50,10 +50,10 @@ func TestSlashSearchNavigationUsesMatches(t *testing.T) {
 		{ID: "b", Title: "Task beta", Status: "open"},
 		{ID: "c", Title: "Task gamma", Status: "open"},
 	}
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues})
 	m = sendKey(t, m, "/")
 	m = sendKey(t, m, "task")
 	m = sendKey(t, m, "enter")
@@ -69,10 +69,10 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 		{ID: "b", Title: "Task beta", Status: "open"},
 		{ID: "c", Title: "Task gamma", Status: "open"},
 	}
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues})
 	m.selected = 1
 	m.focus = FocusDetail
 	m.dOffset = 7
@@ -129,9 +129,9 @@ func TestSlashSearchFlattensMatchesAndRevealsSelectedTreePath(t *testing.T) {
 		{ID: "parent", Title: "Matching parent", Status: "open"},
 		{ID: "child", Title: "Matching child", Status: "open", ParentID: "parent"},
 	}
-	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewReady: issues}}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewReady, generation: m.boardGen, issues: issues})
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues})
 	m.expanded["parent"] = false
 	m.rebuildRows("parent")
 
