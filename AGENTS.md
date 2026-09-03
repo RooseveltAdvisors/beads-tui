@@ -16,6 +16,17 @@ bd's flag surface or JSON field names must be mirrored there and in
 
 Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o beads-tui ./cmd/beads-tui` (also `make build`). The store is auto-discovered by `bd` itself - beads-tui just inherits the ambient environment (`.beads`, `BEADS_DIR`, `--db`), never hardcodes a path.
 
+## Runtime proof gate
+
+`go test` alone never proves this TUI loads. `scripts/verify.sh` (skill:
+`/verify`) builds the binary, drives the real interactive TUI in a throwaway
+tmux session against a real `.beads` workspace, and fails on SIGKILL, an empty
+Ready board, or a missing workspace that renders blank instead of a loud error.
+Defaults to `/opt/ra/firstmate/.beads`; override with `BEADS_VERIFY_BEADS_DIR`
+to point at any real embedded-Dolt `.beads` fixture. It is deliberately not in
+GitHub CI - runners have no `bd` and no fleet workspace. `scripts/dev-local.sh`
+(skill: `/dev-local`) is the same launch path for interactive use.
+
 ## Sharp edges
 
 - The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`).
