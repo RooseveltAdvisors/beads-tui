@@ -1388,6 +1388,9 @@ func (m Model) loadBoardCmd() tea.Cmd {
 
 // loadGraphCmd enriches a painted list with one bounded, cached dependency
 // pass. The board never waits for this best-effort metadata before first paint.
+// bd's list JSON embeds every dependency edge inline, so the pass is a single
+// `bd list --all` subprocess; backends without inline edges (older bd, test
+// fakes) fall back to batched per-bead `bd dep list` calls.
 func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) tea.Cmd {
 	backend, supportsGraph := m.backend.(graphBackend)
 	cache := m.graphCache
@@ -1410,14 +1413,24 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 			} else {
 				graphIssues = mergeIssueSnapshots(all, issues)
 			}
-			graphIDs := issueIDs(graphIssues)
-			raw, err := backend.DepsBatch(ctx, graphIDs, false)
-			cancel()
-			if err != nil {
-				log.Printf("beads-tui: graph dependencies skipped: %v", err)
+			if hasInlineEdges(graphIssues) {
+				// One call carries the whole graph: every edge is embedded in the
+				// dependent issue's JSON, so no per-bead subprocesses are needed.
+				deps, reverseDeps = normalizeGraphEdges(graphIssues, inlineDepRecords(graphIssues))
+				graphComplete = allLoaded
+				cancel()
+			} else {
+				// No inline edges anywhere: either the store has zero edges or the
+				// backend predates inline JSON. DepsBatch settles both correctly.
+				graphIDs := issueIDs(graphIssues)
+				raw, err := backend.DepsBatch(ctx, graphIDs, false)
+				cancel()
+				if err != nil {
+					log.Printf("beads-tui: graph dependencies skipped: %v", err)
+				}
+				graphComplete = allLoaded && err == nil
+				deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
 			}
-			graphComplete = allLoaded && err == nil
-			deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
 		} else {
 			log.Printf("beads-tui: backend does not support batched graph loading")
 		}
@@ -1435,6 +1448,48 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 		}
 		return graphMsgFromCache(cache)
 	}
+}
+
+// hasInlineEdges reports whether any issue carries a non-nil inline
+// dependency list. bd omits the key when an issue has no edges, so a store
+// with at least one edge always lights this up.
+func hasInlineEdges(issues []bd.Issue) bool {
+	for i := range issues {
+		if issues[i].Dependencies != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// inlineDepRecords converts the dependency edges embedded in list JSON into
+// the DepRecord shape the board renders, filling target metadata from the
+// same snapshot.
+func inlineDepRecords(issues []bd.Issue) map[string][]bd.DepRecord {
+	byID := make(map[string]bd.Issue, len(issues))
+	for _, issue := range issues {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	raw := make(map[string][]bd.DepRecord)
+	for _, issue := range issues {
+		for _, edge := range issue.Dependencies {
+			if edge.DependsOnID == "" || edge.DependsOnID == issue.ID {
+				continue
+			}
+			target := byID[edge.DependsOnID]
+			raw[issue.ID] = append(raw[issue.ID], bd.DepRecord{
+				ID:             edge.DependsOnID,
+				Title:          target.Title,
+				Status:         target.Status,
+				Priority:       target.Priority,
+				IssueType:      target.IssueType,
+				DependencyType: edge.Type,
+			})
+		}
+	}
+	return raw
 }
 
 func graphCacheMatches(cache *graphCache, view bd.View, generation uint64, currentIDs []string) bool {

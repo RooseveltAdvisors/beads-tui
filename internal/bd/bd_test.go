@@ -2,6 +2,7 @@ package bd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -648,5 +649,39 @@ func TestNonBusyFailureIsNotRetried(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("calls = %d, want 1 (no retry for non-busy errors)", calls)
+	}
+}
+
+func TestIssueUnmarshalAcceptsBothParentSpellings(t *testing.T) {
+	// bd's live JSON emits `parent` (string or null); the synthetic fixtures
+	// use `parent_id`. Both must populate ParentID.
+	const parentFixture = `[
+  {"id": "bd-1", "title": "root"},
+  {"id": "bd-2", "title": "child", "parent": "bd-1",
+   "dependencies": [{"issue_id": "bd-2", "depends_on_id": "bd-1", "type": "parent-child"},
+                    {"issue_id": "bd-2", "depends_on_id": "bd-3", "type": "blocks"}]},
+  {"id": "bd-3", "title": "other", "parent": null}
+]`
+	var issues []Issue
+	if err := json.Unmarshal([]byte(parentFixture), &issues); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if issues[0].ParentID != "" {
+		t.Errorf("root parent = %q, want empty", issues[0].ParentID)
+	}
+	if issues[1].ParentID != "bd-1" {
+		t.Errorf("child parent = %q, want bd-1", issues[1].ParentID)
+	}
+	if issues[2].ParentID != "" {
+		t.Errorf("null parent = %q, want empty", issues[2].ParentID)
+	}
+	if len(issues[1].Dependencies) != 2 {
+		t.Fatalf("dependencies = %+v, want 2 edges", issues[1].Dependencies)
+	}
+	if issues[1].Dependencies[1].DependsOnID != "bd-3" || issues[1].Dependencies[1].Type != "blocks" {
+		t.Errorf("edge[1] = %+v, want depends_on bd-3 type blocks", issues[1].Dependencies[1])
+	}
+	if issues[0].Dependencies != nil {
+		t.Errorf("missing dependencies key should stay nil, got %+v", issues[0].Dependencies)
 	}
 }

@@ -6,7 +6,10 @@
 // hardcodes a store path.
 package bd
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // View selects which native or configured status a board renders.
 type View string
@@ -64,31 +67,61 @@ func (v View) TabLabel() string {
 
 // Issue is one bead in the graph. Which fields are populated depends on the
 // command that produced the record. `bd list ... --json` fills the board row
-// fields; `bd show ID --json` additionally fills description and notes.
+// fields (including description, parent, and the issue's inline dependency
+// edges); `bd show ID --json` returns the same shape for one bead.
 type Issue struct {
-	ID              string   `json:"id"`
-	Title           string   `json:"title"`
-	Description     string   `json:"description"`
-	Notes           string   `json:"notes"`
-	Status          string   `json:"status"`
-	Priority        int      `json:"priority"`
-	IssueType       string   `json:"issue_type"`
-	ParentID        string   `json:"parent_id"`
-	Assignee        string   `json:"assignee"`
-	Owner           string   `json:"owner"`
-	Repeat          string   `json:"repeat"`
-	RecurrenceStart string   `json:"recurrence_start"`
-	RecurrenceEnd   string   `json:"recurrence_end"`
-	RecurrenceTZ    string   `json:"recurrence_tz"`
-	URL             string   `json:"url"`
-	Labels          []string `json:"labels"`
-	DeferUntil      string   `json:"defer_until"`
-	CreatedAt       string   `json:"created_at"`
-	CreatedBy       string   `json:"created_by"`
-	UpdatedAt       string   `json:"updated_at"`
-	DependencyCount int      `json:"dependency_count"`
-	DependentCount  int      `json:"dependent_count"`
-	CommentCount    int      `json:"comment_count"`
+	ID              string    `json:"id"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description"`
+	Notes           string    `json:"notes"`
+	Status          string    `json:"status"`
+	Priority        int       `json:"priority"`
+	IssueType       string    `json:"issue_type"`
+	ParentID        string    `json:"parent_id"`
+	Assignee        string    `json:"assignee"`
+	Owner           string    `json:"owner"`
+	Repeat          string    `json:"repeat"`
+	RecurrenceStart string    `json:"recurrence_start"`
+	RecurrenceEnd   string    `json:"recurrence_end"`
+	RecurrenceTZ    string    `json:"recurrence_tz"`
+	URL             string    `json:"url"`
+	Labels          []string  `json:"labels"`
+	DeferUntil      string    `json:"defer_until"`
+	CreatedAt       string    `json:"created_at"`
+	CreatedBy       string    `json:"created_by"`
+	UpdatedAt       string    `json:"updated_at"`
+	DependencyCount int       `json:"dependency_count"`
+	DependentCount  int       `json:"dependent_count"`
+	CommentCount    int       `json:"comment_count"`
+	Dependencies    []DepEdge `json:"dependencies"`
+}
+
+// DepEdge is one inline dependency record embedded in `bd list/show --json`
+// output. Every edge is owned by the dependent issue (IssueID), so a single
+// `bd list --all --json` call carries the whole dependency graph.
+type DepEdge struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
+}
+
+// UnmarshalJSON accepts both parent spellings: bd's JSON emits `parent`
+// (string or null), while the on-disk column is parent_id. The `parent` form
+// wins when both are present.
+func (i *Issue) UnmarshalJSON(data []byte) error {
+	type issueAlias Issue
+	var alias issueAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*i = Issue(alias)
+	var parent struct {
+		Parent *string `json:"parent"`
+	}
+	if err := json.Unmarshal(data, &parent); err == nil && parent.Parent != nil {
+		i.ParentID = strings.TrimSpace(*parent.Parent)
+	}
+	return nil
 }
 
 // IsRecurring reports whether the issue carries a repeat schedule.
