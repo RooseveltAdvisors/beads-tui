@@ -49,7 +49,10 @@ The TUI is keyboard-driven:
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
 - The default board is an indented hierarchy tree: `enter`/`tab` toggles a
   subtree, `h` (or `←`) collapses it, `l` (or `→`) unfolds a folded node or
-  opens the detail pane, `*` expands every fold, and `v` toggles the flat list
+  opens the detail pane, `*` expands every fold, and `v` toggles the flat list.
+  Parents living in another status view (say, a closed epic with open
+  children) are pulled in from the graph snapshot so chains render connected
+  instead of orphaned
 - `L` always focuses the detail pane
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again

@@ -1081,7 +1081,15 @@ func (m *Model) projectRows(previousID string) {
 		m.expanded = map[string]bool{}
 	}
 	if m.treeMode && m.filter.Kind != FilterSearch {
-		roots := BuildDependencyTree(projected, m.deps, m.sortMode)
+		source := projected
+		if len(m.graphRows) > 0 {
+			// Parents can live outside the current status view (a closed epic
+			// with open children). Pull the ancestor chain in from the graph
+			// snapshot so the hierarchy renders connected instead of orphaning
+			// every child whose parent moved on.
+			source = withAncestors(projected, m.graphRows)
+		}
+		roots := BuildDependencyTree(source, m.deps, m.sortMode)
 		m.treeRows = FlattenDependencyTree(roots, m.expanded)
 		m.rows = make([]bd.Issue, len(m.treeRows))
 		for i, row := range m.treeRows {
@@ -1143,6 +1151,43 @@ func (m *Model) expandAncestors(id string) {
 			return
 		}
 	}
+}
+
+// withAncestors appends the ancestor chain of every row (from the full
+// graph snapshot) that is not already part of the rows, so parent/child trees
+// stay connected across status views. Cycles and repeated ancestors are
+// guarded; rows keep their order and the appended ancestors keep first-seen
+// order.
+func withAncestors(rows, graphRows []bd.Issue) []bd.Issue {
+	if len(graphRows) == 0 || len(rows) == 0 {
+		return rows
+	}
+	byID := make(map[string]bd.Issue, len(graphRows))
+	for _, issue := range graphRows {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	present := make(map[string]bool, len(rows))
+	for _, issue := range rows {
+		present[issue.ID] = true
+	}
+	out := rows
+	for _, issue := range rows {
+		seen := map[string]bool{issue.ID: true}
+		parent := issue.ParentID
+		for parent != "" && !seen[parent] && !present[parent] {
+			seen[parent] = true
+			ancestor, ok := byID[parent]
+			if !ok {
+				break
+			}
+			out = append(out, ancestor)
+			present[parent] = true
+			parent = ancestor.ParentID
+		}
+	}
+	return out
 }
 
 // navIndexes returns the wrapped step for list navigation (no-op on empty).

@@ -200,3 +200,77 @@ func TestFlattenDependencyTreeCapRespectsSharedNodes(t *testing.T) {
 		t.Errorf("deeper = %d, want 1 (c5 under cap)", rows[len(rows)-1].Deeper)
 	}
 }
+
+// A bead with both a real parent and dependency-edge parents (blocked-by,
+// blocks) nests under its real parent only: incidental dep edges must not
+// rewrite the hierarchy.
+func TestParentEdgeWinsOverDependencyEdge(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root", Title: "Root", Status: "open"},
+		{ID: "blocker", Title: "Blocker", Status: "open"},
+		{ID: "child", Title: "Child", Status: "open", ParentID: "root"},
+	}
+	deps := map[string][]bd.DepRecord{
+		"child": {{ID: "blocker", Title: "Blocker", Status: "open", DependencyType: "blocks"}},
+	}
+	roots := BuildDependencyTree(issues, deps)
+	rows := FlattenDependencyTree(roots, map[string]bool{})
+	depths := map[string]int{}
+	for _, row := range rows {
+		depths[row.Issue.ID] = row.Depth
+	}
+	if depths["root"] != 1 || depths["child"] != 2 {
+		t.Fatalf("parent chain broken: root=%d child=%d (rows=%+v)", depths["root"], depths["child"], rows)
+	}
+	if depths["blocker"] != 1 {
+		t.Fatalf("blocker nested under child via dep edge: depth=%d, want root-level 1", depths["blocker"])
+	}
+}
+
+// Beads hidden below the five-level depth cap stay navigable in the flat list.
+func TestDeepChainReachableThroughFlatView(t *testing.T) {
+	issues := make([]bd.Issue, 0, 8)
+	var parent string
+	for level := 1; level <= 8; level++ {
+		id := fmt.Sprintf("bd-%d", level)
+		issues = append(issues, bd.Issue{ID: id, Title: "Level", Status: "open", ParentID: parent})
+		parent = id
+	}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
+	m := drive(t, f)
+	if len(m.rows) != maxTreeDepth {
+		t.Fatalf("tree rows = %d, want the depth cap %d", len(m.rows), maxTreeDepth)
+	}
+	m = sendKey(t, m, "v")
+	if len(m.rows) != 8 {
+		t.Fatalf("flat rows = %d, want all 8 levels", len(m.rows))
+	}
+	if !strings.Contains(stripANSI(m.View()), "bd-8") {
+		t.Fatal("flat view must render the deepest bead")
+	}
+}
+
+// A parent that moved to another status view (say, a closed epic) must still
+// anchor its open children: the tree pulls the ancestor chain in from the
+// graph snapshot instead of orphaning every child whose parent moved on.
+func TestTreePullsAncestorsFromOutsideTheView(t *testing.T) {
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{
+		bd.ViewOpen:   {{ID: "child", Title: "Open child", Status: "open", ParentID: "epic"}},
+		bd.ViewClosed: {{ID: "epic", Title: "Closed epic", Status: "closed"}},
+	}}
+	m := drive(t, f)
+	if !m.treeMode {
+		t.Fatal("board should render the hierarchy tree by default")
+	}
+	ids := make([]string, 0, len(m.treeRows))
+	for _, row := range m.treeRows {
+		ids = append(ids, row.Issue.ID)
+	}
+	want := []string{"epic", "child"}
+	if len(ids) != len(want) || ids[0] != want[0] || ids[1] != want[1] {
+		t.Fatalf("tree rows = %v, want the closed epic anchoring its open child", ids)
+	}
+	if m.treeRows[1].Depth != 2 {
+		t.Fatalf("child depth = %d, want nested at 2", m.treeRows[1].Depth)
+	}
+}
