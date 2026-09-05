@@ -358,7 +358,7 @@ func loadState() (savedState, bool) {
 	}
 	state.View = normalizeStateView(state.View)
 	if state.View == "" {
-		state.View = bd.ViewOpen
+		state.View = bd.ViewReady
 	}
 	if state.Expanded == nil {
 		state.Expanded = map[string]bool{}
@@ -394,7 +394,7 @@ func loadState() (savedState, bool) {
 
 func normalizeStateView(view bd.View) bd.View {
 	view = bd.View(strings.ToLower(strings.TrimSpace(string(view))))
-	if !view.Valid() || view == bd.View("ready") || view == bd.View("all") {
+	if !view.Valid() || view == bd.View("all") {
 		return ""
 	}
 	return view
@@ -454,7 +454,7 @@ func New(backend Backend) Model {
 	commentInput.Width = 80
 	m := Model{
 		backend:  backend,
-		view:     bd.ViewOpen,
+		view:     bd.ViewReady,
 		views:    bd.DefaultViews(),
 		loading:  true,
 		boardGen: 1,
@@ -550,6 +550,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		prev := m.selectedID()
+		// Board rows from reduced projections (ready) are swapped for their
+		// full-field graph twins so descriptions, parents, and labels are
+		// always present; comment badges survive the swap because the list
+		// projection does not carry them.
 		commentCounts := make(map[string]int, len(m.allRows))
 		for _, issue := range m.allRows {
 			if issue.CommentCount > 0 {
@@ -566,7 +570,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.graphIssues[i].CommentCount = count
 			}
 		}
-		m.allRows = append([]bd.Issue(nil), msg.issues...)
+		m.allRows = enrichIssues(swapWithGraphRows(msg.issues, msg.graphIssues), msg.deps, msg.reverseDeps)
 		m.graphRows = append([]bd.Issue(nil), msg.graphIssues...)
 		m.deps = cloneDepMap(msg.deps)
 		m.reverseDeps = cloneDepMap(msg.reverseDeps)
@@ -827,11 +831,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// reload never discards the board that is already on screen.
 		return m, m.startBoardLoad()
 	case "R":
-		wasOpen := m.view == bd.ViewOpen
+		wasReady := m.view == bd.ViewReady
 		previousID := m.selectedID()
-		m.view, m.sortMode, m.filter = bd.ViewOpen, SortCreated, Filter{}
+		m.view, m.sortMode, m.filter = bd.ViewReady, SortCreated, Filter{}
 		m.saveState()
-		if !wasOpen {
+		if !wasReady {
 			return m, m.startBoardLoad()
 		}
 		return m, m.rebuildRows(previousID)
@@ -1627,6 +1631,29 @@ func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
 		cloned[id] = append([]bd.DepRecord(nil), records...)
 	}
 	return cloned
+}
+
+// swapWithGraphRows replaces every issue with the same-id issue from the
+// graph snapshot when available, keeping the original row order and membership.
+func swapWithGraphRows(rows, graph []bd.Issue) []bd.Issue {
+	if len(graph) == 0 {
+		return append([]bd.Issue(nil), rows...)
+	}
+	byID := make(map[string]bd.Issue, len(graph))
+	for _, issue := range graph {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	out := make([]bd.Issue, 0, len(rows))
+	for _, issue := range rows {
+		if full, ok := byID[issue.ID]; ok {
+			out = append(out, full)
+			continue
+		}
+		out = append(out, issue)
+	}
+	return out
 }
 
 func mergeIssueSnapshots(all, current []bd.Issue) []bd.Issue {

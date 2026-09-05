@@ -34,7 +34,7 @@ Run it from anywhere `bd` would find the store - an active beads workspace
 with `./.beads`, or anywhere with `BEADS_DIR` set:
 
 ```sh
-beads-tui                   # interactive board (open status by default)
+beads-tui                   # interactive board (ready work by default)
 beads-tui list [--status STATUS]         # board as JSON (no TTY needed)
 beads-tui show <id>         # one bead as JSON
 beads-tui log-path          # where crashes and errors are recorded
@@ -56,7 +56,9 @@ The TUI is keyboard-driven:
 - `L` always focuses the detail pane
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
-- `1`-`9` switch native and custom status tabs, `r` reloads the board keeping
+- `1`-`9` switch views: `1` is ready (open, no active blockers - bd's
+  claimable-work view, the default landing tab on large stores), `2`-`9` are
+  the native and custom status tabs. `r` reloads the board keeping
   the current view/sort/search, `R` resets view/sort/search, `?` shows help, and
   `q` (or `ctrl+c`) quits
 - `V` cycles the pane layout: side-by-side, stacked (list above detail), or

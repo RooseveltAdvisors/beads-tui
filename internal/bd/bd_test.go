@@ -215,6 +215,21 @@ func TestListBuildsRightArgs(t *testing.T) {
 	}
 }
 
+func TestListReadyBuildsReadyArgs(t *testing.T) {
+	var gotArgs []string
+	c := stubClient(t, func(args []string) (string, string, error) {
+		gotArgs = args
+		return readyFixture, "", nil
+	})
+	if _, err := c.List(context.Background(), ViewReady); err != nil {
+		t.Fatalf("List(ready): %v", err)
+	}
+	want := []string{"list", "--ready", "--json", "-n", "0"}
+	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %q, want %q", gotArgs, want)
+	}
+}
+
 func TestListStatusVariants(t *testing.T) {
 	for _, tc := range []struct {
 		view View
@@ -281,7 +296,7 @@ func TestListInvalidView(t *testing.T) {
 }
 
 func TestDefaultViewsAreStableAndDistinct(t *testing.T) {
-	want := []View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
+	want := []View{ViewReady, ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
 	views := DefaultViews()
 	if len(views) != len(want) {
 		t.Fatalf("views = %v, want %v", views, want)
@@ -302,8 +317,8 @@ func TestViewsFromStatusesIncludesCustomStatuses(t *testing.T) {
 		{Name: "awaiting_review"},
 		{Name: " AWAITING_REVIEW "},
 	})
-	if len(views) != 6 || views[5] != View("awaiting_review") {
-		t.Fatalf("views = %v, want built-ins plus awaiting_review", views)
+	if len(views) != 7 || views[6] != View("awaiting_review") {
+		t.Fatalf("views = %v, want built-ins (ready first) plus awaiting_review", views)
 	}
 }
 

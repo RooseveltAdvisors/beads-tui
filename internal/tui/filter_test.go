@@ -186,7 +186,7 @@ func TestResetKeyRestoresBoardDefaults(t *testing.T) {
 	m.sortMode = SortDependents
 	m.filter = ParseFilter("status:blocked")
 	m = sendKey(t, m, "R")
-	if m.view != bd.ViewOpen || m.sortMode != SortCreated || m.filter.Active() {
+	if m.view != bd.ViewReady || m.sortMode != SortCreated || m.filter.Active() {
 		t.Fatalf("R state = view:%s sort:%s filter:%s", m.view, m.sortMode, m.filter)
 	}
 }
@@ -225,7 +225,7 @@ func TestBoardSnapshotLoadsAndReplacesAcrossModels(t *testing.T) {
 	f := &fakeClient{}
 	m := newTestModel(f)
 	cached := []bd.Issue{{ID: "cached", Title: "Cached board", Status: "open"}}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: cached})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: cached})
 
 	reloaded := New(f)
 	if len(reloaded.rows) != 1 || reloaded.rows[0].ID != "cached" || !reloaded.loading {
@@ -233,7 +233,7 @@ func TestBoardSnapshotLoadsAndReplacesAcrossModels(t *testing.T) {
 	}
 
 	live := []bd.Issue{{ID: "live", Title: "Live board", Status: "open"}}
-	reloaded = applyMsg(t, reloaded, boardMsg{view: bd.ViewOpen, generation: reloaded.boardGen, issues: live})
+	reloaded = applyMsg(t, reloaded, boardMsg{view: reloaded.view, generation: reloaded.boardGen, issues: live})
 	latest := New(f)
 	if len(latest.rows) != 1 || latest.rows[0].ID != "live" {
 		t.Fatalf("replaced snapshot rows = %+v", latest.rows)
@@ -416,7 +416,7 @@ func TestStatusTabNames(t *testing.T) {
 	m := New(nil)
 	m.width, m.height = 80, 24
 	view := stripANSI(m.renderTabs())
-	for _, want := range []string{"[1]open", "[2]in_progress", "[3]blocked", "[4]closed", "[5]deferred"} {
+	for _, want := range []string{"[1]ready", "[2]open", "[3]in_progress", "[4]blocked", "[5]closed", "[6]deferred"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("tabs missing status label %q: %q", want, view)
 		}
@@ -455,7 +455,7 @@ func TestCompactFooterPreservesFallbackFields(t *testing.T) {
 	m.selected = 1
 	m.filter = ParseFilter("status:open")
 	footer := stripANSI(m.renderFooter(40))
-	for _, want := range []string{"open", "query:on", "50%"} {
+	for _, want := range []string{"ready", "query:on", "50%"} {
 		if !strings.Contains(footer, want) {
 			t.Errorf("compact footer missing %q: %q", want, footer)
 		}
@@ -471,7 +471,7 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 	view := stripANSI(m.renderHelp())
 	for _, want := range []string{
 		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
-		"enter/l/→", "h/←", "1 open", "2 in_progress", "3 blocked", "4 closed", "5 deferred", "s cycle",
+		"enter/l/→", "h/←", "1 ready", "2 open", "3 in_progress", "4 blocked", "5 closed", "6", "s cycle",
 		"esc close detail / clear search", "Search:", "Enter apply", "status:open",
 		"priority:P1", "label:frontend", "t search", "Reset: R", "Help: ?", "q/Ctrl+C",
 	} {

@@ -48,6 +48,20 @@ func (f *fakeClient) List(_ context.Context, view bd.View) ([]bd.Issue, error) {
 		f.queuedLists = f.queuedLists[1:]
 		return issues, f.failList
 	}
+	if view == bd.ViewReady {
+		if issues, ok := f.issues[bd.ViewReady]; ok {
+			return issues, f.failList
+		}
+		// Default fake semantics: ready work is the open board minus blocked
+		// rows, mirroring bd's claimable-work definition.
+		var ready []bd.Issue
+		for _, issue := range f.issues[bd.ViewOpen] {
+			if issue.Status != "blocked" && issue.Status != "deferred" {
+				ready = append(ready, issue)
+			}
+		}
+		return ready, f.failList
+	}
 	return f.issues[view], f.failList
 }
 
@@ -220,7 +234,7 @@ func drive(t *testing.T, f *fakeClient) Model {
 		f = &fakeClient{}
 	}
 	m := newTestModel(f)
-	updated, cmd := m.Update(boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
+	updated, cmd := m.Update(boardMsg{view: m.view, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
 	m = updated.(Model)
 	return runCmd(t, m, cmd)
 }
@@ -293,9 +307,9 @@ func TestBoardLoadAndRender(t *testing.T) {
 	}
 	view := stripANSI(m.View())
 	for _, want := range []string{
-		"beads-tui", "open board", "fm-aaa", "Alpha task", "fm-bbb",
-		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]open", "[2]in_progress",
-		"[3]blocked", "[4]closed", "[5]deferred",
+		"beads-tui", "ready board", "fm-aaa", "Alpha task", "fm-bbb",
+		"Beta blocked task", "fm-ccc", "Gamma done task", "[1]ready", "[2]open",
+		"[3]in_progress", "[4]blocked", "[5]closed", "[6]deferred",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q", want)
@@ -348,7 +362,7 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 		{ID: "root", Title: "Root", Status: "open", Priority: 1},
 		{ID: "child", Title: "Child", Status: "open", Priority: 2, ParentID: "root"},
 	}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
 	if !m.treeMode || len(m.rows) != 2 {
 		t.Fatalf("initial tree = %v rows, want expanded tree", m.rows)
 	}
@@ -385,7 +399,7 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 
 func TestTreeEnterOpensLeafDetail(t *testing.T) {
 	m := newTestModel(nil)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: []bd.Issue{{ID: "leaf", Status: "open"}}})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: []bd.Issue{{ID: "leaf", Status: "open"}}})
 	m = sendKey(t, m, "enter")
 	if m.focus != FocusDetail {
 		t.Fatalf("leaf enter focus = %v, want detail", m.focus)
@@ -445,7 +459,11 @@ func showLogContains(f *fakeClient, id string) bool {
 }
 
 func TestLowercaseRReloadsKeepingViewSortAndFilter(t *testing.T) {
-	f := &fakeClient{}
+	// Keep every fixture row claimable so the selection survives the reload.
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{
+		bd.ViewOpen:  testIssues(),
+		bd.ViewReady: testIssues(),
+	}}
 	m := drive(t, f)
 	m.sortMode = SortUpdated
 	m.filter = ParseSearchFilter("task")
@@ -462,7 +480,7 @@ func TestLowercaseRReloadsKeepingViewSortAndFilter(t *testing.T) {
 	if f.listCalls != 1 {
 		t.Fatalf("r reload ran bd list %d times, want 1", f.listCalls)
 	}
-	if m.view != bd.ViewOpen || m.sortMode != SortUpdated || !m.filter.Active() {
+	if m.view != bd.ViewReady || m.sortMode != SortUpdated || !m.filter.Active() {
 		t.Fatalf("r changed view/sort/filter: view %q sort %q filter %+v", m.view, m.sortMode, m.filter)
 	}
 	if len(m.rows) != 3 || m.rows[m.selected].ID != "fm-bbb" {
@@ -475,12 +493,12 @@ func TestLowercaseRReloadsKeepingViewSortAndFilter(t *testing.T) {
 
 func TestReloadTimeoutKeepsRowsAndNotifies(t *testing.T) {
 	m := newTestModel(nil)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues(), timeout: bdTimeout})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: testIssues(), timeout: bdTimeout})
 	if len(m.rows) != 3 {
 		t.Fatalf("rows = %d, want 3", len(m.rows))
 	}
 	failed := applyMsg(t, m, boardMsg{
-		view:       bd.ViewOpen,
+		view:       m.view,
 		generation: m.boardGen,
 		err:        errors.New("bd list --status open --json -n 0: context deadline exceeded"),
 		timeout:    bdTimeout,
@@ -527,9 +545,9 @@ func TestBoardRetryBackoffAndAdaptiveTimeout(t *testing.T) {
 func TestBoardRetrySucceedsAndClearsFailureState(t *testing.T) {
 	f := &fakeClient{}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues(), timeout: bdTimeout})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: testIssues(), timeout: bdTimeout})
 	f.issues[bd.ViewOpen] = []bd.Issue{{ID: "fresh", Title: "Fresh board", Status: "open"}}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, err: errors.New("boom"), timeout: bdTimeout})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, err: errors.New("boom"), timeout: bdTimeout})
 	if m.reloadAttempts != 1 {
 		t.Fatalf("reloadAttempts = %d, want 1", m.reloadAttempts)
 	}
@@ -603,7 +621,7 @@ func TestDebounceCoalescesRapidMoves(t *testing.T) {
 	}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues()})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: testIssues()})
 	updated, firstCmd := m.Update(teaKeyMsg("j")) // row 1, superseded
 	m = updated.(Model)
 	updated, secondCmd := m.Update(teaKeyMsg("j")) // row 2, final
@@ -642,7 +660,7 @@ func TestUppercaseRResetsWithoutReloadingDefaultBoard(t *testing.T) {
 	if f.listCalls != 0 {
 		t.Fatalf("reset on the default board reloaded bd %d times", f.listCalls)
 	}
-	if m.view != bd.ViewOpen || m.sortMode != SortCreated || m.filter.Active() {
+	if m.view != bd.ViewReady || m.sortMode != SortCreated || m.filter.Active() {
 		t.Fatalf("reset state = view %q sort %q filter %+v", m.view, m.sortMode, m.filter)
 	}
 	if len(m.rows) != len(m.allRows) {
@@ -832,7 +850,7 @@ func TestHalfPageScrollingInListAndDetail(t *testing.T) {
 	}
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, err: nil})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: issues, err: nil})
 	half := m.halfPageStep()
 	m = sendKey(t, m, "ctrl+d")
 	if m.selected != half {
@@ -924,8 +942,8 @@ func TestViewSwitching(t *testing.T) {
 		},
 	}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
-	m = sendKey(t, m, "4")
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
+	m = sendKey(t, m, "5")
 	if m.view != bd.ViewClosed {
 		t.Fatalf("view = %v, want closed", m.view)
 	}
@@ -966,6 +984,7 @@ func TestStatusMessagePopulatesNativeAndCustomTabs(t *testing.T) {
 		t.Fatal("status refresh unexpectedly reloaded the current view")
 	}
 	want := []bd.View{
+		bd.ViewReady,
 		bd.ViewOpen,
 		bd.ViewInProgress,
 		bd.ViewBlocked,
@@ -1010,7 +1029,7 @@ func TestSelectionSurvivesRefreshByID(t *testing.T) {
 		t.Fatalf("pre-refresh selection = %q", m.rows[m.selected].ID)
 	}
 	reordered := []bd.Issue{testIssues()[2], testIssues()[0], testIssues()[1]}
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: reordered, err: nil})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: reordered, err: nil})
 	if m.rows[m.selected].ID != "fm-bbb" {
 		t.Errorf("selection lost after refresh: %q", m.rows[m.selected].ID)
 	}
@@ -1019,7 +1038,7 @@ func TestSelectionSurvivesRefreshByID(t *testing.T) {
 func TestBoardErrorRendersAndKeepsLife(t *testing.T) {
 	f := &fakeClient{failList: errors.New("deadline exceeded")}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: nil, err: f.failList})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: nil, err: f.failList})
 	view := stripANSI(m.View())
 	for _, want := range []string{"Could not load board", "deadline exceeded", "q quit"} {
 		if !strings.Contains(view, want) {
@@ -1088,7 +1107,7 @@ func TestViewSwitchLoadUsesReturnedModelGeneration(t *testing.T) {
 		generation: m.boardGen,
 		issues:     f.issues[bd.ViewOpen],
 	})
-	updated, cmd := m.Update(teaKeyMsg("2"))
+	updated, cmd := m.Update(teaKeyMsg("3"))
 	m = updated.(Model)
 	if !m.loading {
 		t.Fatal("view switch did not mark the board as loading")
@@ -1109,7 +1128,7 @@ func TestHelpToggle(t *testing.T) {
 		t.Fatal("? should open help")
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"1 open", "2 in_progress", "3 blocked", "4 closed", "5 deferred", "ctrl-u/d", "h collapse", "l unfold", "expand all", "Read-only", "⇣", "⇡"} {
+	for _, want := range []string{"1 ready", "2 open", "3 in_progress", "4 blocked", "5 closed", "6", "deferred", "ctrl-u/d", "h collapse", "l unfold", "expand all", "Read-only", "⇣", "⇡"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help missing %q", want)
 		}
@@ -1133,9 +1152,9 @@ func TestQuitKeys(t *testing.T) {
 func TestEmptyBoardStates(t *testing.T) {
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: nil}, issue: testDetail()}
 	m := newTestModel(f)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: nil, err: nil})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: nil, err: nil})
 	view := stripANSI(m.View())
-	for _, want := range []string{"No open issues", "Select a bead for details"} {
+	for _, want := range []string{"No ready issues", "Select a bead for details"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("empty board missing %q", want)
 		}
@@ -1180,7 +1199,7 @@ func TestCommentsViewLoadsScrollsAndAddsWithoutBoardReload(t *testing.T) {
 		t.Fatalf("comment count not updated in place: rows=%d all=%d", m.rows[0].CommentCount, m.allRows[0].CommentCount)
 	}
 	graph := graphMsg{
-		view: bd.ViewOpen, generation: m.boardGen,
+		view: m.view, generation: m.boardGen,
 		issues:      []bd.Issue{{ID: "fm-comments", Title: "Commentable task", Status: "open"}},
 		graphIssues: []bd.Issue{{ID: "fm-comments", Title: "Commentable task", Status: "open"}},
 		complete:    true,
@@ -1352,7 +1371,7 @@ func TestRuneBurstMovesSelectionPerRune(t *testing.T) {
 	}}
 	m := newTestModel(f)
 	m.treeMode = false
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues()})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: testIssues()})
 	burst := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("jjj")}
 	updated, _ := m.Update(burst)
 	m = updated.(Model)
@@ -1404,7 +1423,7 @@ func TestStarExpandsAllFolds(t *testing.T) {
 		{ID: "leaf", Status: "open", ParentID: "mid"},
 	}
 	m := newTestModel(nil)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
 	m = sendKey(t, m, "h") // fold root
 	if len(m.rows) != 1 {
 		t.Fatalf("root should fold: rows=%d", len(m.rows))
@@ -1427,14 +1446,14 @@ func TestSavedStatePersistsFolds(t *testing.T) {
 		{ID: "child", Status: "open", ParentID: "root"},
 	}
 	m := newTestModel(nil)
-	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	m = applyMsg(t, m, boardMsg{view: m.view, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
 	m = sendKey(t, m, "h")
 	m.saveState()
 	reloaded := newTestModel(nil)
 	if reloaded.expanded["root"] {
 		t.Fatalf("folded root should persist: expanded=%v", reloaded.expanded)
 	}
-	reloaded = applyMsg(t, reloaded, boardMsg{view: bd.ViewOpen, generation: reloaded.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	reloaded = applyMsg(t, reloaded, boardMsg{view: m.view, generation: reloaded.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
 	if len(reloaded.rows) != 1 || reloaded.rows[0].ID != "root" {
 		t.Fatalf("reloaded board should honor the saved fold: rows=%v", reloaded.rows)
 	}

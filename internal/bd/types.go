@@ -15,6 +15,10 @@ import (
 type View string
 
 const (
+	// ViewReady is the synthetic first tab: claimable work (open, no active
+	// blockers, not deferred). It is bd's own `bd list --ready` semantics, so
+	// large stores land on actionable rows instead of every open issue.
+	ViewReady      View = "ready"
 	ViewOpen       View = "open"
 	ViewInProgress View = "in_progress"
 	ViewBlocked    View = "blocked"
@@ -22,7 +26,7 @@ const (
 	ViewDeferred   View = "deferred"
 )
 
-var defaultViews = [...]View{ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
+var defaultViews = [...]View{ViewReady, ViewOpen, ViewInProgress, ViewBlocked, ViewClosed, ViewDeferred}
 
 // DefaultViews returns the built-in status tabs in their stable order.
 func DefaultViews() []View {
