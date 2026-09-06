@@ -111,7 +111,7 @@ func TestSlashSearchFromDetailFocusesListAndCancelRestoresContext(t *testing.T) 
 	m.focus = FocusDetail
 	m.dOffset = 7
 	m.selected = 1
-	_ = m.loadDetailCmd("b")
+	_ = m.beginDetailFetch("b", true)
 	staleGeneration := m.detailGen
 	m = sendKey(t, m, "/")
 	m = sendKey(t, m, "esc")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +24,51 @@ import (
 // bdTimeout caps every bd call so a wedged store (or lock contention) shows
 // an error instead of freezing the UI.
 const bdTimeout = 8 * time.Second
+
+// boardRetryTimeout extends the board-load deadline once a reload has already
+// failed: under store lock contention a full board snapshot can legitimately
+// take far longer than the initial cap.
+const boardRetryTimeout = 60 * time.Second
+
+// detailDebounceDelay coalesces rapid list navigation so holding j/k does not
+// spawn a bd process per row.
+const detailDebounceDelay = 120 * time.Millisecond
+
+// prefetchSpan is how far on either side of the selection the detail loader
+// prefetches at idle.
+const prefetchSpan = 3
+
+// boardRetryBackoff returns the wait before the nth automatic board reload
+// retry (n starts at 1), capped so retries keep coming without hammering bd.
+func boardRetryBackoff(attempt int) time.Duration {
+	switch {
+	case attempt <= 1:
+		return 2 * time.Second
+	case attempt == 2:
+		return 5 * time.Second
+	default:
+		return 15 * time.Second
+	}
+}
+
+// boardLoadTimeout picks the deadline for a board load: the short cap on the
+// first attempt, the extended cap once retries are in flight.
+func boardLoadTimeout(reloadAttempts int) time.Duration {
+	if reloadAttempts > 0 {
+		return boardRetryTimeout
+	}
+	return bdTimeout
+}
+
+// isTimeoutErr reports whether err is (or carries) a context deadline.
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(err.Error(), "context deadline exceeded") ||
+		strings.Contains(err.Error(), "deadline exceeded")
+}
 
 // Focus tracks which pane receives the navigation keys.
 type Focus int
@@ -53,39 +99,46 @@ type graphBackend interface {
 type Model struct {
 	backend Backend
 
-	view         bd.View
-	views        []bd.View
-	sortMode     SortMode
-	filter       Filter
-	allRows      []bd.Issue
-	deps         map[string][]bd.DepRecord
-	reverseDeps  map[string][]bd.DepRecord
-	graphRows    []bd.Issue
-	rows         []bd.Issue
-	treeRows     []TreeRow
-	expanded     map[string]bool
-	treeMode     bool
-	vocab        Vocab
-	boardErr     string
-	loading      bool
-	boardGen     uint64
-	graphReady   bool
-	graphEdges   int
-	graphCache   *graphCache
-	lastSnapshot *boardSnapshot
+	view           bd.View
+	views          []bd.View
+	sortMode       SortMode
+	filter         Filter
+	allRows        []bd.Issue
+	deps           map[string][]bd.DepRecord
+	reverseDeps    map[string][]bd.DepRecord
+	graphRows      []bd.Issue
+	rows           []bd.Issue
+	treeRows       []TreeRow
+	expanded       map[string]bool
+	treeMode       bool
+	vocab          Vocab
+	boardErr       string
+	loading        bool
+	boardGen       uint64
+	graphReady     bool
+	graphEdges     int
+	graphCache     *graphCache
+	lastSnapshot   *boardSnapshot
+	reloadAttempts int
+	reloadNotice   string
+	boardLoadedAt  time.Time
 
 	selected int
 	focus    Focus
 	dOffset  int
 
-	detail          *bd.Issue
-	down            []bd.DepRecord
-	up              []bd.DepRecord
-	detailErr       string
-	checking        bool
-	detailGen       uint64
-	detailPendingID string
-	graph           bool
+	detail            *bd.Issue
+	down              []bd.DepRecord
+	up                []bd.DepRecord
+	detailErr         string
+	checking          bool
+	detailGen         uint64
+	detailPendingID   string
+	detailCache       map[string]cachedDetail
+	detailRefreshing  bool
+	detailDebounceSeq uint64
+	detailDebounce    time.Duration
+	graph             bool
 
 	help         bool
 	helpOffset   int
@@ -117,6 +170,35 @@ type boardMsg struct {
 	issues     []bd.Issue
 	deps       map[string][]bd.DepRecord
 	err        error
+	timeout    time.Duration
+}
+
+// cachedDetail is one bead's fetched detail snapshot, cached per id and
+// updated_at so a row whose content changed is treated as a cache miss.
+type cachedDetail struct {
+	issue bd.Issue
+	down  []bd.DepRecord
+	up    []bd.DepRecord
+}
+
+// prefetchHit pairs a cache key with the detail snapshot fetched at idle.
+type prefetchHit struct {
+	key    string
+	detail cachedDetail
+}
+
+// boardRetryMsg asks the model to re-run the board load after a backoff wait.
+type boardRetryMsg struct{}
+
+// detailDebounceMsg fires after the selection has been stable for the debounce
+// delay; stale ticks (newer selection changes bumped the sequence) are dropped.
+type detailDebounceMsg struct {
+	seq uint64
+}
+
+// prefetchMsg carries detail snapshots for neighbours of the selection.
+type prefetchMsg struct {
+	hits []prefetchHit
 }
 
 // graphMsg carries best-effort dependency enrichment separately from the list
@@ -292,15 +374,17 @@ func New(backend Backend) Model {
 		loading:  true,
 		boardGen: 1,
 		// Created is newest-first by default; s cycles through the remaining modes.
-		sortMode:    SortCreated,
-		focus:       FocusList,
-		vocab:       NewVocab(nil),
-		filterInput: input,
-		width:       80,
-		height:      24,
-		markdown:    &markdownRenderer{},
-		expanded:    map[string]bool{},
-		treeMode:    true,
+		sortMode:       SortCreated,
+		focus:          FocusList,
+		vocab:          NewVocab(nil),
+		filterInput:    input,
+		width:          80,
+		height:         24,
+		markdown:       &markdownRenderer{},
+		expanded:       map[string]bool{},
+		treeMode:       true,
+		detailCache:    map[string]cachedDetail{},
+		detailDebounce: detailDebounceDelay,
 	}
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
@@ -336,9 +420,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.KeyMsg:
+		// Terminals and tmux can deliver several runes in one read (fast
+		// typing, key repeat, paste); handle each rune so a burst like
+		// "jjjj" moves four rows instead of being silently dropped.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
+			var last tea.Cmd
+			for _, r := range msg.Runes {
+				updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt})
+				nm, ok := updated.(Model)
+				if !ok {
+					return m, cmd
+				}
+				m = nm
+				last = cmd
+			}
+			return m, last
+		}
 		return m.updateKey(msg)
 	case boardMsg:
 		return m, m.applyBoard(msg)
+	case boardRetryMsg:
+		if m.loading || m.reloadAttempts == 0 {
+			return m, nil
+		}
+		m.boardGen++
+		m.loading = true
+		return m, m.loadBoardCmd()
+	case detailDebounceMsg:
+		if msg.seq != m.detailDebounceSeq {
+			return m, nil
+		}
+		return m, m.startDetailLoad()
+	case prefetchMsg:
+		for _, hit := range msg.hits {
+			m.detailCache[hit.key] = hit.detail
+		}
 	case graphMsg:
 		if msg.generation != m.boardGen || msg.view != m.view {
 			return m, nil
@@ -449,6 +565,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.up = m.searchUp
 			m.detailErr = m.searchDErr
 			m.checking = false
+			m.detailRefreshing = false
 			m.detailGen++
 			m.detailPendingID = ""
 			cmd := m.rebuildRows(m.searchID)
@@ -536,7 +653,9 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "r":
-		return m, nil
+		// Reload the current view/sort/filter in place. A failed or slow
+		// reload never discards the board that is already on screen.
+		return m, m.startBoardLoad()
 	case "R":
 		wasOpen := m.view == bd.ViewOpen
 		previousID := m.selectedID()
@@ -643,7 +762,8 @@ func copyToClipboard(value string) tea.Cmd {
 }
 
 // rebuildRows applies the current filter and sort while preserving selection
-// by bead id. It also requests detail if the selected row changed.
+// by bead id. It also prepares detail for the selected row (cache-first) and
+// schedules the debounced (re)load.
 func (m *Model) rebuildRows(previousID string) tea.Cmd {
 	m.projectRows(previousID)
 	if len(m.rows) == 0 {
@@ -652,6 +772,7 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 		m.detail, m.down, m.up = nil, nil, nil
 		m.detailErr = ""
 		m.checking = false
+		m.detailRefreshing = false
 		return nil
 	}
 	id := m.rows[m.selected].ID
@@ -659,16 +780,123 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 		m.checking = true
 		return nil
 	}
-	if m.detailPendingID != "" {
+	if m.detail != nil && m.detail.ID == id {
+		m.checking = false
+		return nil
+	}
+	return m.prepareDetailForSelection()
+}
+
+// detailCacheKey namespaces a cached detail by bead id and its updated_at so
+// refreshed rows invalidate their own entries.
+func detailCacheKey(id, updatedAt string) string {
+	return id + "\x00" + updatedAt
+}
+
+// detailCacheKeyFor builds the cache key for id from the already-loaded list
+// rows; no bd call is needed to decide cache validity.
+func (m Model) detailCacheKeyFor(id string) string {
+	for i := range m.rows {
+		if m.rows[i].ID == id {
+			return detailCacheKey(id, m.rows[i].UpdatedAt)
+		}
+	}
+	for i := range m.allRows {
+		if m.allRows[i].ID == id {
+			return detailCacheKey(id, m.allRows[i].UpdatedAt)
+		}
+	}
+	return detailCacheKey(id, "")
+}
+
+// prepareDetailForSelection switches the detail pane to the selected row
+// without touching bd: cached detail installs instantly, a miss clears the
+// pane. It always schedules the debounced (re)load.
+func (m *Model) prepareDetailForSelection() tea.Cmd {
+	id := m.selectedID()
+	if id == "" {
+		return nil
+	}
+	if m.detailPendingID != "" && m.detailPendingID != id {
 		m.detailGen++
 		m.detailPendingID = ""
 	}
-	if m.detail == nil || m.detail.ID != id {
-		m.checking = true
-		return m.loadDetailCmd(id)
+	if m.detail != nil && m.detail.ID == id {
+		m.checking = false
+		return m.scheduleDetailDebounce()
 	}
+	if entry, ok := m.detailCache[m.detailCacheKeyFor(id)]; ok {
+		m.installCachedDetail(entry)
+		return m.scheduleDetailDebounce()
+	}
+	m.detail, m.down, m.up = nil, nil, nil
+	m.detailErr = ""
+	m.checking = true
+	m.detailRefreshing = false
+	m.dOffset = 0
+	return m.scheduleDetailDebounce()
+}
+
+// installCachedDetail paints a cached snapshot as the current detail.
+func (m *Model) installCachedDetail(entry cachedDetail) {
+	issue := entry.issue
+	issue = normalizeIssueCounts(issue, entry.down, entry.up)
+	m.detail = &issue
+	m.down = append([]bd.DepRecord(nil), entry.down...)
+	m.up = append([]bd.DepRecord(nil), entry.up...)
+	m.detailErr = ""
 	m.checking = false
-	return nil
+	m.detailRefreshing = false
+	m.dOffset = 0
+}
+
+// scheduleDetailDebounce arms the coalescing timer; every selection change
+// bumps the sequence so superseded ticks are dropped when they fire.
+func (m *Model) scheduleDetailDebounce() tea.Cmd {
+	m.detailDebounceSeq++
+	seq := m.detailDebounceSeq
+	delay := m.detailDebounce
+	if delay < 0 {
+		delay = 0
+	}
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return detailDebounceMsg{seq: seq}
+	})
+}
+
+// startDetailLoad runs after the debounce settles: it fetches the selected
+// bead's detail (refreshing in place when a cached copy is already shown) and
+// prefetches the neighbours at idle.
+func (m *Model) startDetailLoad() tea.Cmd {
+	if m.selected < 0 || m.selected >= len(m.rows) {
+		return nil
+	}
+	id := m.rows[m.selected].ID
+	if m.detailPendingID == id {
+		return nil
+	}
+	fetch := m.beginDetailFetch(id, true)
+	return tea.Batch(fetch, m.prefetchNeighboursCmd(id))
+}
+
+// beginDetailFetch marks a detail fetch for id as in flight and returns the
+// fetch command. keepStale keeps an already-shown snapshot for the same bead
+// visible (with a refreshing marker) instead of blanking the pane.
+func (m *Model) beginDetailFetch(id string, keepStale bool) tea.Cmd {
+	m.detailGen++
+	generation := m.detailGen
+	m.detailPendingID = id
+	if keepStale && m.detail != nil && m.detail.ID == id {
+		m.checking = false
+		m.detailRefreshing = true
+	} else {
+		m.checking = true
+		m.detailRefreshing = false
+		m.detail, m.down, m.up = nil, nil, nil
+		m.detailErr = ""
+		m.dOffset = 0
+	}
+	return m.fetchDetailCmd(id, generation)
 }
 
 func (m *Model) projectRows(previousID string) {
@@ -799,8 +1027,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.filter.Kind == FilterSearch {
 			m.expandAncestors(m.rows[m.selected].ID)
 		}
-		m.checking = true
-		return m, m.loadDetailCmd(m.rows[m.selected].ID)
+		return m, m.prepareDetailForSelection()
 	}
 	return m, nil
 }
@@ -891,6 +1118,8 @@ func (m Model) buildDetail(width int) []string {
 func (m *Model) startBoardLoad() tea.Cmd {
 	m.boardGen++
 	m.loading = true
+	m.reloadAttempts = 0
+	m.reloadNotice = ""
 	m.invalidateDetail()
 	m.graphReady = false
 	m.graphEdges = 0
@@ -905,30 +1134,16 @@ func (m Model) loadBoardCmd() tea.Cmd {
 	view := m.view
 	generation := m.boardGen
 	backend := m.backend
+	timeout := boardLoadTimeout(m.reloadAttempts)
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		issues, err := backend.List(ctx, view)
 		cancel()
 		if err != nil {
-			return boardMsg{view: view, generation: generation, err: err}
+			return boardMsg{view: view, generation: generation, err: err, timeout: timeout}
 		}
-		return boardMsg{view: view, generation: generation, issues: issues}
+		return boardMsg{view: view, generation: generation, issues: issues, timeout: timeout}
 	}
-}
-
-func (m *Model) invalidateDetail() {
-	m.detailGen++
-	m.detailPendingID = ""
-	m.detail = nil
-	m.down = nil
-	m.up = nil
-	m.detailErr = ""
-	m.checking = false
-	m.dOffset = 0
-	m.searchDetail = nil
-	m.searchDown = nil
-	m.searchUp = nil
-	m.searchDErr = ""
 }
 
 // loadGraphCmd enriches a painted list with one bounded, cached dependency
@@ -1159,48 +1374,159 @@ func (m Model) loadStatusesCmd() tea.Cmd {
 	}
 }
 
-// loadDetailCmd fetches issue detail plus both dependency directions. The
-// first failure short-circuits the rest so a dead store yields one error.
-func (m *Model) loadDetailCmd(id string) tea.Cmd {
+func (m *Model) invalidateDetail() {
 	m.detailGen++
-	generation := m.detailGen
-	m.detailPendingID = id
-	m.checking = true
-	if m.detail == nil || m.detail.ID != id {
-		m.detail = nil
-		m.down = nil
-		m.up = nil
-		m.detailErr = ""
-		m.dOffset = 0
+	m.detailPendingID = ""
+	m.detail = nil
+	m.down = nil
+	m.up = nil
+	m.detailErr = ""
+	m.checking = false
+	m.detailRefreshing = false
+	m.detailDebounceSeq++
+	m.dOffset = 0
+	m.searchDetail = nil
+	m.searchDown = nil
+	m.searchUp = nil
+	m.searchDErr = ""
+}
+
+// fetchDetail runs the three read-only bd calls behind one detail snapshot.
+func fetchDetail(backend Backend, id string) (*bd.Issue, []bd.DepRecord, []bd.DepRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
+	defer cancel()
+	issue, err := backend.Show(ctx, id)
+	var down, up []bd.DepRecord
+	if err == nil {
+		down, err = backend.Deps(ctx, id, false)
 	}
+	if err == nil {
+		up, err = backend.Deps(ctx, id, true)
+	}
+	return issue, down, up, err
+}
+
+// fetchDetailCmd fetches one bead's detail plus both dependency directions.
+func (m Model) fetchDetailCmd(id string, generation uint64) tea.Cmd {
+	backend := m.backend
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
-		defer cancel()
-		issue, err := m.backend.Show(ctx, id)
-		var down, up []bd.DepRecord
-		if err == nil {
-			down, err = m.backend.Deps(ctx, id, false)
-		}
-		if err == nil {
-			up, err = m.backend.Deps(ctx, id, true)
-		}
+		issue, down, up, err := fetchDetail(backend, id)
 		return detailMsg{id: id, generation: generation, issue: issue, down: down, up: up, err: err}
 	}
 }
 
-// applyBoard installs a fresh board snapshot.
+// neighbourIDs returns the ids of rows within span positions of the row for
+// id, nearest first.
+func (m Model) neighbourIDs(id string, span int) []string {
+	idx := -1
+	for i := range m.rows {
+		if m.rows[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil
+	}
+	var ids []string
+	for d := 1; d <= span; d++ {
+		for _, i := range []int{idx - d, idx + d} {
+			if i >= 0 && i < len(m.rows) && m.rows[i].ID != "" {
+				ids = append(ids, m.rows[i].ID)
+			}
+		}
+	}
+	return ids
+}
+
+// prefetchNeighboursCmd fetches detail snapshots for the rows around the
+// selection (selected±1..span) that are not cached yet. Best effort: failures
+// simply leave the cache empty and the selection is never blocked on it.
+func (m Model) prefetchNeighboursCmd(id string) tea.Cmd {
+	seen := map[string]struct{}{}
+	type target struct {
+		id  string
+		key string
+	}
+	var targets []target
+	for _, nid := range m.neighbourIDs(id, prefetchSpan) {
+		if _, dup := seen[nid]; dup {
+			continue
+		}
+		seen[nid] = struct{}{}
+		key := m.detailCacheKeyFor(nid)
+		if _, ok := m.detailCache[key]; ok {
+			continue
+		}
+		targets = append(targets, target{id: nid, key: key})
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	backend := m.backend
+	return func() tea.Msg {
+		var hits []prefetchHit
+		for _, tgt := range targets {
+			issue, down, up, err := fetchDetail(backend, tgt.id)
+			if err != nil || issue == nil {
+				continue
+			}
+			hits = append(hits, prefetchHit{key: tgt.key, detail: cachedDetail{
+				issue: *issue,
+				down:  down,
+				up:    up,
+			}})
+		}
+		if len(hits) == 0 {
+			return nil
+		}
+		return prefetchMsg{hits: hits}
+	}
+}
+
+// pruneDetailCache drops entries for beads that are no longer on the board.
+func (m *Model) pruneDetailCache() {
+	if m.detailCache == nil {
+		return
+	}
+	live := make(map[string]struct{}, len(m.allRows))
+	for _, issue := range m.allRows {
+		if issue.ID != "" {
+			live[issue.ID] = struct{}{}
+		}
+	}
+	for key := range m.detailCache {
+		id, _, _ := strings.Cut(key, "\x00")
+		if _, ok := live[id]; !ok {
+			delete(m.detailCache, key)
+		}
+	}
+}
+
+// applyBoard installs a fresh board snapshot. A failed or timed-out reload
+// never discards the board already on screen: it records a notice and
+// schedules a backoff retry while the previous board stays interactive.
 func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	if msg.generation != m.boardGen || msg.view != m.view {
 		// A newer board superseded this one.
 		return nil
 	}
-	m.invalidateDetail()
 	m.loading = false
 	if msg.err != nil {
+		m.reloadAttempts++
 		m.boardErr = msg.err.Error()
-		return nil
+		if len(m.allRows) > 0 {
+			m.reloadNotice = reloadFailureNotice(msg.err, msg.timeout, m.boardLoadedAt)
+			return m.scheduleBoardRetry()
+		}
+		m.reloadNotice = ""
+		return m.scheduleBoardRetry()
 	}
 	m.boardErr = ""
+	m.reloadAttempts = 0
+	m.reloadNotice = ""
+	m.boardLoadedAt = time.Now()
+	m.invalidateDetail()
 	// Capture the previous selection from the OLD board before rows are
 	// replaced, then restore it by id if the bead is still present.
 	prev := m.selectedID()
@@ -1214,7 +1540,28 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	m.deps = cloneDepMap(msg.deps)
 	m.lastSnapshot = &boardSnapshot{View: msg.view, Issues: cloneIssues(msg.issues)}
 	m.saveState()
+	m.pruneDetailCache()
 	return tea.Batch(m.rebuildRows(prev), m.loadGraphCmd(msg.view, msg.generation, msg.issues))
+}
+
+// reloadFailureNotice builds the transient status-line text shown when a
+// reload fails but a previous board is still displayed.
+func reloadFailureNotice(err error, timeout time.Duration, loadedAt time.Time) string {
+	shown := "the previous board"
+	if !loadedAt.IsZero() {
+		shown = loadedAt.Format("15:04:05")
+	}
+	if isTimeoutErr(err) {
+		return fmt.Sprintf("reload timed out after %ds - still showing board from %s; retrying",
+			int(timeout.Seconds()), shown)
+	}
+	return fmt.Sprintf("reload failed - still showing board from %s; retrying", shown)
+}
+
+// scheduleBoardRetry arms the automatic reload timer with the next backoff.
+func (m *Model) scheduleBoardRetry() tea.Cmd {
+	delay := boardRetryBackoff(m.reloadAttempts)
+	return tea.Tick(delay, func(time.Time) tea.Msg { return boardRetryMsg{} })
 }
 
 func (m Model) indexOfRow(id string) int {
@@ -1240,20 +1587,25 @@ func (m *Model) toggleSelectedTreeRow() tea.Cmd {
 	return cmd
 }
 
-// applyDetail installs a detail snapshot, discarding stale responses.
+// applyDetail installs a detail snapshot, discarding stale responses, and
+// caches it so returning to this bead renders instantly.
 func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 	if msg.generation != m.detailGen || m.selected >= len(m.rows) || msg.id != m.rows[m.selected].ID {
 		return nil
 	}
 	m.detailPendingID = ""
 	m.checking = false
+	m.detailRefreshing = false
 	if msg.err != nil {
 		m.detailErr = msg.err.Error()
 		if msg.issue != nil {
 			issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
 			m.detail = &issue
 			m.down, m.up = msg.down, msg.up
-		} else {
+		} else if !(m.detail != nil && m.detail.ID == msg.id) {
+			// A failed background refresh must not wipe the snapshot that is
+			// already on screen for this bead; only clear when there is
+			// nothing (or something stale) to show.
 			m.detail, m.down, m.up = nil, nil, nil
 		}
 		return nil
@@ -1262,12 +1614,23 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 	if msg.issue != nil {
 		issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
 		m.detail = &issue
+		m.detailCache[detailCacheKey(msg.id, msg.issue.UpdatedAt)] = cachedDetail{
+			issue: cloneIssue(*msg.issue),
+			down:  append([]bd.DepRecord(nil), msg.down...),
+			up:    append([]bd.DepRecord(nil), msg.up...),
+		}
 	} else {
 		m.detail = nil
 	}
 	m.down, m.up = msg.down, msg.up
 	m.dOffset = 0
 	return nil
+}
+
+// cloneIssue deep-copies the variable-length fields of one bead.
+func cloneIssue(issue bd.Issue) bd.Issue {
+	issue.Labels = append([]string(nil), issue.Labels...)
+	return issue
 }
 
 // View renders the full frame.
@@ -1429,7 +1792,7 @@ func (m Model) renderListPane(w, h int) []string {
 	}
 	var lines []string
 	switch {
-	case m.boardErr != "":
+	case m.boardErr != "" && len(m.rows) == 0 && len(m.allRows) == 0:
 		msg := "Could not load board."
 		for _, l := range wrapText(msg, inner) {
 			lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render(l))
@@ -1438,6 +1801,7 @@ func (m Model) renderListPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(l))
 		}
 		lines = append(lines, styleDim.Render("Check bd is installed and a beads workspace is active (BEADS_DIR)."))
+		lines = append(lines, styleDim.Render("Retrying automatically; r retries now."))
 	case m.loading && len(m.rows) == 0 && len(m.allRows) == 0:
 		lines = append(lines, styleDim.Render("Loading board…"))
 	case len(m.rows) == 0:
@@ -1467,6 +1831,9 @@ func (m Model) renderListPane(w, h int) []string {
 		}
 		if m.loading {
 			lines = append(lines, styleDim.Render("Refreshing…"))
+		}
+		if m.reloadNotice != "" {
+			lines = append(lines, styleDim.Render(truncate(m.reloadNotice, inner)))
 		}
 	}
 	title := styleDim.Render(m.view.Label())
@@ -1542,9 +1909,14 @@ func (m Model) renderDetailPane(w, h int) []string {
 	default:
 		lines = append(lines, styleDim.Render("Select a bead for details."))
 	}
-	title := styleDim.Render("Detail")
+	title := "Detail"
+	if m.detailRefreshing {
+		title = "Detail · refreshing…"
+	}
 	if m.focus == FocusDetail {
-		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render("Detail")
+		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render(title)
+	} else {
+		title = styleDim.Render(title)
 	}
 	return pane(title, lines, w, h)
 }
@@ -1573,12 +1945,17 @@ func (m Model) renderFooter(w int) string {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
 	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
-	hints := styleDim.Render("s sort / search t tag ? help q quit")
+	defaultHints := styleDim.Render("r reload R reset s sort / search t tag ? help q quit")
+	shortHints := styleDim.Render("r reload ? help q quit")
+	hints := defaultHints
 	var left string
 	switch {
-	case m.boardErr != "":
-		left = status + " · " + lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
-		hints = styleDim.Render("q quit")
+	case m.boardErr != "" && len(m.rows) == 0:
+		left = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
+		hints = styleDim.Render("r retry · q quit")
+	case m.reloadNotice != "":
+		left = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(m.reloadNotice)
+		hints = styleDim.Render("r reload now · q quit")
 	case m.loading:
 		left = status + " · " + styleDim.Render("loading…")
 	case m.focus == FocusDetail:
@@ -1589,6 +1966,9 @@ func (m Model) renderFooter(w int) string {
 	}
 	if displayWidth(left)+1+displayWidth(hints) <= w {
 		return fitLine(left, hints, w)
+	}
+	if hints == defaultHints && displayWidth(left)+1+displayWidth(shortHints) <= w {
+		return fitLine(left, shortHints, w)
 	}
 	return truncatePhys(left, w)
 }
@@ -1671,7 +2051,7 @@ func (m Model) helpLines(width int) []string {
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
 		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
 		"  Tags:          t search by the selected bead's labels",
-		"  Reset:         R · Help: ? (any key closes) · Quit: q/Ctrl+C",
+		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
 		rowLegend,
 		"Markers: ⇣N depends on N · ⇡N has N dependents",

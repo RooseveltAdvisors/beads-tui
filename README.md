@@ -52,8 +52,9 @@ The TUI is keyboard-driven:
   the flat list
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
-- `1`-`9` switch native and custom status tabs, `R` resets view/sort/search,
-  `?` shows help, and `q` (or `ctrl+c`) quits
+- `1`-`9` switch native and custom status tabs, `r` reloads the board keeping
+  the current view/sort/search, `R` resets view/sort/search, `?` shows help, and
+  `q` (or `ctrl+c`) quits
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
 - `/` opens the incremental search prompt. Search by bead id, title, or
@@ -88,14 +89,23 @@ Rows and markers:
 When stdin is not a TTY, `beads-tui` degrades to a one-shot JSON dump of the
 open-status board, so scripts and agents get content instead of a pager.
 
+`r` reloads the board in place, keeping the current view, sort, and search.
 `R` clears the search and restores the open status with created-newest-first
-sorting.
+sorting. A failed or slow reload never discards the board that is already on
+screen: beads-tui keeps the last good rows interactive, shows a status-line
+notice, and retries automatically with backoff (2 s, 5 s, then every 15 s)
+using an extended 60 s deadline once a retry is in flight. Details are cached
+per bead (keyed by its last update) and prefetched around the selection, so
+moving through the list renders instantly and never blocks on `bd`; a dim
+"refreshing…" marker in the detail title shows when a background refresh is
+running.
 
 ## Read-only guarantee
 
 beads-tui never creates, edits, or closes beads. All data comes from read-only
-`bd` invocations; board-load failures surface bd's diagnostic and the UI keeps
-running. Dependency metadata is best effort: a failed graph lookup is logged
+`bd` invocations; board-load failures keep the loaded rows on screen, surface
+bd's diagnostic, and retry with backoff instead of freezing or blanking.
+Dependency metadata is best effort: a failed graph lookup is logged
 without hiding the loaded list rows. Missing `bd`, a store it cannot reach, or
 an empty board all render as explicit states rather than crashes or raw command
 output.

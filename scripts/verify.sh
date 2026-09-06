@@ -3,7 +3,10 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BEADS_ROOT="${BEADS_VERIFY_BEADS_DIR:-${BEADS_DIR:-/opt/ra/firstmate/.beads}}"
-WAIT_SECONDS="${BEADS_VERIFY_WAIT_SECONDS:-30}"
+WAIT_SECONDS="${BEADS_VERIFY_WAIT_SECONDS:-120}"
+# A board-error screen only counts as a failure once it has persisted this many
+# consecutive seconds; transient store-lock timeouts self-heal via auto-retry.
+BOARD_ERROR_GRACE_SECONDS="${BEADS_VERIFY_ERROR_GRACE_SECONDS:-10}"
 EVIDENCE_DIR="${BEADS_VERIFY_EVIDENCE_DIR:-$ROOT/evidence}"
 SESSION="beads-tui-verify-$$"
 TARGET="$SESSION:tui"
@@ -39,9 +42,13 @@ ready_snapshot() {
 }
 
 start_tui() {
-  local beads_dir=$1
+  local beads_dir=$1 config_dir=$2
   tmux new-session -d -s "$SESSION" -n tui -c "$ROOT"
-  printf -v command 'exec env BEADS_DIR=%q %q' "$beads_dir" "$TMP_DIR/beads-tui"
+  # Hermetic per-run config/state so the operator's persisted view/sort cannot
+  # change which rows the gate expects to see first, and so each phase starts
+  # without another phase's board snapshot.
+  mkdir -p "$config_dir"
+  printf -v command 'exec env BEADS_DIR=%q BEADS_TUI_CONFIG_DIR=%q %q' "$beads_dir" "$config_dir" "$TMP_DIR/beads-tui"
   tmux send-keys -t "$TARGET" "$command" C-m
 }
 
@@ -72,17 +79,30 @@ ready_json="$(ready_snapshot)" || die 'bd list --ready failed'
 ready_count="$(jq -e 'if type == "array" then length else error("expected array") end' <<<"$ready_json")" || die 'bd list --ready did not return a JSON array'
 [ "$ready_count" -gt 0 ] || die 'fixture has no ready rows; verification requires a non-empty ready board'
 first_id="$(jq -er '.[0].id' <<<"$ready_json")" || die 'ready JSON has no bead IDs'
+# The gate cannot assume bd's ordering matches the TUI's active sort, so it
+# accepts any ready bead id appearing in the rendered board.
+jq -er '.[].id' <<<"$ready_json" >"$TMP_DIR/ready-ids.txt" || die 'ready JSON has no bead IDs'
 
 printf 'BEADS_DIR=%s\nready_rows=%s\noperator_mapping=prefix+H\n' "$BEADS_ROOT" "$ready_count" >"$EVIDENCE_DIR/beads-tui-verify.txt"
-start_tui "$BEADS_ROOT"
+start_tui "$BEADS_ROOT" "$TMP_DIR/config-ready"
 loaded=0
+board_error_streak=0
 for _ in $(seq 1 "$WAIT_SECONDS"); do
   pane="$(capture)"
-  if printf '%s\n' "$pane" | grep -qE 'signal: killed|SIGKILL|Could not load board\.'; then
-    printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
-    die "real TUI failed to load the Ready board ($(pane_state))"
+  # A bd child killed by its own timeout logs "signal: killed" to stderr; that
+  # is the TUI handling store contention, not a failure. The TUI itself being
+  # SIGKILLed is detected via pane state, and a persistent board-error screen
+  # (past the auto-retry grace) is detected below.
+  if printf '%s\n' "$pane" | grep -qF 'Could not load board.'; then
+    board_error_streak=$((board_error_streak + 1))
+    if [ "$board_error_streak" -ge "$BOARD_ERROR_GRACE_SECONDS" ]; then
+      printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
+      die "board error persisted past ${BOARD_ERROR_GRACE_SECONDS}s of retries ($(pane_state))"
+    fi
+  else
+    board_error_streak=0
   fi
-  if printf '%s\n' "$pane" | grep -Fq "$first_id"; then
+  if printf '%s\n' "$pane" | grep -Fqf "$TMP_DIR/ready-ids.txt"; then
     loaded=1
     break
   fi
@@ -96,12 +116,12 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
 done
 pane="$(capture)"
 printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
-[ "$loaded" -eq 1 ] || die "Ready board did not render $first_id within ${WAIT_SECONDS}s"
+[ "$loaded" -eq 1 ] || die "Ready board did not render any of $ready_count ready ids within ${WAIT_SECONDS}s"
 printf '✓ real Ready board loaded (%s; first row %s)\n' "$ready_count" "$first_id"
 stop_tui
 
 missing_root="$TMP_DIR/missing-beads"
-start_tui "$missing_root"
+start_tui "$missing_root" "$TMP_DIR/config-missing"
 missing_ok=0
 for _ in $(seq 1 10); do
   pane="$(capture)"
