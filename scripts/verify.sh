@@ -40,8 +40,13 @@ ready_snapshot() {
 
 start_tui() {
   local beads_dir=$1
+  local config_dir=${2:-}
   tmux new-session -d -s "$SESSION" -n tui -c "$ROOT"
-  printf -v command 'exec env BEADS_DIR=%q %q' "$beads_dir" "$TMP_DIR/beads-tui"
+  local env_prefix=''
+  if [ -n "$config_dir" ]; then
+    env_prefix="BEADS_TUI_CONFIG_DIR=$(printf %q "$config_dir") "
+  fi
+  printf -v command 'exec env %sBEADS_DIR=%q %q' "$env_prefix" "$beads_dir" "$TMP_DIR/beads-tui"
   tmux send-keys -t "$TARGET" "$command" C-m
 }
 
@@ -71,10 +76,17 @@ build
 ready_json="$(ready_snapshot)" || die 'bd list --ready failed'
 ready_count="$(jq -e 'if type == "array" then length else error("expected array") end' <<<"$ready_json")" || die 'bd list --ready did not return a JSON array'
 [ "$ready_count" -gt 0 ] || die 'fixture has no ready rows; verification requires a non-empty ready board'
-first_id="$(jq -er '.[0].id' <<<"$ready_json")" || die 'ready JSON has no bead IDs'
+
+# The TUI's first visible row is deterministic only under its default state
+# (created-newest-first, no folds). A shared user state.json can carry a
+# different sort or folds, so the gate TUI gets a throwaway config dir and
+# the expectation is computed from the same data the board loads: the newest
+# open root bead.
+open_json="$(BEADS_DIR="$BEADS_ROOT" bd list --status open --json -n 0)" || die 'bd list --status open failed'
+expected_top="$(jq -er '[.[] | select((.parent_id // "") == "")] | sort_by(.created_at) | reverse | .[0].id' <<<"$open_json")" || die 'open JSON has no root bead IDs'
 
 printf 'BEADS_DIR=%s\nready_rows=%s\noperator_mapping=prefix+H\n' "$BEADS_ROOT" "$ready_count" >"$EVIDENCE_DIR/beads-tui-verify.txt"
-start_tui "$BEADS_ROOT"
+start_tui "$BEADS_ROOT" "$TMP_DIR/config"
 loaded=0
 for _ in $(seq 1 "$WAIT_SECONDS"); do
   pane="$(capture)"
@@ -82,7 +94,7 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
     printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
     die "real TUI failed to load the Ready board ($(pane_state))"
   fi
-  if printf '%s\n' "$pane" | grep -Fq "$first_id"; then
+  if printf '%s\n' "$pane" | grep -Fq "$expected_top"; then
     loaded=1
     break
   fi
@@ -96,8 +108,8 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
 done
 pane="$(capture)"
 printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
-[ "$loaded" -eq 1 ] || die "Ready board did not render $first_id within ${WAIT_SECONDS}s"
-printf '✓ real Ready board loaded (%s; first row %s)\n' "$ready_count" "$first_id"
+[ "$loaded" -eq 1 ] || die "Ready board did not render $expected_top within ${WAIT_SECONDS}s"
+printf '✓ real Ready board loaded (%s; first row %s)\n' "$ready_count" "$expected_top"
 stop_tui
 
 missing_root="$TMP_DIR/missing-beads"

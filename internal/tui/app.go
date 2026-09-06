@@ -177,10 +177,11 @@ type yankMsg struct {
 }
 
 type savedState struct {
-	View     bd.View        `json:"view"`
-	SortMode SortMode       `json:"sort_mode"`
-	Filter   Filter         `json:"filter"`
-	Snapshot *boardSnapshot `json:"board_snapshot,omitempty"`
+	View     bd.View         `json:"view"`
+	SortMode SortMode        `json:"sort_mode"`
+	Filter   Filter          `json:"filter"`
+	Expanded map[string]bool `json:"expanded,omitempty"`
+	Snapshot *boardSnapshot  `json:"board_snapshot,omitempty"`
 }
 
 func statePath() (string, error) {
@@ -215,6 +216,9 @@ func loadState() (savedState, bool) {
 	state.View = normalizeStateView(state.View)
 	if state.View == "" {
 		state.View = bd.ViewOpen
+	}
+	if state.Expanded == nil {
+		state.Expanded = map[string]bool{}
 	}
 	if state.Snapshot != nil {
 		state.Snapshot.View = normalizeStateView(state.Snapshot.View)
@@ -263,6 +267,7 @@ func (m Model) saveState() {
 		View:     m.view,
 		SortMode: m.sortMode,
 		Filter:   m.filter,
+		Expanded: cloneExpanded(m.expanded),
 		Snapshot: cloneBoardSnapshot(m.lastSnapshot),
 	}, "", "  ")
 	if err != nil {
@@ -305,6 +310,7 @@ func New(backend Backend) Model {
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
 			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
+			m.expanded = state.Expanded
 			m.lastSnapshot = cloneBoardSnapshot(state.Snapshot)
 			if m.lastSnapshot != nil && m.lastSnapshot.View == m.view {
 				m.allRows = cloneIssues(m.lastSnapshot.Issues)
@@ -672,7 +678,12 @@ func (m *Model) rebuildRows(previousID string) tea.Cmd {
 }
 
 func (m *Model) projectRows(previousID string) {
-	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
+	filtered := FilterIssues(m.allRows, m.filter)
+	if m.filter.Active() {
+		// A matching child keeps its parent chain visible.
+		filtered = withAncestors(filtered, m.allRows)
+	}
+	projected := SortIssues(filtered, m.sortMode)
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
 	}
@@ -766,7 +777,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.treeMode = !m.treeMode
 		return m, m.rebuildRows(m.rows[m.selected].ID)
 	case "enter", "tab":
-		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
+		if row, ok := m.selectedTreeRow(); ok && row.HasChildren {
 			return m, m.toggleSelectedTreeRow()
 		}
 		if msg.String() == "tab" {
@@ -775,14 +786,21 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = FocusDetail
 		m.dOffset = 0
 	case "h", "left":
-		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.expanded[m.treeRows[m.selected].Issue.ID] = false
-			return m, m.rebuildRows(m.treeRows[m.selected].Issue.ID)
+		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && row.Expanded {
+			return m, m.foldRow(row.Issue.ID)
 		}
 		return m, nil
-	case "l", "L", "right":
+	case "l", "right":
+		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && !row.Expanded {
+			return m, m.unfoldRow(row.Issue.ID)
+		}
 		m.focus = FocusDetail
 		m.dOffset = 0
+	case "L":
+		m.focus = FocusDetail
+		m.dOffset = 0
+	case "*":
+		return m, m.expandAll()
 	case " ", "pgdown", "ctrl+f":
 		m.selected += page
 	case "b", "pgup", "ctrl+b":
@@ -885,7 +903,50 @@ func (m Model) buildDetail(width int) []string {
 	if m.markdown == nil {
 		m.markdown = &markdownRenderer{}
 	}
-	return buildDetail(m.vocab, m.detail, m.down, m.up, width, m.markdown)
+	chain, children := m.hierarchyFor(m.detail)
+	return buildDetail(m.vocab, m.detail, m.down, m.up, chain, children, width, m.markdown)
+}
+
+// hierarchyFor derives the parent chain and direct children of d from the
+// rows already loaded, so the detail pane never waits on another bd call.
+func (m Model) hierarchyFor(d *bd.Issue) (chain, children []bd.Issue) {
+	if d == nil {
+		return nil, nil
+	}
+	byID := make(map[string]bd.Issue, len(m.allRows)+len(m.graphRows))
+	for _, issue := range m.allRows {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	for _, issue := range m.graphRows {
+		if issue.ID != "" {
+			if _, ok := byID[issue.ID]; !ok {
+				byID[issue.ID] = issue
+			}
+		}
+	}
+	seen := map[string]bool{d.ID: true}
+	parentID := strings.TrimSpace(d.ParentID)
+	for parentID != "" && !seen[parentID] {
+		parent, ok := byID[parentID]
+		if !ok {
+			break
+		}
+		seen[parentID] = true
+		chain = append(chain, parent)
+		parentID = strings.TrimSpace(parent.ParentID)
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	for _, issue := range byID {
+		if issue.ParentID == d.ID && issue.ID != d.ID {
+			children = append(children, issue)
+		}
+	}
+	children = SortIssues(children, m.sortMode)
+	return chain, children
 }
 
 func (m *Model) startBoardLoad() tea.Cmd {
@@ -1053,6 +1114,14 @@ func cloneBoardSnapshot(snapshot *boardSnapshot) *boardSnapshot {
 		return nil
 	}
 	return &boardSnapshot{View: snapshot.View, Issues: cloneIssues(snapshot.Issues)}
+}
+
+func cloneExpanded(expanded map[string]bool) map[string]bool {
+	cloned := make(map[string]bool, len(expanded))
+	for id, value := range expanded {
+		cloned[id] = value
+	}
+	return cloned
 }
 
 func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
@@ -1227,6 +1296,47 @@ func (m Model) indexOfRow(id string) int {
 		}
 	}
 	return 0
+}
+
+func (m Model) selectedTreeRow() (TreeRow, bool) {
+	if m.treeMode && m.selected >= 0 && m.selected < len(m.treeRows) {
+		return m.treeRows[m.selected], true
+	}
+	return TreeRow{}, false
+}
+
+// foldRow collapses one tree node, keeping the selection on it.
+func (m *Model) foldRow(id string) tea.Cmd {
+	m.expanded[id] = false
+	return m.rebuildRows(id)
+}
+
+// unfoldRow expands one tree node, keeping the selection on it.
+func (m *Model) unfoldRow(id string) tea.Cmd {
+	m.expanded[id] = true
+	return m.rebuildRows(id)
+}
+
+// expandAll clears every fold in the loaded graph so the whole hierarchy is
+// visible. Hidden descendants are included, not just currently painted rows.
+func (m *Model) expandAll() tea.Cmd {
+	if !m.treeMode {
+		return nil
+	}
+	var walk func(*TreeNode)
+	walk = func(node *TreeNode) {
+		if node == nil {
+			return
+		}
+		m.expanded[node.Issue.ID] = true
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	for _, root := range BuildDependencyTree(m.allRows, m.deps, m.sortMode) {
+		walk(root)
+	}
+	return m.rebuildRows(m.selectedID())
 }
 
 func (m *Model) toggleSelectedTreeRow() tea.Cmd {
@@ -1664,7 +1774,7 @@ func (m Model) helpLines(width int) []string {
 		"",
 		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · G graph when edges · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
-		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
+		"  Tree:          enter/tab toggle · * expand all · h collapse · l unfold or detail · v flat/tree (preserves selection) · siblings use active sort",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear search",
 		viewHelp,
