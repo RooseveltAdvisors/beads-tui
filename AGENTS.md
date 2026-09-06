@@ -33,6 +33,13 @@ GitHub CI - runners have no `bd` and no fleet workspace. `scripts/dev-local.sh`
 ## Sharp edges
 
 - The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`).
+- Board reloads never blank the screen: `applyBoard` keeps the last good rows on
+  failure, shows a status-line notice, and retries with backoff (2/5/15 s, then
+  capped) using an extended 60 s board deadline while a retry is in flight
+  (`boardRetryBackoff`/`boardLoadTimeout` in `internal/tui/app.go`).
+- Detail loads never block navigation: selection changes are debounced (120 ms)
+  and detail is cached per `id+updated_at` (`detailCache`) with neighbour
+  prefetch (selected±1..3); all bd work happens after the debounce settles.
 - Status vocabulary loads live from `bd statuses --json`; on failure the built-in fallback in `internal/tui/render.go` (`NewVocab`) takes over.
 - Board sorting/filtering primitives and prompt syntax live in `internal/tui/filter.go`; the key dispatch and derived-row lifecycle live in `internal/tui/app.go`.
 

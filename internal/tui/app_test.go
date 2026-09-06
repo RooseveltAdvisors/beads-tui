@@ -3,9 +3,11 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,20 +15,22 @@ import (
 
 // fakeClient serves canned data without touching a real Beads store.
 type fakeClient struct {
-	mu       sync.Mutex
-	issues   map[bd.View][]bd.Issue
-	issue    *bd.Issue
-	down     []bd.DepRecord
-	downByID map[string][]bd.DepRecord
-	up       []bd.DepRecord
-	upByID   map[string][]bd.DepRecord
-	statuses []bd.StatusInfo
+	mu        sync.Mutex
+	issues    map[bd.View][]bd.Issue
+	issue     *bd.Issue
+	issueByID map[string]*bd.Issue
+	down      []bd.DepRecord
+	downByID  map[string][]bd.DepRecord
+	up        []bd.DepRecord
+	upByID    map[string][]bd.DepRecord
+	statuses  []bd.StatusInfo
 
 	failList    error
 	failShow    error
 	listCalls   int
 	depCalls    int
 	showCalls   int
+	showLog     []string
 	lastShowID  string
 	queuedLists [][]bd.Issue
 	batchCalls  int
@@ -62,9 +66,17 @@ func (f *fakeClient) ListAll(context.Context) ([]bd.Issue, error) {
 
 func (f *fakeClient) Show(_ context.Context, id string) (*bd.Issue, error) {
 	f.showCalls++
+	f.showLog = append(f.showLog, id)
 	f.lastShowID = id
 	if f.failShow != nil {
 		return nil, f.failShow
+	}
+	if f.issueByID != nil {
+		issue, ok := f.issueByID[id]
+		if !ok {
+			return nil, fmt.Errorf("bd show %s: no issue returned", id)
+		}
+		return issue, nil
 	}
 	return f.issue, nil
 }
@@ -148,7 +160,34 @@ func newTestModel(f *fakeClient) Model {
 	}
 	m := New(f)
 	m.width, m.height = 160, 40
+	m.detailDebounce = 0 // fire debounce ticks immediately in tests
 	return m
+}
+
+// runCmd executes a command and applies every message it produces, including
+// nested batches and the commands Update returns for those messages, so async
+// loads land like they do in the real program.
+func runCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	if cmd == nil {
+		return m
+	}
+	msg := cmd()
+	if msg == nil {
+		return m
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			m = runCmd(t, m, c)
+		}
+		return m
+	}
+	updated, next := m.Update(msg)
+	nm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("update returned %T, want Model", updated)
+	}
+	return runCmd(t, nm, next)
 }
 
 // drive loads the initial board snapshot like the real Init flow.
@@ -160,12 +199,7 @@ func drive(t *testing.T, f *fakeClient) Model {
 	m := newTestModel(f)
 	updated, cmd := m.Update(boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: f.issues[bd.ViewOpen], err: nil})
 	m = updated.(Model)
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			m = applyMsg(t, m, msg)
-		}
-	}
-	return m
+	return runCmd(t, m, cmd)
 }
 
 // teaKeyMsg builds a KeyMsg whose String() matches the given key name.
@@ -176,6 +210,10 @@ func teaKeyMsg(s string) tea.KeyMsg {
 		k.Type = tea.KeyUp
 	case "down":
 		k.Type = tea.KeyDown
+	case "left":
+		k.Type = tea.KeyLeft
+	case "right":
+		k.Type = tea.KeyRight
 	case "enter":
 		k.Type = tea.KeyEnter
 	case "esc":
@@ -205,18 +243,13 @@ func sendKey(t *testing.T, m Model, key string) Model {
 	return applyMsg(t, m, teaKeyMsg(key))
 }
 
-// step applies a keypress and then runs any command Update returned, so
+// step applies a keypress and then drains every command Update returned, so
 // async loads (board/detail fetches) land like they do in the real program.
 func step(t *testing.T, m Model, key string) Model {
 	t.Helper()
 	updated, cmd := m.Update(teaKeyMsg(key))
 	nm := updated.(Model)
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			nm = applyMsg(t, nm, msg)
-		}
-	}
-	return nm
+	return runCmd(t, nm, cmd)
 }
 
 // applyMsg drives one message through Update, asserting the model type.
@@ -268,8 +301,8 @@ func TestSelectionMovesAndLoadsDetail(t *testing.T) {
 	if m.selected != 1 {
 		t.Fatalf("selected = %d, want 1", m.selected)
 	}
-	if f.lastShowID != "fm-bbb" {
-		t.Errorf("j should load detail for fm-bbb, got %q", f.lastShowID)
+	if !showLogContains(f, "fm-bbb") {
+		t.Errorf("j should load detail for fm-bbb, got %v", f.showLog)
 	}
 	if m.detail == nil || m.detail.ID != "fm-bbb" {
 		t.Fatalf("detail not applied: %+v", m.detail)
@@ -376,12 +409,192 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 	}
 }
 
-func TestLowercaseRIsSafeNoOp(t *testing.T) {
-	m := drive(t, nil)
+// showLogContains reports whether the fake served Show for id.
+func showLogContains(f *fakeClient, id string) bool {
+	for _, shown := range f.showLog {
+		if shown == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLowercaseRReloadsKeepingViewSortAndFilter(t *testing.T) {
+	f := &fakeClient{}
+	m := drive(t, f)
+	m.sortMode = SortUpdated
+	m.filter = ParseSearchFilter("task")
+	m = sendKey(t, m, "j") // select fm-bbb so selection preservation is observable
 	updated, cmd := m.Update(teaKeyMsg("r"))
 	m = updated.(Model)
-	if cmd != nil {
-		t.Fatal("lowercase r should be a no-op")
+	if cmd == nil {
+		t.Fatal("r should reload the board")
+	}
+	if f.listCalls != 0 {
+		t.Fatalf("r reload started bd before the command ran (%d calls)", f.listCalls)
+	}
+	m = runCmd(t, m, cmd)
+	if f.listCalls != 1 {
+		t.Fatalf("r reload ran bd list %d times, want 1", f.listCalls)
+	}
+	if m.view != bd.ViewOpen || m.sortMode != SortUpdated || !m.filter.Active() {
+		t.Fatalf("r changed view/sort/filter: view %q sort %q filter %+v", m.view, m.sortMode, m.filter)
+	}
+	if len(m.rows) != 3 || m.rows[m.selected].ID != "fm-bbb" {
+		t.Fatalf("reload lost rows/selection: rows=%+v selected=%d", m.rows, m.selected)
+	}
+	if m.boardErr != "" || m.reloadNotice != "" || m.reloadAttempts != 0 {
+		t.Fatalf("successful reload left failure state: err=%q notice=%q attempts=%d", m.boardErr, m.reloadNotice, m.reloadAttempts)
+	}
+}
+
+func TestReloadTimeoutKeepsRowsAndNotifies(t *testing.T) {
+	m := newTestModel(nil)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues(), timeout: bdTimeout})
+	if len(m.rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(m.rows))
+	}
+	failed := applyMsg(t, m, boardMsg{
+		view:       bd.ViewOpen,
+		generation: m.boardGen,
+		err:        errors.New("bd list --status open --json -n 0: context deadline exceeded"),
+		timeout:    bdTimeout,
+	})
+	if len(failed.rows) != 3 {
+		t.Fatalf("failed reload discarded rows: %d", len(failed.rows))
+	}
+	if !strings.Contains(failed.reloadNotice, "reload timed out after 8s") ||
+		!strings.Contains(failed.reloadNotice, "still showing board from") ||
+		!strings.Contains(failed.reloadNotice, "retrying") {
+		t.Fatalf("reload notice = %q", failed.reloadNotice)
+	}
+	view := stripANSI(failed.View())
+	for _, want := range []string{"Alpha task", "reload timed out after 8s"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view after failed reload missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestBoardRetryBackoffAndAdaptiveTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{1, 2 * time.Second},
+		{2, 5 * time.Second},
+		{3, 15 * time.Second},
+		{9, 15 * time.Second},
+	} {
+		if got := boardRetryBackoff(tc.attempt); got != tc.want {
+			t.Errorf("boardRetryBackoff(%d) = %v, want %v", tc.attempt, got, tc.want)
+		}
+	}
+	if got := boardLoadTimeout(0); got != bdTimeout {
+		t.Errorf("first board load timeout = %v, want %v", got, bdTimeout)
+	}
+	if got := boardLoadTimeout(2); got != boardRetryTimeout {
+		t.Errorf("retry board load timeout = %v, want %v", got, boardRetryTimeout)
+	}
+}
+
+func TestBoardRetrySucceedsAndClearsFailureState(t *testing.T) {
+	f := &fakeClient{}
+	m := newTestModel(f)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues(), timeout: bdTimeout})
+	f.issues[bd.ViewOpen] = []bd.Issue{{ID: "fresh", Title: "Fresh board", Status: "open"}}
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, err: errors.New("boom"), timeout: bdTimeout})
+	if m.reloadAttempts != 1 {
+		t.Fatalf("reloadAttempts = %d, want 1", m.reloadAttempts)
+	}
+	updated, cmd := m.Update(boardRetryMsg{})
+	m = updated.(Model)
+	if !m.loading || cmd == nil {
+		t.Fatalf("retry did not restart the load: loading=%v cmd=%v", m.loading, cmd)
+	}
+	m = runCmd(t, m, cmd)
+	if m.loading || m.reloadAttempts != 0 || m.reloadNotice != "" || m.boardErr != "" {
+		t.Fatalf("retry left failure state: loading=%v attempts=%d notice=%q err=%q", m.loading, m.reloadAttempts, m.reloadNotice, m.boardErr)
+	}
+	if len(m.rows) != 1 || m.rows[0].ID != "fresh" {
+		t.Fatalf("retry rows = %+v, want fresh board", m.rows)
+	}
+	if !m.boardLoadedAt.After(time.Time{}) {
+		t.Error("retry success did not stamp boardLoadedAt")
+	}
+}
+
+func TestDetailCacheHitRendersWithoutBdCall(t *testing.T) {
+	f := &fakeClient{issueByID: map[string]*bd.Issue{
+		"fm-aaa": testDetailOf("fm-aaa"),
+		"fm-bbb": testDetailOf("fm-bbb"),
+		"fm-ccc": testDetailOf("fm-ccc"),
+	}}
+	m := drive(t, f) // row 0 detail fetched, cached, neighbours prefetched
+	calls := f.showCalls
+	if calls == 0 {
+		t.Fatal("drive did not fetch any detail")
+	}
+	updated, _ := m.Update(teaKeyMsg("j"))
+	m = updated.(Model)
+	if f.showCalls != calls {
+		t.Fatalf("cached selection change made %d new bd calls", f.showCalls-calls)
+	}
+	if m.detail == nil || m.detail.ID != "fm-bbb" {
+		t.Fatalf("cached detail not installed: %+v", m.detail)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Needs the alpha milestone") {
+		t.Errorf("cached detail not rendered instantly:\n%s", view)
+	}
+	// The debounced background refresh marks itself, then lands.
+	updated, cmd := m.Update(detailDebounceMsg{seq: m.detailDebounceSeq})
+	m = updated.(Model)
+	if !m.detailRefreshing {
+		t.Fatal("cache hit did not schedule a background refresh")
+	}
+	if !strings.Contains(stripANSI(m.View()), "refreshing") {
+		t.Errorf("refreshing marker missing while refresh runs:\n%s", stripANSI(m.View()))
+	}
+	m = runCmd(t, m, cmd)
+	if m.detailRefreshing {
+		t.Error("refreshing marker stuck after refresh landed")
+	}
+	if f.showCalls != calls+1 {
+		t.Fatalf("background refresh made %d show calls, want 1", f.showCalls-calls)
+	}
+}
+
+func TestDebounceCoalescesRapidMoves(t *testing.T) {
+	f := &fakeClient{issueByID: map[string]*bd.Issue{
+		"fm-aaa": testDetailOf("fm-aaa"),
+		"fm-bbb": testDetailOf("fm-bbb"),
+		"fm-ccc": testDetailOf("fm-ccc"),
+	}}
+	m := newTestModel(f)
+	m.treeMode = false
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues()})
+	updated, firstCmd := m.Update(teaKeyMsg("j")) // row 1, superseded
+	m = updated.(Model)
+	updated, secondCmd := m.Update(teaKeyMsg("j")) // row 2, final
+	m = updated.(Model)
+	m = runCmd(t, m, firstCmd) // the abandoned tick fires late
+	if f.showCalls != 0 {
+		t.Fatalf("superseded debounce tick fetched detail: %v", f.showLog)
+	}
+	m = runCmd(t, m, secondCmd)
+	if len(f.showLog) == 0 || f.showLog[0] != "fm-ccc" {
+		t.Fatalf("first detail fetch after coalescing = %v, want fm-ccc first", f.showLog)
+	}
+	// One fetch for the final selection, the rest are neighbour prefetches.
+	if f.showCalls != 3 {
+		t.Fatalf("rapid moves produced %d show calls, want 3 (final + 2 prefetch)", f.showCalls)
+	}
+	if !showLogContains(f, "fm-aaa") || !showLogContains(f, "fm-bbb") {
+		t.Errorf("neighbours not prefetched: %v", f.showLog)
+	}
+	if m.detail == nil || m.detail.ID != "fm-ccc" {
+		t.Fatalf("detail = %+v, want fm-ccc", m.detail)
 	}
 }
 
@@ -395,7 +608,7 @@ func TestUppercaseRResetsWithoutReloadingDefaultBoard(t *testing.T) {
 	updated, cmd := m.Update(teaKeyMsg("R"))
 	m = updated.(Model)
 	if cmd == nil {
-		t.Fatal("reset should request detail for the selected row")
+		t.Fatal("reset should prepare detail for the selected row")
 	}
 	if f.listCalls != 0 {
 		t.Fatalf("reset on the default board reloaded bd %d times", f.listCalls)
@@ -406,22 +619,36 @@ func TestUppercaseRResetsWithoutReloadingDefaultBoard(t *testing.T) {
 	if len(m.rows) != len(m.allRows) {
 		t.Fatalf("reset rows = %d, want %d", len(m.rows), len(m.allRows))
 	}
-	if cmd == nil || m.detailPendingID != m.selectedID() {
-		t.Fatalf("reset did not request selected detail: cmd=%v pending=%q selected=%q", cmd != nil, m.detailPendingID, m.selectedID())
+	// The detail request for the selected row is debounced, not started yet.
+	m = runCmd(t, m, cmd)
+	if f.listCalls != 0 {
+		t.Fatalf("reset's debounced detail reloaded the board %d times", f.listCalls)
+	}
+	if !showLogContains(f, m.selectedID()) {
+		t.Fatalf("reset did not request selected detail: shown=%v selected=%q", f.showLog, m.selectedID())
 	}
 }
 
 func TestUppercaseRPreservesPendingDetailRequest(t *testing.T) {
-	m := newTestModel(&fakeClient{issue: testDetailOf("b")})
+	f := &fakeClient{issueByID: map[string]*bd.Issue{
+		"a": testDetailOf("a"),
+		"b": testDetailOf("b"),
+	}}
+	m := newTestModel(f)
 	m.treeMode = false
 	m.allRows = []bd.Issue{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}}
 	m.rows = append([]bd.Issue(nil), m.allRows...)
 	m.detail = &bd.Issue{ID: "a"}
 
-	updated, pendingCmd := m.Update(teaKeyMsg("j"))
+	updated, tickCmd := m.Update(teaKeyMsg("j"))
 	m = updated.(Model)
-	if pendingCmd == nil || m.detailPendingID != "b" {
-		t.Fatalf("selection did not start pending detail: cmd=%v pending=%q", pendingCmd != nil, m.detailPendingID)
+	if tickCmd == nil {
+		t.Fatal("selection did not schedule a debounced detail load")
+	}
+	updated, fetchCmd := m.Update(tickCmd())
+	m = updated.(Model)
+	if fetchCmd == nil || m.detailPendingID != "b" {
+		t.Fatalf("selection did not start pending detail: cmd=%v pending=%q", fetchCmd != nil, m.detailPendingID)
 	}
 	pendingGeneration := m.detailGen
 
@@ -434,14 +661,18 @@ func TestUppercaseRPreservesPendingDetailRequest(t *testing.T) {
 		t.Fatalf("reset stranded pending detail: generation=%d pending=%q checking=%v", m.detailGen, m.detailPendingID, m.checking)
 	}
 
-	m = applyMsg(t, m, pendingCmd())
+	m = runCmd(t, m, fetchCmd)
 	if m.detail == nil || m.detail.ID != "b" || m.detailPendingID != "" || m.checking {
 		t.Fatalf("pending detail did not apply after reset: detail=%+v pending=%q checking=%v", m.detail, m.detailPendingID, m.checking)
 	}
 }
 
 func TestGraphCompletionDoesNotReplacePendingDetail(t *testing.T) {
-	m := newTestModel(nil)
+	f := &fakeClient{issueByID: map[string]*bd.Issue{
+		"a": testDetailOf("a"),
+		"b": testDetailOf("b"),
+	}}
+	m := newTestModel(f)
 	m.treeMode = false
 	m.allRows = []bd.Issue{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}}
 	m.rows = append([]bd.Issue(nil), m.allRows...)
@@ -449,7 +680,9 @@ func TestGraphCompletionDoesNotReplacePendingDetail(t *testing.T) {
 	m.down = []bd.DepRecord{{ID: "old-down"}}
 	m.up = []bd.DepRecord{{ID: "old-up"}}
 
-	updated, detailCmd := m.Update(teaKeyMsg("j"))
+	updated, tickCmd := m.Update(teaKeyMsg("j"))
+	m = updated.(Model)
+	updated, detailCmd := m.Update(tickCmd())
 	m = updated.(Model)
 	if detailCmd == nil || m.detailPendingID != "b" {
 		t.Fatalf("selection did not start the b detail request: cmd=%v pending=%q", detailCmd != nil, m.detailPendingID)
@@ -918,6 +1151,59 @@ func TestWrapText(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestRuneBurstMovesSelectionPerRune(t *testing.T) {
+	f := &fakeClient{issueByID: map[string]*bd.Issue{
+		"fm-aaa": testDetailOf("fm-aaa"),
+		"fm-bbb": testDetailOf("fm-bbb"),
+		"fm-ccc": testDetailOf("fm-ccc"),
+	}}
+	m := newTestModel(f)
+	m.treeMode = false
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: testIssues()})
+	burst := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("jjj")}
+	updated, _ := m.Update(burst)
+	m = updated.(Model)
+	if m.selected != 3-1 {
+		t.Fatalf("burst of three j moved selection to %d, want 2", m.selected)
+	}
+	if m.rows[m.selected].ID != "fm-ccc" {
+		t.Fatalf("burst landed on %q, want fm-ccc", m.rows[m.selected].ID)
+	}
+}
+
+func TestDetailRefreshFailureKeepsShownDetail(t *testing.T) {
+	f := &fakeClient{issueByID: map[string]*bd.Issue{
+		"fm-aaa": testDetailOf("fm-aaa"),
+		"fm-bbb": testDetailOf("fm-bbb"),
+		"fm-ccc": testDetailOf("fm-ccc"),
+	}}
+	m := drive(t, f) // detail for fm-aaa fetched, cached and shown
+	updated, cmd := m.Update(detailDebounceMsg{seq: m.detailDebounceSeq})
+	m = updated.(Model)
+	if !m.detailRefreshing {
+		t.Fatal("refresh did not start")
+	}
+	m = applyMsg(t, m, detailMsg{
+		id:         "fm-aaa",
+		generation: m.detailGen,
+		err:        errors.New("bd show fm-aaa --json: context deadline exceeded"),
+	})
+	if m.detail == nil || m.detail.ID != "fm-aaa" {
+		t.Fatalf("failed refresh wiped the shown detail: %+v", m.detail)
+	}
+	if m.detailRefreshing || m.detailPendingID != "" {
+		t.Fatalf("refresh state not cleared: refreshing=%v pending=%q", m.detailRefreshing, m.detailPendingID)
+	}
+	if m.detailErr == "" {
+		t.Fatal("refresh error was not surfaced")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Alpha task") || strings.Contains(view, "Could not load detail") {
+		t.Errorf("detail pane missing kept content or showed error screen:\n%s", view)
+	}
+	_ = cmd
 }
 
 func TestStarExpandsAllFolds(t *testing.T) {
