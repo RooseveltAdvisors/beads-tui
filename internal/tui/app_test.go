@@ -147,7 +147,7 @@ func newTestModel(f *fakeClient) Model {
 		f.issue = testDetail()
 	}
 	m := New(f)
-	m.width, m.height = 100, 30
+	m.width, m.height = 160, 40
 	return m
 }
 
@@ -245,8 +245,8 @@ func TestBoardLoadAndRender(t *testing.T) {
 			t.Errorf("view missing %q", want)
 		}
 	}
-	if got := len(strings.Split(m.View(), "\n")); got != 30 {
-		t.Errorf("view height = %d lines, want 30", got)
+	if got := len(strings.Split(m.View(), "\n")); got != 40 {
+		t.Errorf("view height = %d lines, want 40", got)
 	}
 }
 
@@ -566,7 +566,7 @@ func TestHalfPageScrollingInListAndDetail(t *testing.T) {
 	}
 
 	long := testDetailOf(issues[0].ID)
-	long.Description = strings.Repeat("word ", 300)
+	long.Description = strings.Repeat("word ", 600)
 	m = applyMsg(t, m, detailMsg{id: issues[0].ID, generation: m.detailGen, issue: long, err: nil})
 	m = sendKey(t, m, "enter")
 	m = sendKey(t, m, "ctrl+d")
