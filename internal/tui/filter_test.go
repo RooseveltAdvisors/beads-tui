@@ -315,11 +315,11 @@ func TestClosedNativeStatusIsFaint(t *testing.T) {
 	if !vocab.statusStyle("closed").GetFaint() {
 		t.Fatal("closed native status style is not faint")
 	}
-	if got := vocab.statusStyle("blocked").GetForeground(); got != lipgloss.Color("196") {
-		t.Fatalf("blocked native status color = %v, want red 196", got)
+	if got := vocab.statusStyle("blocked").GetForeground(); got != lipgloss.Color(statusBlocked) {
+		t.Fatalf("blocked native status color = %v, want magenta %s", got, statusBlocked)
 	}
-	if got := vocab.statusStyle("in_progress").GetForeground(); got != lipgloss.Color("39") {
-		t.Fatalf("in_progress native status color = %v, want vibrant 39", got)
+	if got := vocab.statusStyle("in_progress").GetForeground(); got != lipgloss.Color(statusInProgress) {
+		t.Fatalf("in_progress native status color = %v, want cyan %s", got, statusInProgress)
 	}
 	if vocab.statusStyle("open").GetFaint() {
 		t.Fatal("open native status style is unexpectedly faint")

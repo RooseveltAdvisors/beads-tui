@@ -55,6 +55,8 @@ The TUI is keyboard-driven:
   active search first, then returns from the detail pane when pressed again
 - `1`-`9` switch native and custom status tabs, `R` resets view/sort/search,
   `?` shows help, and `q` (or `ctrl+c`) quits
+- `V` cycles the pane layout: side-by-side, stacked (list above detail), or
+  auto; the choice persists across restarts
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
 - `/` opens the incremental search prompt. Search by bead id, title, or
@@ -64,13 +66,49 @@ The TUI is keyboard-driven:
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);
   `enter` copies through `clipboard-copy` or OSC52.
 
+## Layout
+
+Like gh-dash, beads-tui adapts the split to the terminal. On wide terminals
+(140 columns or more) the list and detail panes sit side by side and the list
+takes the majority (~60% of the width), so titles and descriptions stay
+readable. Below 140 columns the layout stacks: the full-width list on top
+(~60% of the height) with the detail pane below. `V` cycles
+side-by-side -> stacked -> auto manually, and the choice is saved with the
+rest of the session state.
+
+## Color legend
+
+Colors live in one palette and each family owns disjoint ANSI codes, so a
+color never carries two meanings:
+
+- Priority (the `P0`-`P4` glyph only) runs a red -> orange -> yellow -> blue ->
+  gray ramp:
+
+  | P0 | P1 | P2 | P3 | P4 |
+  |----|----|----|----|----|
+  | red | orange | yellow | blue | gray |
+
+- Status (the glyph, detail pill, and tabs only) uses a separate family:
+
+  | open | in_progress | blocked | deferred | closed | hold | hooked |
+  |------|-------------|---------|----------|--------|------|--------|
+  | green | cyan | magenta | purple | dim | pink | teal |
+
+- Errors and dependency cycles keep bold red but always carry their own glyph
+  (`✗` for load errors, `⚠` for cycles), so red next to a `P0` is the only
+  place priority red appears.
+
+Custom statuses inherit their category's color (`bd statuses --json`). The
+`?` help screen renders the same legend live.
+
 Each list row carries its bd status as a glyph (never the word `open`),
-priority (`P0`-`P4`), id, title, and subdued dim-gray labels, plus
-`⇣N blocked-by`/`⇡N blocks` dependency chips. Deferred rows include their `defer_until` date.
-In-progress rows include the owner beside their glyph when available, and the status is vibrant. Blocked status is red, closed is dim,
-and deferred is orange. Priority colors are red, orange, yellow, and cyan for
-P0 through P3. View, search, sort, and the tree fold state persist under the
-user's config directory.
+priority (`P0`-`P4`), id, and title, plus at most two subdued dim labels
+inline (`[tag] [tag] +N` marks overflow); the full label set appears in the
+detail pane. Rows also carry `⇣N blocked-by`/`⇡N blocks` dependency chips and
+deferred rows include their `defer_until` date.
+In-progress rows include the owner beside their glyph when available, and the
+status is vibrant. View, search, sort, layout, and the tree fold state persist
+under the user's config directory.
 The footer reports the number of graph edges loaded, so dependency counts are
 observable rather than inferred from the list response.
 At normal terminal widths, the
