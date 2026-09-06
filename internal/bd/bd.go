@@ -176,6 +176,12 @@ func (c *Client) jsonCall(ctx context.Context, out any, args ...string) error {
 	stdout, stderr, err := c.run(ctx, path, args...)
 	cmdDesc := "bd " + strings.Join(args, " ")
 	if err != nil {
+		// A context deadline kills the child with SIGKILL, which Go reports
+		// as the bare, uninformative "signal: killed". Under a loaded fleet
+		// store that is the common case, so name it plainly.
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
+		}
 		return fmt.Errorf("%s: %s", cmdDesc, c.hint(stderr, err))
 	}
 	if err := json.Unmarshal([]byte(stdout), out); err != nil {

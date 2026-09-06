@@ -230,27 +230,35 @@ func (v Vocab) StatusPillIssue(issue bd.Issue) string {
 
 // ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
-	return v.renderRow(issue, "", "", width, selected)
+	return v.renderRow(issue, "", "", "", width, selected)
 }
 
-// TreeRow renders one dependency-tree row, including its branch connector
-// and expand/collapse marker.
+// TreeRow renders one dependency-tree row, including its branch connector,
+// expand/collapse marker, and depth-cap marker.
 func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
-	return v.treeRow(row, width, selected)
-}
-
-func (v Vocab) treeRow(row TreeRow, width int, selected bool) string {
-	marker := "  "
-	if row.HasChildren {
-		marker = "▾ "
-		if !row.Expanded {
-			marker = "▸ "
-		}
+	deeper := ""
+	if row.Deeper > 0 {
+		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
 	}
-	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
+	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected)
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected bool) string {
+// treeMarker picks the expand/collapse glyph. A row carrying hidden deeper
+// levels is not foldable, so it shows a continuation marker instead.
+func (v Vocab) treeMarker(row TreeRow) string {
+	if row.Deeper > 0 {
+		return "⋯ "
+	}
+	if !row.HasChildren {
+		return "  "
+	}
+	if row.Expanded {
+		return "▾ "
+	}
+	return "▸ "
+}
+
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool) string {
 	usable := width
 	if selected {
 		usable -= 2
@@ -275,6 +283,13 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	}
 	if width >= 48 && counts != "" {
 		counts = dependencyChips(issue)
+	}
+	// The depth-cap marker rides in the right-hand metadata slot.
+	if suffix != "" {
+		if counts != "" {
+			counts += "  "
+		}
+		counts += suffix
 	}
 	reservedCounts := 0
 	compactCountReserve := 0
@@ -520,10 +535,10 @@ func formatPriority(p int) string {
 // BuildDetail renders the detail pane for a bead as wrapped, optionally
 // truncated lines. Every line fits `width` cells.
 func BuildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int) []string {
-	return buildDetail(v, d, down, up, width, nil)
+	return buildDetail(v, d, down, up, nil, nil, width, nil)
 }
 
-func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markdown *markdownRenderer) []string {
+func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children []bd.Issue, width int, markdown *markdownRenderer) []string {
 	if d == nil {
 		return []string{styleDim.Render("No selection.")}
 	}
@@ -540,6 +555,13 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 	lines = append(lines, styleDim.Render("Assignee: "+orDash(d.Assignee)))
 	if len(d.Labels) > 0 {
 		lines = append(lines, styleDim.Render("Labels: "+strings.Join(d.Labels, ", ")))
+	}
+	if len(chain) > 0 {
+		parts := make([]string, 0, len(chain))
+		for _, ancestor := range chain {
+			parts = append(parts, ancestor.ID)
+		}
+		lines = append(lines, styleDim.Render(truncate("Path: "+strings.Join(parts, " › "), width)))
 	}
 	if d.CreatedAt != "" {
 		lines = append(lines, styleDim.Render("Created: "+d.CreatedAt+"   Updated: "+orDash(d.UpdatedAt)))
@@ -575,6 +597,18 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 			lines = append(lines, depLine(v, dep, width, "↳ "))
 		}
 		lines = append(lines, "")
+	}
+	if len(children) > 0 {
+		lines = append(lines, styleSection.Render("Children ("+itoa(len(children))+")"))
+		for _, child := range children {
+			lines = append(lines, depLine(v, bd.DepRecord{
+				ID:        child.ID,
+				Title:     child.Title,
+				Status:    child.Status,
+				Priority:  child.Priority,
+				IssueType: child.IssueType,
+			}, width, "↳ "))
+		}
 	}
 	if len(up) > 0 {
 		lines = append(lines, styleSection.Render("Dependents ("+itoa(len(up))+") · blocks"))

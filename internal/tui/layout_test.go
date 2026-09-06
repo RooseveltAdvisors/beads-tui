@@ -194,7 +194,7 @@ func TestDetailShowsFullLabelSet(t *testing.T) {
 	vocab := NewVocab(nil)
 	detail := testDetail()
 	detail.Labels = []string{"alpha", "beta", "gamma", "delta"}
-	lines := strings.Join(buildDetail(vocab, detail, nil, nil, 80, nil), "\n")
+	lines := strings.Join(buildDetail(vocab, detail, nil, nil, nil, nil, 80, nil), "\n")
 	plain := stripANSI(lines)
 	if !strings.Contains(plain, "Labels: alpha, beta, gamma, delta") {
 		t.Fatalf("detail missing full label set: %q", plain)

@@ -299,11 +299,22 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 		t.Fatalf("after collapse rows=%d expanded=%v", len(m.rows), m.expanded)
 	}
 	m = sendKey(t, m, "l")
-	if m.focus != FocusDetail || len(m.rows) != 1 || m.expanded["root"] {
-		t.Fatalf("l should focus detail without expanding: focus=%v rows=%d expanded=%v", m.focus, len(m.rows), m.expanded)
+	if m.focus == FocusDetail || len(m.rows) != 2 || !m.expanded["root"] {
+		t.Fatalf("l should unfold a folded node: focus=%v rows=%d expanded=%v", m.focus, len(m.rows), m.expanded)
+	}
+	m = sendKey(t, m, "h")
+	if len(m.rows) != 1 || m.expanded["root"] {
+		t.Fatalf("h should refold: rows=%d expanded=%v", len(m.rows), m.expanded)
+	}
+	m = sendKey(t, m, "L")
+	if m.focus != FocusDetail || len(m.rows) != 1 {
+		t.Fatalf("L should focus detail without expanding: focus=%v rows=%d", m.focus, len(m.rows))
 	}
 	m = sendKey(t, m, "esc")
-	m = sendKey(t, m, "enter")
+	m = sendKey(t, m, "l")
+	if m.focus == FocusDetail || len(m.rows) != 2 {
+		t.Fatalf("l should unfold again: focus=%v rows=%d", m.focus, len(m.rows))
+	}
 	plain := stripANSI(m.View())
 	if !strings.Contains(plain, "└──") {
 		t.Errorf("tree view missing connector:\n%s", plain)
@@ -831,7 +842,7 @@ func TestHelpToggle(t *testing.T) {
 		t.Fatal("? should open help")
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"1 open", "2 in_progress", "3 blocked", "4 closed", "5 deferred", "ctrl-u/d", "h/l", "Read-only", "⇣", "⇡"} {
+	for _, want := range []string{"1 open", "2 in_progress", "3 blocked", "4 closed", "5 deferred", "ctrl-u/d", "h collapse", "l unfold", "expand all", "Read-only", "⇣", "⇡"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help missing %q", want)
 		}
@@ -906,5 +917,114 @@ func TestWrapText(t *testing.T) {
 				t.Errorf("wrapText produced line wider than %d: %q", tc.width, stripANSI(l))
 			}
 		}
+	}
+}
+
+func TestStarExpandsAllFolds(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root", Status: "open"},
+		{ID: "mid", Status: "open", ParentID: "root"},
+		{ID: "leaf", Status: "open", ParentID: "mid"},
+	}
+	m := newTestModel(nil)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	m = sendKey(t, m, "h") // fold root
+	if len(m.rows) != 1 {
+		t.Fatalf("root should fold: rows=%d", len(m.rows))
+	}
+	m = sendKey(t, m, "*")
+	if len(m.rows) != 3 {
+		t.Fatalf("star should expand all: rows=%d expanded=%v", len(m.rows), m.expanded)
+	}
+	for _, id := range []string{"root", "mid", "leaf"} {
+		if !m.expanded[id] {
+			t.Errorf("expanded[%s] = false, want true", id)
+		}
+	}
+}
+
+func TestSavedStatePersistsFolds(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	issues := []bd.Issue{
+		{ID: "root", Status: "open"},
+		{ID: "child", Status: "open", ParentID: "root"},
+	}
+	m := newTestModel(nil)
+	m = applyMsg(t, m, boardMsg{view: bd.ViewOpen, generation: m.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	m = sendKey(t, m, "h")
+	m.saveState()
+	reloaded := newTestModel(nil)
+	if reloaded.expanded["root"] {
+		t.Fatalf("folded root should persist: expanded=%v", reloaded.expanded)
+	}
+	reloaded = applyMsg(t, reloaded, boardMsg{view: bd.ViewOpen, generation: reloaded.boardGen, issues: issues, deps: map[string][]bd.DepRecord{}})
+	if len(reloaded.rows) != 1 || reloaded.rows[0].ID != "root" {
+		t.Fatalf("reloaded board should honor the saved fold: rows=%v", reloaded.rows)
+	}
+}
+
+func TestDetailShowsParentBreadcrumbAndChildren(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "gp", Title: "Grandparent", Status: "open"},
+		{ID: "p", Title: "Parent", Status: "in_progress", ParentID: "gp"},
+		{ID: "me", Title: "Me", Status: "open", ParentID: "p"},
+		{ID: "kid1", Title: "Kid one", Status: "open", ParentID: "me"},
+		{ID: "kid2", Title: "Kid two", Status: "closed", ParentID: "me"},
+	}
+	m := newTestModel(nil)
+	m.allRows = issues
+	me := issues[2]
+	m.detail = &me
+	m.down, m.up = nil, nil
+	view := stripANSI(strings.Join(m.buildDetail(60), "\n"))
+	if !strings.Contains(view, "Path: gp › p") {
+		t.Errorf("detail missing parent breadcrumb:\n%s", view)
+	}
+	if !strings.Contains(view, "Children (2)") {
+		t.Errorf("detail missing children section:\n%s", view)
+	}
+	for _, want := range []string{"kid1", "Kid one", "kid2", "Kid two"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("detail children missing %q:\n%s", want, view)
+		}
+	}
+	// Child rows render the live status glyph from the vocabulary.
+	if !strings.Contains(view, m.vocab.Icon("closed")) {
+		t.Errorf("children rows missing status glyphs:\n%s", view)
+	}
+}
+
+func TestDetailHierarchyDerivedWithoutExtraCalls(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root", Status: "open"},
+		{ID: "child", Status: "open", ParentID: "root"},
+	}
+	f := &fakeClient{issue: testDetail()}
+	m := newTestModel(f)
+	m.allRows = issues
+	child := issues[1]
+	m.detail = &child
+	m.buildDetail(60)
+	if f.listCalls != 0 || f.showCalls != 0 || f.depCalls != 0 {
+		t.Fatalf("hierarchy must come from loaded rows: list=%d show=%d dep=%d", f.listCalls, f.showCalls, f.depCalls)
+	}
+}
+
+func TestFilterKeepsAncestorsVisible(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root", Title: "Root task", Status: "open"},
+		{ID: "mid", Title: "Middle", Status: "open", ParentID: "root"},
+		{ID: "hit", Title: "findme needle", Status: "open", ParentID: "mid"},
+	}
+	m := newTestModel(nil)
+	m.allRows = issues
+	m.filter = ParseFilter("needle")
+	m.projectRows("")
+	got := make([]string, 0, len(m.rows))
+	for _, row := range m.rows {
+		got = append(got, row.ID)
+	}
+	if strings.Join(got, ",") != "root,mid,hit" {
+		t.Fatalf("filtered tree rows = %v, want ancestors kept", got)
 	}
 }

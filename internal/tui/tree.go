@@ -15,13 +15,20 @@ type TreeNode struct {
 	Children []*TreeNode
 }
 
+// maxTreeDepth is the number of hierarchy levels the board renders. Deeper
+// descendants collapse into the last visible level with a "+N deeper" marker
+// so a deep parent-child chain cannot push the board into unbounded indenting.
+const maxTreeDepth = 5
+
 // TreeRow is one visible row in a dependency tree. Prefix contains the
-// box-drawing branch and ancestor continuation lines.
+// box-drawing branch and ancestor continuation lines. Deeper counts the
+// descendants hidden by the depth cap on the last visible level.
 type TreeRow struct {
 	Issue       bd.Issue
 	Prefix      string
 	HasChildren bool
 	Expanded    bool
+	Deeper      int
 }
 
 // BuildDependencyTree builds a deterministic forest from the issues and
@@ -147,11 +154,12 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 		children    []*visibleNode
 		hasChildren bool
 		expanded    bool
+		deeper      int
 	}
 
 	emitted := make(map[string]bool)
-	var project func(*TreeNode, map[string]bool) *visibleNode
-	project = func(node *TreeNode, path map[string]bool) *visibleNode {
+	var project func(*TreeNode, int, map[string]bool) *visibleNode
+	project = func(node *TreeNode, depth int, path map[string]bool) *visibleNode {
 		if node == nil || path[node.Issue.ID] || emitted[node.Issue.ID] {
 			return nil
 		}
@@ -167,6 +175,12 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 			}
 		}
 		visible := &visibleNode{node: node, hasChildren: len(visibleChildren) > 0, expanded: isExpanded}
+		// The last visible level collapses everything below it into a count.
+		if depth >= maxTreeDepth-1 {
+			visible.hasChildren = false
+			visible.deeper = countDeeperDescendants(node, emitted)
+			return visible
+		}
 		if !isExpanded {
 			return visible
 		}
@@ -176,7 +190,7 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 		}
 		nextPath[node.Issue.ID] = true
 		for _, child := range visibleChildren {
-			if projected := project(child, nextPath); projected != nil {
+			if projected := project(child, depth+1, nextPath); projected != nil {
 				visible.children = append(visible.children, projected)
 			}
 		}
@@ -184,7 +198,7 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 	}
 	visibleRoots := make([]*visibleNode, 0, len(roots))
 	for _, root := range roots {
-		if projected := project(root, nil); projected != nil {
+		if projected := project(root, 0, nil); projected != nil {
 			visibleRoots = append(visibleRoots, projected)
 		}
 	}
@@ -205,6 +219,7 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 			Prefix:      prefix,
 			HasChildren: visible.hasChildren,
 			Expanded:    visible.expanded,
+			Deeper:      visible.deeper,
 		})
 		for i, child := range visible.children {
 			childPrefix := ancestorPrefix
@@ -222,4 +237,29 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 		walk(root, "", nil, i == len(visibleRoots)-1)
 	}
 	return rows
+}
+
+// countDeeperDescendants counts the node's unique descendants that have not
+// been emitted elsewhere, guarding against cycles. The node itself is excluded.
+func countDeeperDescendants(node *TreeNode, emitted map[string]bool) int {
+	count := 0
+	path := map[string]bool{node.Issue.ID: true}
+	var visit func(*TreeNode)
+	visit = func(n *TreeNode) {
+		for _, child := range n.Children {
+			if child == nil {
+				continue
+			}
+			id := child.Issue.ID
+			if id == "" || path[id] || emitted[id] {
+				continue
+			}
+			path[id] = true
+			count++
+			visit(child)
+			delete(path, id)
+		}
+	}
+	visit(node)
+	return count
 }

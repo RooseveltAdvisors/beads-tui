@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -144,4 +145,58 @@ func treeIDs(nodes []*TreeNode) []string {
 		ids[i] = node.Issue.ID
 	}
 	return ids
+}
+
+func TestFlattenDependencyTreeCapsDepthWithDeeperMarker(t *testing.T) {
+	issues := make([]bd.Issue, 8)
+	for i := range issues {
+		issues[i] = bd.Issue{ID: fmt.Sprintf("lvl%d", i), Title: "Level", Status: "open"}
+		if i > 0 {
+			issues[i].ParentID = fmt.Sprintf("lvl%d", i-1)
+		}
+	}
+	roots := BuildDependencyTree(issues, nil)
+	rows := FlattenDependencyTree(roots, map[string]bool{})
+	if len(rows) != maxTreeDepth {
+		t.Fatalf("rows = %d, want depth cap %d", len(rows), maxTreeDepth)
+	}
+	last := rows[len(rows)-1]
+	if last.Issue.ID != "lvl4" {
+		t.Fatalf("last row = %s, want lvl4", last.Issue.ID)
+	}
+	if last.Deeper != 3 {
+		t.Errorf("deeper = %d, want 3 hidden descendants", last.Deeper)
+	}
+	if last.HasChildren || !last.Expanded {
+		t.Errorf("capped row should not advertise folding: %+v", last)
+	}
+	rendered := stripANSI(NewVocab(nil).TreeRow(last, 80, false))
+	if !strings.Contains(rendered, "+3 deeper") {
+		t.Errorf("rendered row missing depth marker: %s", rendered)
+	}
+	if strings.Contains(rendered, "lvl5") {
+		t.Errorf("capped row leaked deeper level: %s", rendered)
+	}
+}
+
+func TestFlattenDependencyTreeCapRespectsSharedNodes(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "root"},
+		{ID: "c1", ParentID: "root"},
+		{ID: "c2", ParentID: "c1"},
+		{ID: "c3", ParentID: "c2"},
+		{ID: "c4", ParentID: "c3"},
+		{ID: "c5", ParentID: "c4"},
+	}
+	rows := FlattenDependencyTree(BuildDependencyTree(issues, nil), map[string]bool{"c1": false})
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want folded root and child", len(rows))
+	}
+	if rows[1].Deeper != 0 {
+		t.Errorf("folded node should not carry a deeper count: %+v", rows[1])
+	}
+	rows = FlattenDependencyTree(BuildDependencyTree(issues, nil), map[string]bool{})
+	if rows[len(rows)-1].Deeper != 1 {
+		t.Errorf("deeper = %d, want 1 (c5 under cap)", rows[len(rows)-1].Deeper)
+	}
 }
