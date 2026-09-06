@@ -23,7 +23,10 @@ Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bead
 tmux session against a real `.beads` workspace, and fails on SIGKILL, an empty
 Ready board, or a missing workspace that renders blank instead of a loud error.
 Defaults to `/opt/ra/firstmate/.beads`; override with `BEADS_VERIFY_BEADS_DIR`
-to point at any real embedded-Dolt `.beads` fixture. It is deliberately not in
+to point at any real embedded-Dolt `.beads` fixture. The gate TUI runs with a
+temporary `BEADS_TUI_CONFIG_DIR` and expects the newest open root bead (the
+deterministic first row under the default sort), so a shared user state.json
+cannot flip the expectation. It is deliberately not in
 GitHub CI - runners have no `bd` and no fleet workspace. `scripts/dev-local.sh`
 (skill: `/dev-local`) is the same launch path for interactive use.
 

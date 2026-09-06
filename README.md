@@ -47,14 +47,17 @@ The TUI is keyboard-driven:
   When the focused bead has dependency edges, `G` instead opens its two-hop
   ASCII dependency graph; cycles are called out in the graph header.
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
-- The default board is an indented dependency tree: `enter`/`tab` toggles a
-  parent subtree, `enter` opens a leaf's detail, `h` collapses, and `v` toggles
-  the flat list
+- The default board is an indented hierarchy tree: `enter`/`tab` toggles a
+  subtree, `h` (or `←`) collapses it, `l` (or `→`) unfolds a folded node or
+  opens the detail pane, `*` expands every fold, and `v` toggles the flat list
+- `L` always focuses the detail pane
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
 - `1`-`9` switch native and custom status tabs, `r` reloads the board keeping
   the current view/sort/search, `R` resets view/sort/search, `?` shows help, and
   `q` (or `ctrl+c`) quits
+- `V` cycles the pane layout: side-by-side, stacked (list above detail), or
+  auto; the choice persists across restarts
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
 - `/` opens the incremental search prompt. Search by bead id, title, or
@@ -64,20 +67,78 @@ The TUI is keyboard-driven:
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);
   `enter` copies through `clipboard-copy` or OSC52.
 
+## Layout
+
+Like gh-dash, beads-tui adapts the split to the terminal. On wide terminals
+(140 columns or more) the list and detail panes sit side by side and the list
+takes the majority (~60% of the width), so titles and descriptions stay
+readable. Below 140 columns the layout stacks: the full-width list on top
+(~60% of the height) with the detail pane below. `V` cycles
+side-by-side -> stacked -> auto manually, and the choice is saved with the
+rest of the session state.
+
+## Color legend
+
+Colors live in one palette and each family owns disjoint ANSI codes, so a
+color never carries two meanings:
+
+- Priority (the `P0`-`P4` glyph only) runs a red -> orange -> yellow -> blue ->
+  gray ramp:
+
+  | P0 | P1 | P2 | P3 | P4 |
+  |----|----|----|----|----|
+  | red | orange | yellow | blue | gray |
+
+- Status (the glyph, detail pill, and tabs only) uses a separate family:
+
+  | open | in_progress | blocked | deferred | closed | hold | hooked |
+  |------|-------------|---------|----------|--------|------|--------|
+  | green | cyan | magenta | purple | dim | pink | teal |
+
+- Errors and dependency cycles keep bold red but always carry their own glyph
+  (`✗` for load errors, `⚠` for cycles), so red next to a `P0` is the only
+  place priority red appears.
+
+Custom statuses inherit their category's color (`bd statuses --json`). The
+`?` help screen renders the same legend live.
+
 Each list row carries its bd status as a glyph (never the word `open`),
-priority (`P0`-`P4`), id, title, and subdued dim-gray labels, plus
-`⇣N blocked-by`/`⇡N blocks` dependency chips. Deferred rows include their `defer_until` date.
-In-progress rows include the owner beside their glyph when available, and the status is vibrant. Blocked status is red, closed is dim,
-and deferred is orange. Priority colors are red, orange, yellow, and cyan for
-P0 through P3. View, search, and sort persist under the user's config directory.
+priority (`P0`-`P4`), id, and title, plus at most two subdued dim labels
+inline (`[tag] [tag] +N` marks overflow); the full label set appears in the
+detail pane. Rows also carry `⇣N blocked-by`/`⇡N blocks` dependency chips and
+deferred rows include their `defer_until` date.
+In-progress rows include the owner beside their glyph when available, and the
+status is vibrant. View, search, sort, layout, and the tree fold state persist
+under the user's config directory.
 The footer reports the number of graph edges loaded, so dependency counts are
 observable rather than inferred from the list response.
 At normal terminal widths, the
 persistent bottom bar shows the view, sort, active search,
 selection, total count, and scroll position; below 48 columns it compacts to the view, search
 indicator, and scroll position. The detail pane shows the full issue: status
-pill, Markdown-rendered description, notes, and the dependency edges in both
-directions with their edge type (`blocks`, `tracks`, `parent-child`, ...).
+pill, parent-chain breadcrumb (`Path: root › parent`), direct children with
+their status glyphs, Markdown-rendered description, notes, and the dependency
+edges in both directions with their edge type (`blocks`, `tracks`,
+`parent-child`, ...).
+
+## Hierarchy
+
+The board renders beads as a tree. Top-level beads sit at depth 0 and their
+descendants are indented beneath them with `├──`/`└──` guides, up to five
+levels deep. Deeper descendants collapse into the fifth level with a
+`+N deeper` marker on the last visible row, so a deep parent-child chain can
+never push the board into unbounded indenting.
+
+The tree is built entirely from data the board already loads: `parent_id`
+fields from `bd list --json` plus the batched dependency pass that enriches
+the graph view. No extra bd process is spawned per row, and navigation never
+waits on bd.
+
+Sorting and searching apply within sibling groups, so the active sort orders
+children under their parent. Searches and filters keep the parent chain of
+every match visible, so a matching child is always reachable in context.
+Fold state (`h`-collapsed subtrees) is saved with the board state and restored
+on the next launch.
 
 Rows and markers:
 

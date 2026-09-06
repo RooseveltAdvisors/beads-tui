@@ -15,28 +15,53 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// statusColors maps a status category to a terminal color name so custom
-// statuses inherit a sensible color from their category. The vocabulary shape
-// comes from `bd statuses --json collision-free` colors.
+// The semantic palette is defined once, here. Each family owns disjoint ANSI
+// color codes so meaning is never ambiguous:
+//
+//   - Priority P0..P4 use a red -> orange -> yellow -> blue -> gray ramp and
+//     are rendered ONLY for the priority glyph.
+//   - Statuses use a separate green/cyan/magenta/purple/dim family, rendered
+//     ONLY for status glyphs, pills, and tabs.
+//   - Cycle and error markers keep bold red but are always paired with their
+//     own glyphs (⚠ for cycles, ✗ for errors), so red never reads as P0.
+const (
+	priorityP0 = "196" // red
+	priorityP1 = "208" // orange
+	priorityP2 = "220" // yellow
+	priorityP3 = "39"  // blue
+	priorityP4 = "245" // gray
+
+	statusOpen       = "35"  // green
+	statusInProgress = "45"  // cyan
+	statusBlocked    = "201" // magenta
+	statusDeferred   = "141" // purple
+	statusClosed     = "240" // dim
+	statusHold       = "164" // pink
+	statusHooked     = "43"  // teal
+)
+
+// statusColors maps a status category to a terminal color so custom statuses
+// inherit a sensible color from their category. The vocabulary shape comes
+// from `bd statuses --json collision-free` colors.
 var statusColors = map[string]string{
-	"active": "green",
-	"wip":    "yellow",
-	"frozen": "gray",
-	"done":   "blue",
+	"active": statusOpen,
+	"wip":    statusInProgress,
+	"frozen": statusDeferred,
+	"done":   statusClosed,
 }
 
 // statusOverrides overrides colors per status name (blocked must read as
-// urgent, closed as finished, pinned as sticky).
+// stalled, closed as finished, pinned as sticky).
 var statusOverrides = map[string]string{
-	"blocked":     "196",
-	"in_progress": "39",
-	"deferred":    "208",
-	"closed":      "245",
-	"hold":        "magenta",
-	"on_hold":     "magenta",
-	"held":        "magenta",
-	"pinned":      "magenta",
-	"hooked":      "cyan",
+	"blocked":     statusBlocked,
+	"in_progress": statusInProgress,
+	"deferred":    statusDeferred,
+	"closed":      statusClosed,
+	"hold":        statusHold,
+	"on_hold":     statusHold,
+	"held":        statusHold,
+	"pinned":      statusHold,
+	"hooked":      statusHooked,
 }
 
 var workStateIcons = map[string]string{
@@ -59,16 +84,16 @@ var (
 )
 
 func viewStyle(view bd.View) lipgloss.Style {
-	color := "39"
+	color := statusInProgress
 	switch strings.ToLower(string(view)) {
 	case "in_progress":
-		color = "39"
+		color = statusInProgress
 	case "blocked":
-		color = "196"
+		color = statusBlocked
 	case "closed":
-		color = "245"
+		color = statusClosed
 	case "deferred":
-		color = "208"
+		color = statusDeferred
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
@@ -205,27 +230,35 @@ func (v Vocab) StatusPillIssue(issue bd.Issue) string {
 
 // ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
-	return v.renderRow(issue, "", "", width, selected)
+	return v.renderRow(issue, "", "", "", width, selected)
 }
 
-// TreeRow renders one dependency-tree row, including its branch connector
-// and expand/collapse marker.
+// TreeRow renders one dependency-tree row, including its branch connector,
+// expand/collapse marker, and depth-cap marker.
 func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
-	return v.treeRow(row, width, selected)
-}
-
-func (v Vocab) treeRow(row TreeRow, width int, selected bool) string {
-	marker := "  "
-	if row.HasChildren {
-		marker = "▾ "
-		if !row.Expanded {
-			marker = "▸ "
-		}
+	deeper := ""
+	if row.Deeper > 0 {
+		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
 	}
-	return v.renderRow(row.Issue, row.Prefix, marker, width, selected)
+	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected)
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, selected bool) string {
+// treeMarker picks the expand/collapse glyph. A row carrying hidden deeper
+// levels is not foldable, so it shows a continuation marker instead.
+func (v Vocab) treeMarker(row TreeRow) string {
+	if row.Deeper > 0 {
+		return "⋯ "
+	}
+	if !row.HasChildren {
+		return "  "
+	}
+	if row.Expanded {
+		return "▾ "
+	}
+	return "▸ "
+}
+
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool) string {
 	usable := width
 	if selected {
 		usable -= 2
@@ -250,6 +283,13 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker string, width int, s
 	}
 	if width >= 48 && counts != "" {
 		counts = dependencyChips(issue)
+	}
+	// The depth-cap marker rides in the right-hand metadata slot.
+	if suffix != "" {
+		if counts != "" {
+			counts += "  "
+		}
+		counts += suffix
 	}
 	reservedCounts := 0
 	compactCountReserve := 0
@@ -440,15 +480,30 @@ func compactStatusIcon(status string) string {
 	return "•"
 }
 
-// renderTags keeps labels compact and deliberately low-contrast: labels are
-// useful metadata, while status and priority carry the visual meaning.
+// maxInlineTags caps how many labels a board row renders inline; the rest
+// collapse into a "+N" marker and the full set lives in the detail pane.
+const maxInlineTags = 2
+
+// renderTags keeps labels compact and deliberately low-contrast: at most two
+// dim labels render inline after the title, overflow becomes "+N", and the
+// detail pane carries the full set. Labels are metadata; status and priority
+// carry the visual meaning.
 func renderTags(labels []string) string {
 	var tags []string
+	overflow := 0
 	for _, label := range labels {
-		if strings.TrimSpace(label) == "" {
+		label = strings.TrimSpace(label)
+		if label == "" {
 			continue
 		}
-		tags = append(tags, styleDim.Render("["+label+"]"))
+		if len(tags) < maxInlineTags {
+			tags = append(tags, styleDim.Render("["+label+"]"))
+		} else {
+			overflow++
+		}
+	}
+	if overflow > 0 {
+		tags = append(tags, styleDim.Render("+"+itoa(overflow)))
 	}
 	return strings.Join(tags, " ")
 }
@@ -456,17 +511,21 @@ func renderTags(labels []string) string {
 func priorityStyle(p int) lipgloss.Style {
 	switch p {
 	case 0:
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(priorityP0))
 	case 1:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP1))
 	case 2:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP2))
 	case 3:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP3))
 	default:
-		return styleDim
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP4))
 	}
 }
+
+// styleError marks load failures and cycle warnings. It shares P0's red by
+// design but is always paired with a dedicated glyph (✗ or ⚠).
+var styleError = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(priorityP0))
 
 // formatPriority renders the P0-P4 marker with a clear urgency scale.
 func formatPriority(p int) string {
@@ -476,10 +535,10 @@ func formatPriority(p int) string {
 // BuildDetail renders the detail pane for a bead as wrapped, optionally
 // truncated lines. Every line fits `width` cells.
 func BuildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int) []string {
-	return buildDetail(v, d, down, up, width, nil)
+	return buildDetail(v, d, down, up, nil, nil, width, nil)
 }
 
-func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markdown *markdownRenderer) []string {
+func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children []bd.Issue, width int, markdown *markdownRenderer) []string {
 	if d == nil {
 		return []string{styleDim.Render("No selection.")}
 	}
@@ -494,6 +553,16 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 	}
 	lines = append(lines, styleDim.Render(meta))
 	lines = append(lines, styleDim.Render("Assignee: "+orDash(d.Assignee)))
+	if len(d.Labels) > 0 {
+		lines = append(lines, styleDim.Render("Labels: "+strings.Join(d.Labels, ", ")))
+	}
+	if len(chain) > 0 {
+		parts := make([]string, 0, len(chain))
+		for _, ancestor := range chain {
+			parts = append(parts, ancestor.ID)
+		}
+		lines = append(lines, styleDim.Render(truncate("Path: "+strings.Join(parts, " › "), width)))
+	}
 	if d.CreatedAt != "" {
 		lines = append(lines, styleDim.Render("Created: "+d.CreatedAt+"   Updated: "+orDash(d.UpdatedAt)))
 	}
@@ -528,6 +597,18 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int, markd
 			lines = append(lines, depLine(v, dep, width, "↳ "))
 		}
 		lines = append(lines, "")
+	}
+	if len(children) > 0 {
+		lines = append(lines, styleSection.Render("Children ("+itoa(len(children))+")"))
+		for _, child := range children {
+			lines = append(lines, depLine(v, bd.DepRecord{
+				ID:        child.ID,
+				Title:     child.Title,
+				Status:    child.Status,
+				Priority:  child.Priority,
+				IssueType: child.IssueType,
+			}, width, "↳ "))
+		}
 	}
 	if len(up) > 0 {
 		lines = append(lines, styleSection.Render("Dependents ("+itoa(len(up))+") · blocks"))

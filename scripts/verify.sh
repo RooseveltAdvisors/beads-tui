@@ -44,8 +44,8 @@ ready_snapshot() {
 start_tui() {
   local beads_dir=$1 config_dir=$2
   tmux new-session -d -s "$SESSION" -n tui -c "$ROOT"
-  # Hermetic per-run config/state so the operator's persisted view/sort cannot
-  # change which rows the gate expects to see first, and so each phase starts
+  # Hermetic per-run config/state so the operator's persisted view/sort/layout
+  # cannot change which rows the gate expects to see, and so each phase starts
   # without another phase's board snapshot.
   mkdir -p "$config_dir"
   printf -v command 'exec env BEADS_DIR=%q BEADS_TUI_CONFIG_DIR=%q %q' "$beads_dir" "$config_dir" "$TMP_DIR/beads-tui"
@@ -79,9 +79,11 @@ ready_json="$(ready_snapshot)" || die 'bd list --ready failed'
 ready_count="$(jq -e 'if type == "array" then length else error("expected array") end' <<<"$ready_json")" || die 'bd list --ready did not return a JSON array'
 [ "$ready_count" -gt 0 ] || die 'fixture has no ready rows; verification requires a non-empty ready board'
 first_id="$(jq -er '.[0].id' <<<"$ready_json")" || die 'ready JSON has no bead IDs'
-# The gate cannot assume bd's ordering matches the TUI's active sort, so it
-# accepts any ready bead id appearing in the rendered board.
-jq -er '.[].id' <<<"$ready_json" >"$TMP_DIR/ready-ids.txt" || die 'ready JSON has no bead IDs'
+# The TUI renders its own default view/sort over the whole open board, so a
+# specific ready bead is usually below the fold. Instead, require that the
+# painted rows are real beads from this store and include ready work.
+jq -r '.[].id' <<<"$ready_json" | sort -u >"$TMP_DIR/ready_ids.txt"
+[ -s "$TMP_DIR/ready_ids.txt" ] || die 'ready JSON has no bead IDs'
 
 printf 'BEADS_DIR=%s\nready_rows=%s\noperator_mapping=prefix+H\n' "$BEADS_ROOT" "$ready_count" >"$EVIDENCE_DIR/beads-tui-verify.txt"
 start_tui "$BEADS_ROOT" "$TMP_DIR/config-ready"
@@ -91,8 +93,12 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
   pane="$(capture)"
   # A bd child killed by its own timeout logs "signal: killed" to stderr; that
   # is the TUI handling store contention, not a failure. The TUI itself being
-  # SIGKILLed is detected via pane state, and a persistent board-error screen
-  # (past the auto-retry grace) is detected below.
+  # SIGKILLed is detected via pane state. A board-error screen only fails the
+  # gate once it persists past the auto-retry grace; a panic always fails fast.
+  if printf '%s\n' "$pane" | grep -qF 'panic:'; then
+    printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
+    die "real TUI panicked ($(pane_state))"
+  fi
   if printf '%s\n' "$pane" | grep -qF 'Could not load board.'; then
     board_error_streak=$((board_error_streak + 1))
     if [ "$board_error_streak" -ge "$BOARD_ERROR_GRACE_SECONDS" ]; then
@@ -102,7 +108,8 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
   else
     board_error_streak=0
   fi
-  if printf '%s\n' "$pane" | grep -Fqf "$TMP_DIR/ready-ids.txt"; then
+  ready_visible=$(printf '%s\n' "$pane" | grep -oE '[a-z0-9][a-z0-9-]{3,}' | sort -u | comm -12 - "$TMP_DIR/ready_ids.txt" | wc -l)
+  if [ "$ready_visible" -gt 0 ]; then
     loaded=1
     break
   fi
@@ -116,8 +123,9 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
 done
 pane="$(capture)"
 printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
-[ "$loaded" -eq 1 ] || die "Ready board did not render any of $ready_count ready ids within ${WAIT_SECONDS}s"
-printf '✓ real Ready board loaded (%s; first row %s)\n' "$ready_count" "$first_id"
+[ "$loaded" -eq 1 ] || die "board did not render ready beads within ${WAIT_SECONDS}s"
+first_id="$(printf '%s\n' "$pane" | grep -oE '[a-z0-9][a-z0-9-]{3,}' | sort -u | comm -12 - "$TMP_DIR/ready_ids.txt" | head -1)"
+printf '✓ real board loaded (%s ready rows; visible ready bead %s)\n' "$ready_count" "$first_id"
 stop_tui
 
 missing_root="$TMP_DIR/missing-beads"

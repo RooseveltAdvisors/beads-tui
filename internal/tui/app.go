@@ -80,6 +80,23 @@ const (
 	FocusDetail
 )
 
+// LayoutMode selects how the list and detail panes are arranged.
+type LayoutMode string
+
+const (
+	// LayoutAuto picks the arrangement from the terminal width: side-by-side
+	// on wide terminals, stacked below the threshold.
+	LayoutAuto LayoutMode = ""
+	// LayoutSide forces the side-by-side list|detail split.
+	LayoutSide LayoutMode = "side"
+	// LayoutStacked forces the stacked list-over-detail split.
+	LayoutStacked LayoutMode = "stacked"
+)
+
+// wideLayoutColumns is the width at which auto layout switches to a
+// side-by-side split (gh-dash style).
+const wideLayoutColumns = 140
+
 // Backend is the read-only data source the board renders. *bd.Client is the
 // production implementation; tests supply fakes.
 type Backend interface {
@@ -127,18 +144,19 @@ type Model struct {
 	focus    Focus
 	dOffset  int
 
-	detail            *bd.Issue
-	down              []bd.DepRecord
-	up                []bd.DepRecord
-	detailErr         string
-	checking          bool
-	detailGen         uint64
-	detailPendingID   string
-	detailCache       map[string]cachedDetail
-	detailRefreshing  bool
-	detailDebounceSeq uint64
-	detailDebounce    time.Duration
-	graph             bool
+	detail             *bd.Issue
+	down               []bd.DepRecord
+	up                 []bd.DepRecord
+	detailErr          string
+	checking           bool
+	detailGen          uint64
+	detailPendingID    string
+	detailCache        map[string]cachedDetail
+	detailRefreshing   bool
+	detailDebounceSeq  uint64
+	detailDebounce     time.Duration
+	graph              bool
+	layout             LayoutMode
 
 	help         bool
 	helpOffset   int
@@ -259,10 +277,12 @@ type yankMsg struct {
 }
 
 type savedState struct {
-	View     bd.View        `json:"view"`
-	SortMode SortMode       `json:"sort_mode"`
-	Filter   Filter         `json:"filter"`
-	Snapshot *boardSnapshot `json:"board_snapshot,omitempty"`
+	View     bd.View         `json:"view"`
+	SortMode SortMode        `json:"sort_mode"`
+	Filter   Filter          `json:"filter"`
+	Expanded map[string]bool `json:"expanded,omitempty"`
+	Layout   LayoutMode      `json:"layout,omitempty"`
+	Snapshot *boardSnapshot  `json:"board_snapshot,omitempty"`
 }
 
 func statePath() (string, error) {
@@ -298,6 +318,9 @@ func loadState() (savedState, bool) {
 	if state.View == "" {
 		state.View = bd.ViewOpen
 	}
+	if state.Expanded == nil {
+		state.Expanded = map[string]bool{}
+	}
 	if state.Snapshot != nil {
 		state.Snapshot.View = normalizeStateView(state.Snapshot.View)
 		if state.Snapshot.View == "" {
@@ -308,6 +331,11 @@ func loadState() (savedState, bool) {
 	}
 	if state.SortMode > SortDependents {
 		state.SortMode = SortCreated
+	}
+	switch state.Layout {
+	case LayoutSide, LayoutStacked:
+	default:
+		state.Layout = LayoutAuto
 	}
 	if state.Filter.Kind > FilterSearch || len(state.Filter.Query) > 120 {
 		state.Filter = Filter{}
@@ -345,6 +373,8 @@ func (m Model) saveState() {
 		View:     m.view,
 		SortMode: m.sortMode,
 		Filter:   m.filter,
+		Expanded: cloneExpanded(m.expanded),
+		Layout:   m.layout,
 		Snapshot: cloneBoardSnapshot(m.lastSnapshot),
 	}, "", "  ")
 	if err != nil {
@@ -389,6 +419,8 @@ func New(backend Backend) Model {
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
 			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
+			m.expanded = state.Expanded
+			m.layout = state.Layout
 			m.lastSnapshot = cloneBoardSnapshot(state.Snapshot)
 			if m.lastSnapshot != nil && m.lastSnapshot.View == m.view {
 				m.allRows = cloneIssues(m.lastSnapshot.Issues)
@@ -630,6 +662,25 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sortMode = m.sortMode.Next()
 		m.saveState()
 		return m, m.rebuildRows(m.selectedID())
+	case "V":
+		switch m.layout {
+		case LayoutSide:
+			m.layout = LayoutStacked
+		case LayoutStacked:
+			m.layout = LayoutAuto
+		default:
+			m.layout = LayoutSide
+		}
+		lines := len(m.buildDetail(m.detailWidth()))
+		_, maxOffset := m.detailContentBudget(lines)
+		if m.dOffset > maxOffset {
+			m.dOffset = maxOffset
+		}
+		if m.dOffset < 0 {
+			m.dOffset = 0
+		}
+		m.saveState()
+		return m, nil
 	case "/":
 		m.searchBase = m.filter
 		return m, m.openPrompt()
@@ -900,7 +951,12 @@ func (m *Model) beginDetailFetch(id string, keepStale bool) tea.Cmd {
 }
 
 func (m *Model) projectRows(previousID string) {
-	projected := SortIssues(FilterIssues(m.allRows, m.filter), m.sortMode)
+	filtered := FilterIssues(m.allRows, m.filter)
+	if m.filter.Active() {
+		// A matching child keeps its parent chain visible.
+		filtered = withAncestors(filtered, m.allRows)
+	}
+	projected := SortIssues(filtered, m.sortMode)
 	if m.expanded == nil {
 		m.expanded = map[string]bool{}
 	}
@@ -994,7 +1050,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.treeMode = !m.treeMode
 		return m, m.rebuildRows(m.rows[m.selected].ID)
 	case "enter", "tab":
-		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
+		if row, ok := m.selectedTreeRow(); ok && row.HasChildren {
 			return m, m.toggleSelectedTreeRow()
 		}
 		if msg.String() == "tab" {
@@ -1003,14 +1059,21 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = FocusDetail
 		m.dOffset = 0
 	case "h", "left":
-		if m.treeMode && m.selected < len(m.treeRows) && m.treeRows[m.selected].HasChildren {
-			m.expanded[m.treeRows[m.selected].Issue.ID] = false
-			return m, m.rebuildRows(m.treeRows[m.selected].Issue.ID)
+		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && row.Expanded {
+			return m, m.foldRow(row.Issue.ID)
 		}
 		return m, nil
-	case "l", "L", "right":
+	case "l", "right":
+		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && !row.Expanded {
+			return m, m.unfoldRow(row.Issue.ID)
+		}
 		m.focus = FocusDetail
 		m.dOffset = 0
+	case "L":
+		m.focus = FocusDetail
+		m.dOffset = 0
+	case "*":
+		return m, m.expandAll()
 	case " ", "pgdown", "ctrl+f":
 		m.selected += page
 	case "b", "pgup", "ctrl+b":
@@ -1112,7 +1175,50 @@ func (m Model) buildDetail(width int) []string {
 	if m.markdown == nil {
 		m.markdown = &markdownRenderer{}
 	}
-	return buildDetail(m.vocab, m.detail, m.down, m.up, width, m.markdown)
+	chain, children := m.hierarchyFor(m.detail)
+	return buildDetail(m.vocab, m.detail, m.down, m.up, chain, children, width, m.markdown)
+}
+
+// hierarchyFor derives the parent chain and direct children of d from the
+// rows already loaded, so the detail pane never waits on another bd call.
+func (m Model) hierarchyFor(d *bd.Issue) (chain, children []bd.Issue) {
+	if d == nil {
+		return nil, nil
+	}
+	byID := make(map[string]bd.Issue, len(m.allRows)+len(m.graphRows))
+	for _, issue := range m.allRows {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	for _, issue := range m.graphRows {
+		if issue.ID != "" {
+			if _, ok := byID[issue.ID]; !ok {
+				byID[issue.ID] = issue
+			}
+		}
+	}
+	seen := map[string]bool{d.ID: true}
+	parentID := strings.TrimSpace(d.ParentID)
+	for parentID != "" && !seen[parentID] {
+		parent, ok := byID[parentID]
+		if !ok {
+			break
+		}
+		seen[parentID] = true
+		chain = append(chain, parent)
+		parentID = strings.TrimSpace(parent.ParentID)
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	for _, issue := range byID {
+		if issue.ParentID == d.ID && issue.ID != d.ID {
+			children = append(children, issue)
+		}
+	}
+	children = SortIssues(children, m.sortMode)
+	return chain, children
 }
 
 func (m *Model) startBoardLoad() tea.Cmd {
@@ -1268,6 +1374,14 @@ func cloneBoardSnapshot(snapshot *boardSnapshot) *boardSnapshot {
 		return nil
 	}
 	return &boardSnapshot{View: snapshot.View, Issues: cloneIssues(snapshot.Issues)}
+}
+
+func cloneExpanded(expanded map[string]bool) map[string]bool {
+	cloned := make(map[string]bool, len(expanded))
+	for id, value := range expanded {
+		cloned[id] = value
+	}
+	return cloned
 }
 
 func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
@@ -1576,6 +1690,47 @@ func (m Model) indexOfRow(id string) int {
 	return 0
 }
 
+func (m Model) selectedTreeRow() (TreeRow, bool) {
+	if m.treeMode && m.selected >= 0 && m.selected < len(m.treeRows) {
+		return m.treeRows[m.selected], true
+	}
+	return TreeRow{}, false
+}
+
+// foldRow collapses one tree node, keeping the selection on it.
+func (m *Model) foldRow(id string) tea.Cmd {
+	m.expanded[id] = false
+	return m.rebuildRows(id)
+}
+
+// unfoldRow expands one tree node, keeping the selection on it.
+func (m *Model) unfoldRow(id string) tea.Cmd {
+	m.expanded[id] = true
+	return m.rebuildRows(id)
+}
+
+// expandAll clears every fold in the loaded graph so the whole hierarchy is
+// visible. Hidden descendants are included, not just currently painted rows.
+func (m *Model) expandAll() tea.Cmd {
+	if !m.treeMode {
+		return nil
+	}
+	var walk func(*TreeNode)
+	walk = func(node *TreeNode) {
+		if node == nil {
+			return
+		}
+		m.expanded[node.Issue.ID] = true
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	for _, root := range BuildDependencyTree(m.allRows, m.deps, m.sortMode) {
+		walk(root)
+	}
+	return m.rebuildRows(m.selectedID())
+}
+
 func (m *Model) toggleSelectedTreeRow() tea.Cmd {
 	if m.selected >= len(m.treeRows) {
 		return nil
@@ -1661,22 +1816,26 @@ func (m Model) View() string {
 	if contentH < 1 {
 		contentH = 1
 	}
-	listW := listPaneWidth(w)
-	detailW := w - 1 - listW
-	if detailW < 12 {
-		detailW = 12
-		listW = w - 1 - detailW
-	}
-	listPane := m.renderListPane(listW, contentH)
-	detailPane := m.renderDetailPane(detailW, contentH)
+	listPane, detailPane, paneH := m.splitPanes(w, contentH)
 	var sb strings.Builder
 	sb.WriteString(m.renderHeader(w))
 	sb.WriteString("\n")
-	for i := 0; i < contentH; i++ {
-		sb.WriteString(listPane[i])
-		sb.WriteString(" ")
-		sb.WriteString(detailPane[i])
-		sb.WriteString("\n")
+	if m.layoutSideBySide() {
+		for i := 0; i < paneH; i++ {
+			sb.WriteString(listPane[i])
+			sb.WriteString(" ")
+			sb.WriteString(detailPane[i])
+			sb.WriteString("\n")
+		}
+	} else {
+		for i := 0; i < len(listPane); i++ {
+			sb.WriteString(listPane[i])
+			sb.WriteString("\n")
+		}
+		for i := 0; i < len(detailPane); i++ {
+			sb.WriteString(detailPane[i])
+			sb.WriteString("\n")
+		}
 	}
 	if m.filtering {
 		sb.WriteString(m.renderFilterPrompt(w))
@@ -1762,7 +1921,7 @@ func (m Model) renderGraph() string {
 	lines, cycle := graphLines(m.rows, all, m.deps, m.selectedID(), m.vocab, m.reverseDeps)
 	title := "Graph · G/esc close"
 	if cycle {
-		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render("⚠ CYCLE") + " · " + title
+		title = styleError.Render("⚠ CYCLE") + " · " + title
 	}
 	return strings.Join(pane(title, lines, w, h), "\n")
 }
@@ -1793,9 +1952,9 @@ func (m Model) renderListPane(w, h int) []string {
 	var lines []string
 	switch {
 	case m.boardErr != "" && len(m.rows) == 0 && len(m.allRows) == 0:
-		msg := "Could not load board."
+		msg := "✗ Could not load board."
 		for _, l := range wrapText(msg, inner) {
-			lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render(l))
+			lines = append(lines, styleError.Render(l))
 		}
 		for _, l := range wrapText(m.boardErr, inner) {
 			lines = append(lines, styleDim.Render(l))
@@ -1878,7 +2037,7 @@ func (m Model) renderDetailPane(w, h int) []string {
 	case m.checking && m.detail == nil:
 		lines = append(lines, styleDim.Render("Loading detail…"))
 	case m.detailErr != "" && m.detail == nil:
-		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("red")).Render("Could not load detail."))
+		lines = append(lines, styleError.Render("✗ Could not load detail."))
 		for _, l := range wrapText(m.detailErr, inner) {
 			lines = append(lines, styleDim.Render(l))
 		}
@@ -1951,10 +2110,10 @@ func (m Model) renderFooter(w int) string {
 	var left string
 	switch {
 	case m.boardErr != "" && len(m.rows) == 0:
-		left = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render("board error")
+		left = styleError.Render("✗ board error")
 		hints = styleDim.Render("r retry · q quit")
 	case m.reloadNotice != "":
-		left = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(m.reloadNotice)
+		left = styleDim.Render(m.reloadNotice)
 		hints = styleDim.Render("r reload now · q quit")
 	case m.loading:
 		left = status + " · " + styleDim.Render("loading…")
@@ -2044,7 +2203,8 @@ func (m Model) helpLines(width int) []string {
 		"",
 		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · G graph when edges · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
 		"  Half-page:     ctrl-u/d in list and detail",
-		"  Tree:          enter/tab toggle · h/l controls (h collapse, l detail) · v flat/tree (preserves selection) · siblings use active sort",
+		"  Tree:          enter/tab toggle · * expand all · h collapse · l unfold or detail · v flat/tree (preserves selection) · siblings use active sort",
+		"  Layout:        V cycles side-by-side / stacked / auto (auto stacks below 140 columns)",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
 		"  Navigation:    esc close detail / clear search",
 		viewHelp,
@@ -2054,6 +2214,8 @@ func (m Model) helpLines(width int) []string {
 		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",
 		rowLegend,
+		"PRIORITY_COLORS",
+		"STATUS_COLORS",
 		"Markers: ⇣N depends on N · ⇡N has N dependents",
 		"",
 		"Read-only: beads-tui never creates, edits or closes beads.",
@@ -2062,6 +2224,22 @@ func (m Model) helpLines(width int) []string {
 	var lines []string
 	for _, line := range raw {
 		lines = append(lines, wrapText(line, inner)...)
+	}
+	for i, line := range lines {
+		switch line {
+		case "PRIORITY_COLORS":
+			lines[i] = "Priority: " + strings.Join([]string{
+				priorityStyle(0).Render("P0"), priorityStyle(1).Render("P1"),
+				priorityStyle(2).Render("P2"), priorityStyle(3).Render("P3"),
+				priorityStyle(4).Render("P4"),
+			}, " ")
+		case "STATUS_COLORS":
+			lines[i] = "Status: " + strings.Join([]string{
+				m.vocab.StatusPill("open"), m.vocab.StatusPill("in_progress"),
+				m.vocab.StatusPill("blocked"), m.vocab.StatusPill("closed"),
+				m.vocab.StatusPill("deferred"), m.vocab.StatusPill("hold"),
+			}, " ")
+		}
 	}
 	lines[0] = styleBold.Render(lines[0])
 	for i := len(lines) - 1; i >= 0 && i >= len(lines)-4; i-- {
@@ -2077,7 +2255,55 @@ func (m Model) helpMaxOffset() int {
 	return max(0, len(m.helpLines(width))-max(1, height-2))
 }
 
-// listPaneWidth splits the width between board and detail.
+// splitPanes renders the list and detail panes for the current layout. In
+// side-by-side mode the panes share every row; in stacked mode the list sits
+// on top (~60% height) with the detail pane below.
+func (m Model) splitPanes(w, contentH int) (listPane, detailPane []string, lines int) {
+	if m.layoutSideBySide() {
+		listW := listPaneWidth(w)
+		detailW := w - 1 - listW
+		if detailW < 12 {
+			detailW = 12
+			listW = w - 1 - detailW
+		}
+		return m.renderListPane(listW, contentH), m.renderDetailPane(detailW, contentH), contentH
+	}
+	listH := stackedListHeight(contentH)
+	detailH := contentH - listH
+	return m.renderListPane(w, listH), m.renderDetailPane(w, detailH), listH + detailH
+}
+
+// stackedListHeight splits stacked content height: ~60% list, rest detail,
+// with at least one line left for the detail pane.
+func stackedListHeight(contentH int) int {
+	h := contentH * 3 / 5
+	if h < 1 {
+		h = 1
+	}
+	if h > contentH-1 {
+		h = contentH - 1
+	}
+	return h
+}
+
+// layoutSideBySide reports whether the board uses the side-by-side
+// list|detail split. LayoutAuto follows gh-dash: wide terminals split
+// side-by-side with the list taking the majority, narrower terminals stack
+// the detail pane below the full-width list.
+func (m Model) layoutSideBySide() bool {
+	switch m.layout {
+	case LayoutSide:
+		return true
+	case LayoutStacked:
+		return false
+	default:
+		return m.width >= wideLayoutColumns
+	}
+}
+
+// listPaneWidth splits the width between board and detail for the
+// side-by-side layout; the list gets the majority (~60%) so titles and
+// descriptions stay readable on wide terminals.
 func listPaneWidth(total int) int {
 	switch {
 	case total <= 0:
@@ -2089,9 +2315,9 @@ func listPaneWidth(total int) int {
 		}
 		return 12
 	default:
-		w := total / 2
-		if w > 48 {
-			return 48
+		w := total * 3 / 5
+		if w < 12 {
+			return 12
 		}
 		return w
 	}
@@ -2102,14 +2328,25 @@ func (m Model) detailWidth() int {
 	if w <= 0 {
 		w = 80
 	}
+	if !m.layoutSideBySide() {
+		return w - 2
+	}
 	return w - 3 - listPaneWidth(w)
 }
 
 func (m Model) detailVisLines() int {
-	if m.height <= 0 {
+	h := m.height
+	if h <= 0 {
 		return 10
 	}
-	return m.height - 4
+	if m.filtering {
+		h--
+	}
+	if !m.layoutSideBySide() {
+		contentH := h - 2
+		return contentH - stackedListHeight(contentH) - 2
+	}
+	return h - 4
 }
 
 func (m Model) detailContentBudget(lines int) (contentVis, maxOffset int) {

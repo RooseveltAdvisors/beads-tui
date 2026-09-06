@@ -467,3 +467,22 @@ func TestEmptyListIsNotAnError(t *testing.T) {
 		t.Errorf("got %d issues, want 0", len(issues))
 	}
 }
+
+func TestTimeoutIsNamedPlainly(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	client := &Client{
+		lookPath: func(string) (string, error) { return "/bin/echo", nil },
+		run: func(context.Context, string, ...string) (string, string, error) {
+			// What Go's os/exec reports after a context kill.
+			return "", "", errors.New("signal: killed")
+		},
+	}
+	_, err := client.ListStatus(ctx, "open")
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v, want a plain timeout message", err)
+	}
+	if strings.Contains(err.Error(), "signal: killed") {
+		t.Fatalf("err leaks the raw kill signal: %v", err)
+	}
+}
