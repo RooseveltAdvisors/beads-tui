@@ -156,4 +156,60 @@ grep -q 'board load failed' "$log_file" || die 'missing workspace left no board-
 printf '✓ missing workspace renders a loud error and logs it\n'
 stop_tui
 
+# Exercise the write path against a throwaway embedded-Dolt workspace. Keeping
+# this separate from the operator's real store makes the proof repeatable and
+# leaves no verification comments behind in production data.
+comment_root="$TMP_DIR/comments-workspace"
+mkdir -p "$comment_root"
+(cd "$comment_root" && bd init --non-interactive --skip-agents --skip-hooks -p verify >/dev/null)
+comment_id="$(cd "$comment_root" && bd create 'Verify comments issue' --silent)" || die 'could not seed comments fixture'
+comment_beads="$comment_root/.beads"
+start_tui "$comment_beads" "$TMP_DIR/config-comments"
+comment_loaded=0
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+  pane="$(capture)"
+  if printf '%s\n' "$pane" | grep -qF "$comment_id"; then
+    comment_loaded=1
+    break
+  fi
+  case "$(pane_state)" in
+    *'dead=1'*) die "TUI exited before comments fixture loaded ($(pane_state))" ;;
+  esac
+  sleep 1
+done
+[ "$comment_loaded" -eq 1 ] || die 'comments fixture board did not render'
+tmux send-keys -t "$TARGET" c
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+  pane="$(capture)"
+  if printf '%s\n' "$pane" | grep -qF 'Comments'; then
+    break
+  fi
+  sleep 0.5
+done
+printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
+printf -v comment_marker 'beads-tui-verify-comment-%s' "$$"
+tmux send-keys -t "$TARGET" a
+tmux send-keys -t "$TARGET" "$comment_marker"
+tmux send-keys -t "$TARGET" C-m
+comment_visible=0
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+  pane="$(capture)"
+  if printf '%s\n' "$pane" | grep -qF "$comment_marker"; then
+    comment_visible=1
+    break
+  fi
+  case "$(pane_state)" in
+    *'dead=1'*) die "TUI exited during comments proof ($(pane_state))" ;;
+  esac
+  sleep 1
+done
+[ "$comment_visible" -eq 1 ] || die 'submitted comment did not appear in the TUI thread'
+comment_json="$(BEADS_DIR="$comment_beads" bd comments "$comment_id" --json)" || die 'bd comments verification failed'
+jq -e --arg marker "$comment_marker" 'any(.[]; .text == $marker)' <<<"$comment_json" >/dev/null || die 'submitted comment missing from bd comments JSON'
+printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
+printf '✓ comments view loaded, submitted, and matched bd JSON (%s)\n' "$comment_id"
+tmux send-keys -t "$TARGET" q
+sleep 0.2
+stop_tui
+
 printf '✓ verify passed; evidence: %s\n' "$EVIDENCE_DIR/beads-tui-verify.txt"

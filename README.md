@@ -1,12 +1,11 @@
 # beads-tui
 
-A read-only terminal UI for [Beads](https://github.com/steveyegge/beads)
+A keyboard-driven terminal UI for [Beads](https://github.com/steveyegge/beads)
 (`bd`) - the dependency-graph issue tracker built as coding-agent memory.
 
 One static binary, no daemon, no network. It renders the same embedded-Dolt
-store `bd` works against and never writes to it: beads-tui only ever invokes
-bd's read-only commands (`list`, `show`, `dep list`, `statuses`) and renders
-what they return.
+store `bd` works against. Board data is read-only; issue comments can be
+viewed and added without leaving the TUI.
 
 ## Status tabs
 
@@ -162,11 +161,20 @@ moving through the list renders instantly and never blocks on `bd`; a dim
 "refreshing…" marker in the detail title shows when a background refresh is
 running.
 
-## Read-only guarantee
+## Comments
 
-beads-tui never creates, edits, or closes beads. All data comes from read-only
-`bd` invocations; board-load failures keep the loaded rows on screen, surface
-bd's diagnostic, and retry with backoff instead of freezing or blanking.
+Select an issue and press `c` to open its comment thread. Press `a` to enter a
+comment, then `Enter` to submit or `Esc` to cancel. `C` from the board opens
+the thread with the input focused. Threads load through `bd comments ID
+--json`, and submissions use `bd comment ID --stdin`; `j`/`k` scroll and
+`Esc`/`q` return to the board.
+
+## Data safety
+
+beads-tui never creates, edits, or closes beads. The only write is an explicit
+comment submission after the user presses `Enter`. Board-load failures keep
+the loaded rows on screen, surface bd's diagnostic, and retry with backoff
+instead of freezing or blanking.
 Dependency metadata is best effort: a failed graph lookup is logged
 without hiding the loaded list rows. Missing `bd`, a store it cannot reach, or
 an empty board all render as explicit states rather than crashes or raw command

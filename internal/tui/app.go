@@ -97,13 +97,15 @@ const (
 // side-by-side split (gh-dash style).
 const wideLayoutColumns = 140
 
-// Backend is the read-only data source the board renders. *bd.Client is the
-// production implementation; tests supply fakes.
+// Backend is the data source and comment adapter the board renders. *bd.Client
+// is the production implementation; tests supply fakes.
 type Backend interface {
 	List(ctx context.Context, view bd.View) ([]bd.Issue, error)
 	Show(ctx context.Context, id string) (*bd.Issue, error)
 	Deps(ctx context.Context, id string, up bool) ([]bd.DepRecord, error)
 	Statuses(ctx context.Context) ([]bd.StatusInfo, error)
+	Comments(ctx context.Context, id string) ([]bd.Comment, error)
+	AddComment(ctx context.Context, id, text string) error
 }
 
 type graphBackend interface {
@@ -176,6 +178,17 @@ type Model struct {
 	filterInput  textinput.Model
 	quitting     bool
 	markdown     *markdownRenderer
+
+	commentsOpen        bool
+	commentsID          string
+	comments            []bd.Comment
+	commentsErr         string
+	commentsLoading     bool
+	commentsOffset      int
+	commentsGeneration  uint64
+	commentsInput       textinput.Model
+	commentsInputActive bool
+	commentsSubmitting  bool
 
 	width  int
 	height int
@@ -265,6 +278,19 @@ type detailMsg struct {
 	down       []bd.DepRecord
 	up         []bd.DepRecord
 	err        error
+}
+
+type commentsMsg struct {
+	id         string
+	generation uint64
+	comments   []bd.Comment
+	err        error
+}
+
+type commentSubmitMsg struct {
+	id   string
+	text string
+	err  error
 }
 
 type yankItem struct {
@@ -397,6 +423,11 @@ func New(backend Backend) Model {
 	input.Placeholder = "status:open  priority:P1  label:frontend  text"
 	input.CharLimit = 120
 	input.Width = 60
+	commentInput := textinput.New()
+	commentInput.Prompt = "Comment › "
+	commentInput.Placeholder = "Write a comment"
+	commentInput.CharLimit = 4000
+	commentInput.Width = 80
 	m := Model{
 		backend:  backend,
 		view:     bd.ViewOpen,
@@ -415,6 +446,7 @@ func New(backend Backend) Model {
 		treeMode:       true,
 		detailCache:    map[string]cachedDetail{},
 		detailDebounce: detailDebounceDelay,
+		commentsInput:  commentInput,
 	}
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
@@ -524,6 +556,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case detailMsg:
 		return m, m.applyDetail(msg)
+	case commentsMsg:
+		return m, m.applyComments(msg)
+	case commentSubmitMsg:
+		return m, m.applyCommentSubmit(msg)
 	case yankMsg:
 		if msg.err != nil {
 			m.yankErr = msg.err.Error()
@@ -560,6 +596,19 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, copyToClipboard(items[m.yankIndex].value)
 		}
 		return m, nil
+	}
+	if m.commentsOpen {
+		if msg.String() == "ctrl+c" {
+			m.quitting = true
+			m.saveState()
+			return m, tea.Quit
+		}
+		if msg.String() == "?" && !m.commentsInputActive {
+			m.help = true
+			m.helpOffset = 0
+			return m, nil
+		}
+		return m.commentsKey(msg)
 	}
 	if m.graph {
 		switch msg.String() {
@@ -640,6 +689,13 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		m.saveState()
 		return m, tea.Quit
+	case "c":
+		return m, m.openComments(false)
+	case "C":
+		if m.focus == FocusList {
+			return m, m.openComments(true)
+		}
+		return m, nil
 	case "y":
 		if len(m.yankItems()) > 0 {
 			m.yank = true
@@ -1858,6 +1914,9 @@ func (m Model) View() string {
 	if m.help {
 		return m.renderHelp()
 	}
+	if m.commentsOpen {
+		return m.renderComments()
+	}
 	if m.graph {
 		return m.renderGraph()
 	}
@@ -2142,6 +2201,9 @@ func (m Model) renderDetailPane(w, h int) []string {
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
 	if w < 48 {
+		if m.commentsOpen && m.commentsErr != "" {
+			return truncatePhys(styleError.Render("✗ "+m.commentsErr), w)
+		}
 		query := "off"
 		if m.filter.Active() {
 			query = "on"
@@ -2163,11 +2225,14 @@ func (m Model) renderFooter(w int) string {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
 	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
-	defaultHints := styleDim.Render("r reload R reset s sort / search t tag ? help q quit")
-	shortHints := styleDim.Render("r reload ? help q quit")
+	defaultHints := styleDim.Render("r reload R reset s sort / search t tag c comments C add comment ? help q quit")
+	shortHints := styleDim.Render("c comments C add ? help q quit")
 	hints := defaultHints
 	var left string
 	switch {
+	case m.commentsOpen && m.commentsErr != "":
+		left = styleError.Render("✗ " + truncate(m.commentsErr, max(1, w/2)))
+		hints = styleDim.Render("r retry · a add · esc cancel/back · q back · ? help")
 	case m.boardErr != "" && len(m.rows) == 0:
 		left = styleError.Render("✗ board error")
 		hints = styleDim.Render("r retry · q quit")
@@ -2176,9 +2241,12 @@ func (m Model) renderFooter(w int) string {
 		hints = styleDim.Render("r reload now · q quit")
 	case m.loading:
 		left = status + " · " + styleDim.Render("loading…")
+	case m.commentsOpen:
+		left = status
+		hints = styleDim.Render("j·k scroll · a add · r reload · esc/q back · ? help")
 	case m.focus == FocusDetail:
 		left = status
-		hints = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · g/G · esc back · q quit")
+		hints = styleDim.Render("j·k/↑↓ scroll · ctrl-u/d half-page · space/page pg · c comments · esc back · q quit")
 	default:
 		left = status
 	}
@@ -2265,6 +2333,7 @@ func (m Model) helpLines(width int) []string {
 		"  Tree:          enter/tab toggle · * expand all · h collapse · l unfold or detail · v flat/tree (preserves selection) · siblings use active sort",
 		"  Layout:        V cycles side-by-side / stacked / auto (auto stacks below 140 columns)",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
+		"  Comments:      c view comments · a add from the thread · C add from the board · Esc/q back",
 		"  Navigation:    esc close detail / clear search",
 		viewHelp,
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
@@ -2277,7 +2346,7 @@ func (m Model) helpLines(width int) []string {
 		"STATUS_COLORS",
 		"Markers: ⇣N depends on N · ⇡N has N dependents",
 		"",
-		"Read-only: beads-tui never creates, edits or closes beads.",
+		"Read-only: board data never creates, edits or closes beads; comments are the one write action.",
 	}
 	inner := max(1, width-2)
 	var lines []string

@@ -115,6 +115,69 @@ const statusesFixture = `{
   "schema_version": 1
 }`
 
+const commentsFixture = `[
+  {"id":"c-old","issue_id":"fm-ju3","author":"Jon","text":"First note","created_at":"2026-09-07T12:00:00Z"},
+  {"id":"c-new","issue_id":"fm-ju3","author":"Ada","text":"Second note","created_at":"2026-09-07T13:00:00Z"}
+]`
+
+func TestCommentsBuildsRightArgsAndParsesFixture(t *testing.T) {
+	var gotArgs []string
+	c := stubClient(t, func(args []string) (string, string, error) {
+		gotArgs = args
+		return commentsFixture, "", nil
+	})
+	comments, err := c.Comments(context.Background(), "fm-ju3")
+	if err != nil {
+		t.Fatalf("Comments: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "comments fm-ju3 --json" {
+		t.Fatalf("args = %q", gotArgs)
+	}
+	if len(comments) != 2 || comments[1].Author != "Ada" || comments[1].Text != "Second note" {
+		t.Fatalf("comments = %+v", comments)
+	}
+}
+
+func TestAddCommentUsesStdinAdapter(t *testing.T) {
+	var gotArgs []string
+	var gotInput string
+	c := &Client{
+		lookPath: func(string) (string, error) { return "/fake/bd", nil },
+		runInput: func(_ context.Context, _ string, input string, args ...string) (string, string, error) {
+			gotInput, gotArgs = input, args
+			return "", "", nil
+		},
+	}
+	if err := c.AddComment(context.Background(), "fm-ju3", "comment from TUI"); err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "comment fm-ju3 --stdin" || gotInput != "comment from TUI" {
+		t.Fatalf("args=%q input=%q", gotArgs, gotInput)
+	}
+}
+
+func TestAddCommentRetriesBusyStore(t *testing.T) {
+	attempts := 0
+	c := &Client{
+		lookPath: func(string) (string, error) { return "/fake/bd", nil },
+		runInput: func(context.Context, string, string, ...string) (string, string, error) {
+			attempts++
+			return "", "database is locked", errors.New("exit status 1")
+		},
+		waitOverride: time.Millisecond,
+	}
+	err := c.AddComment(context.Background(), "fm-ju3", "retry me")
+	if err == nil || !strings.Contains(err.Error(), "busy or locked") {
+		t.Fatalf("err = %v, want sanitized busy error", err)
+	}
+	if attempts != callAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, callAttempts)
+	}
+	if strings.Contains(err.Error(), "database is locked") {
+		t.Fatalf("raw lock diagnostic leaked: %v", err)
+	}
+}
+
 func TestListBuildsRightArgs(t *testing.T) {
 	var gotArgs []string
 	c := stubClient(t, func(args []string) (string, string, error) {

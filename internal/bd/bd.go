@@ -16,9 +16,10 @@ import (
 var (
 	DefaultLookPath = exec.LookPath
 	DefaultRun      = runCommand
+	DefaultRunInput = runCommandInput
 )
 
-// Store-lock contention policy: every read-only bd invocation gets one
+// Store-lock contention policy: every bd invocation gets one
 // attemptTimeout budget per attempt and, when the store looks busy or
 // locked, waits retryDelay and tries again - up to callAttempts total -
 // before surfacing the busy error to the caller.
@@ -33,6 +34,7 @@ const (
 type Client struct {
 	lookPath func(file string) (string, error)
 	run      func(ctx context.Context, path string, args ...string) (stdout, stderr string, err error)
+	runInput func(ctx context.Context, path, input string, args ...string) (stdout, stderr string, err error)
 	// waitOverride shortens the inter-attempt retry delay; tests set it so
 	// retries stay fast. Zero (production) means the full retryDelay.
 	waitOverride time.Duration
@@ -44,7 +46,7 @@ const depsBatchWorkers = 8
 // environment (BEADS_DIR and friends) so the store resolves exactly as it
 // would for the user.
 func New() *Client {
-	return &Client{lookPath: DefaultLookPath, run: DefaultRun}
+	return &Client{lookPath: DefaultLookPath, run: DefaultRun, runInput: DefaultRunInput}
 }
 
 // List returns the current board for the given view.
@@ -163,6 +165,29 @@ func (c *Client) Statuses(ctx context.Context) ([]StatusInfo, error) {
 	return append(resp.BuiltIn, resp.Custom...), nil
 }
 
+// Comments returns an issue's comments in the order provided by bd.
+func (c *Client) Comments(ctx context.Context, id string) ([]Comment, error) {
+	if id == "" {
+		return nil, errors.New("beads-tui: empty bead id")
+	}
+	var comments []Comment
+	if err := c.jsonCall(ctx, &comments, "comments", id, "--json"); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
+// AddComment appends one comment to an issue through bd's stdin interface.
+func (c *Client) AddComment(ctx context.Context, id, text string) error {
+	if id == "" {
+		return errors.New("beads-tui: empty bead id")
+	}
+	if strings.TrimSpace(text) == "" {
+		return errors.New("beads-tui: empty comment")
+	}
+	return c.writeCall(ctx, text, "comment", id, "--stdin")
+}
+
 func uniqueIDs(ids []string) []string {
 	seen := make(map[string]struct{}, len(ids))
 	unique := make([]string, 0, len(ids))
@@ -200,6 +225,7 @@ func (c *Client) jsonCall(ctx context.Context, out any, args ...string) error {
 	for attempt := 1; ; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
 		stdout, stderr, err := c.run(attemptCtx, path, args...)
+		busy := storeBusy(attemptCtx, err, stderr)
 		cancel()
 		if err == nil {
 			// A JSON parse failure is not transient; return immediately.
@@ -212,7 +238,6 @@ func (c *Client) jsonCall(ctx context.Context, out any, args ...string) error {
 			}
 			return nil
 		}
-		busy := storeBusy(attemptCtx, err, stderr)
 		if !busy || attempt >= callAttempts {
 			if busy {
 				return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
@@ -224,6 +249,47 @@ func (c *Client) jsonCall(ctx context.Context, out any, args ...string) error {
 			// The caller's own window expired while we waited to retry:
 			// that is still a store timeout, so name it plainly. A plain
 			// cancellation is reported as-is.
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
+			}
+			return fmt.Errorf("%s: %s", cmdDesc, c.hint(stderr, ctx.Err()))
+		case <-time.After(delay):
+		}
+	}
+}
+
+// writeCall runs a mutating bd command with the same bounded busy-store
+// retry policy as jsonCall. Its diagnostics are sanitized before reaching the
+// TUI, while comment text is sent through stdin rather than command arguments.
+func (c *Client) writeCall(ctx context.Context, input string, args ...string) error {
+	path, err := c.lookPath("bd")
+	if err != nil {
+		return errors.New("bd not found in PATH; install Beads first (https://github.com/steveyegge/beads)")
+	}
+	if c.runInput == nil {
+		return errors.New("beads-tui: bd stdin adapter unavailable")
+	}
+	cmdDesc := "bd " + strings.Join(args, " ")
+	delay := c.waitOverride
+	if delay <= 0 {
+		delay = retryDelay
+	}
+	for attempt := 1; ; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		_, stderr, err := c.runInput(attemptCtx, path, input, args...)
+		busy := storeBusy(attemptCtx, err, stderr)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if !busy || attempt >= callAttempts {
+			if busy {
+				return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
+			}
+			return fmt.Errorf("%s: %s", cmdDesc, c.hint(stderr, err))
+		}
+		select {
+		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
 			}
@@ -265,7 +331,14 @@ func truncateSoft(s string, max int) string {
 
 // runCommand is the production exec path used by DefaultRun.
 func runCommand(ctx context.Context, path string, args ...string) (string, string, error) {
+	return runCommandInput(ctx, path, "", args...)
+}
+
+func runCommandInput(ctx context.Context, path, input string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

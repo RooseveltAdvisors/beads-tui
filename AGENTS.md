@@ -2,14 +2,15 @@
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
-## Beads read-only contract
+## Beads CLI contract
 
-beads-tui renders the Beads store strictly read-only via the `bd` CLI. The
-exact invocation contract lives in `internal/bd/bd.go` (see `Client`):
-`bd list --status STATUS --json -n 0`, `bd list --all --json -n 0` (graph snapshot),
-`bd show ID --json`, `bd dep list ID --json [--direction up]`,
-`bd statuses --json`. Any change to
-bd's flag surface or JSON field names must be mirrored there and in
+beads-tui reads the Beads store through the `bd` CLI and has one deliberate
+write: adding an issue comment. The exact invocation contract lives in
+`internal/bd/bd.go` (see `Client`): board/graph reads use `bd list --status
+STATUS --json -n 0`, `bd list --all --json -n 0`, `bd show ID --json`, `bd dep
+list ID --json [--direction up]`, and `bd statuses --json`; the comments view
+uses `bd comments ID --json` and `bd comment ID --stdin`. Any change to bd's
+flag surface or JSON field names must be mirrored there and in
 `internal/tui/app.go`'s `Backend`/`graphBackend` interfaces.
 
 ## Build
