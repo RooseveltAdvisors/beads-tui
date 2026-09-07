@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -21,13 +22,15 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// bdTimeout caps every bd call so a wedged store (or lock contention) shows
-// an error instead of freezing the UI.
+// bdTimeout is the legacy single-call cap. bd retries busy/locked calls
+// internally now (see internal/bd), so no TUI-side call should assume one
+// attempt per bd invocation.
 const bdTimeout = 8 * time.Second
 
-// boardRetryTimeout extends the board-load deadline once a reload has already
-// failed: under store lock contention a full board snapshot can legitimately
-// take far longer than the initial cap.
+// boardRetryTimeout caps every board/graph/status bd round-trip. It must
+// comfortably exceed bd's worst-case internal retry schedule (3 attempts x
+// 8s + waits) so a transiently locked store recovers here instead of
+// dropping the graph or failing the detail load.
 const boardRetryTimeout = 60 * time.Second
 
 // detailDebounceDelay coalesces rapid list navigation so holding j/k does not
@@ -51,13 +54,10 @@ func boardRetryBackoff(attempt int) time.Duration {
 	}
 }
 
-// boardLoadTimeout picks the deadline for a board load: the short cap on the
-// first attempt, the extended cap once retries are in flight.
+// boardLoadTimeout picks the deadline for a board load. bd retries busy
+// stores internally, so every load gets the same generous cap.
 func boardLoadTimeout(reloadAttempts int) time.Duration {
-	if reloadAttempts > 0 {
-		return boardRetryTimeout
-	}
-	return bdTimeout
+	return boardRetryTimeout
 }
 
 // isTimeoutErr reports whether err is (or carries) a context deadline.
@@ -144,19 +144,19 @@ type Model struct {
 	focus    Focus
 	dOffset  int
 
-	detail             *bd.Issue
-	down               []bd.DepRecord
-	up                 []bd.DepRecord
-	detailErr          string
-	checking           bool
-	detailGen          uint64
-	detailPendingID    string
-	detailCache        map[string]cachedDetail
-	detailRefreshing   bool
-	detailDebounceSeq  uint64
-	detailDebounce     time.Duration
-	graph              bool
-	layout             LayoutMode
+	detail            *bd.Issue
+	down              []bd.DepRecord
+	up                []bd.DepRecord
+	detailErr         string
+	checking          bool
+	detailGen         uint64
+	detailPendingID   string
+	detailCache       map[string]cachedDetail
+	detailRefreshing  bool
+	detailDebounceSeq uint64
+	detailDebounce    time.Duration
+	graph             bool
+	layout            LayoutMode
 
 	help         bool
 	helpOffset   int
@@ -1268,7 +1268,7 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 		reverseDeps := map[string][]bd.DepRecord{}
 		graphComplete := false
 		if supportsGraph {
-			ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), boardRetryTimeout)
 			all, err := backend.ListAll(ctx)
 			allLoaded := err == nil
 			if err != nil {
@@ -1481,7 +1481,7 @@ func normalizeIssueCounts(issue bd.Issue, deps, dependents []bd.DepRecord) bd.Is
 
 func (m Model) loadStatusesCmd() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), boardRetryTimeout)
 		defer cancel()
 		statuses, err := m.backend.Statuses(ctx)
 		return statusMsg{statuses: statuses, err: err}
@@ -1505,26 +1505,77 @@ func (m *Model) invalidateDetail() {
 	m.searchDErr = ""
 }
 
-// fetchDetail runs the three read-only bd calls behind one detail snapshot.
-func fetchDetail(backend Backend, id string) (*bd.Issue, []bd.DepRecord, []bd.DepRecord, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), bdTimeout)
-	defer cancel()
-	issue, err := backend.Show(ctx, id)
+// detailSeed carries what the board already knows about a bead so
+// fetchDetail can skip bd round-trips for data it already has.
+type detailSeed struct {
+	issue *bd.Issue // board row for the id; nil means Show must run
+	// deps are the graph edges for the id; haveDeps says the graph pass
+	// loaded the full edge set, so the Deps round-trips can be skipped.
+	haveDeps bool
+	down, up []bd.DepRecord
+}
+
+// detailSeedFor collects the board row and (when the graph loaded
+// completely) the dependency edges already in memory for id.
+func (m Model) detailSeedFor(id string) detailSeed {
+	var seed detailSeed
+	for i := range m.allRows {
+		if m.allRows[i].ID == id {
+			row := m.allRows[i]
+			seed.issue = &row
+			break
+		}
+	}
+	if m.graphCache != nil && m.graphCache.complete && m.deps != nil {
+		seed.down = append([]bd.DepRecord(nil), m.deps[id]...)
+		seed.up = append([]bd.DepRecord(nil), m.reverseDeps[id]...)
+		seed.haveDeps = true
+	}
+	return seed
+}
+
+// fetchDetail builds one detail snapshot from the board seed, calling bd
+// only for what the board does not already hold. The two dependency
+// directions run concurrently so a slow dep list does not double the wait.
+func fetchDetail(backend Backend, id string, seed detailSeed) (*bd.Issue, []bd.DepRecord, []bd.DepRecord, error) {
+	issue, err := seed.issue, error(nil)
+	if issue == nil {
+		issue, err = backend.Show(context.Background(), id)
+	}
 	var down, up []bd.DepRecord
 	if err == nil {
-		down, err = backend.Deps(ctx, id, false)
-	}
-	if err == nil {
-		up, err = backend.Deps(ctx, id, true)
+		if seed.haveDeps {
+			down, up = seed.down, seed.up
+		} else {
+			var derr, uerr error
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				down, derr = backend.Deps(context.Background(), id, false)
+			}()
+			go func() {
+				defer wg.Done()
+				up, uerr = backend.Deps(context.Background(), id, true)
+			}()
+			wg.Wait()
+			if derr != nil {
+				err = derr
+			} else if uerr != nil {
+				err = uerr
+			}
+		}
 	}
 	return issue, down, up, err
 }
 
-// fetchDetailCmd fetches one bead's detail plus both dependency directions.
+// fetchDetailCmd fetches one bead's detail plus both dependency directions,
+// skipping the calls the board data already covers.
 func (m Model) fetchDetailCmd(id string, generation uint64) tea.Cmd {
 	backend := m.backend
+	seed := m.detailSeedFor(id)
 	return func() tea.Msg {
-		issue, down, up, err := fetchDetail(backend, id)
+		issue, down, up, err := fetchDetail(backend, id, seed)
 		return detailMsg{id: id, generation: generation, issue: issue, down: down, up: up, err: err}
 	}
 }
@@ -1578,10 +1629,14 @@ func (m Model) prefetchNeighboursCmd(id string) tea.Cmd {
 		return nil
 	}
 	backend := m.backend
+	seeds := make(map[string]detailSeed, len(targets))
+	for _, tgt := range targets {
+		seeds[tgt.id] = m.detailSeedFor(tgt.id)
+	}
 	return func() tea.Msg {
 		var hits []prefetchHit
 		for _, tgt := range targets {
-			issue, down, up, err := fetchDetail(backend, tgt.id)
+			issue, down, up, err := fetchDetail(backend, tgt.id, seeds[tgt.id])
 			if err != nil || issue == nil {
 				continue
 			}

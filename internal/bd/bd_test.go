@@ -18,6 +18,8 @@ func stubClient(t *testing.T, handler func(args []string) (stdout, stderr string
 		run: func(_ context.Context, _ string, args ...string) (string, string, error) {
 			return handler(args)
 		},
+		// Keep the bounded retry schedule fast under test.
+		waitOverride: time.Millisecond,
 	}
 }
 
@@ -443,7 +445,7 @@ func TestJsonCallNeverLeaksRawOutput(t *testing.T) {
 	c := stubClient(t, func(args []string) (string, string, error) {
 		// A hostile/garbage stdout: the error must come from stderr or the
 		// wrapper, never from dumping raw stdout.
-		return "SECRET-STDOUT garbage {{", "bd: workspace is locked", errors.New("exit status 1")
+		return "SECRET-STDOUT garbage {{", "bd: exploded badly", errors.New("exit status 1")
 	})
 	_, err := c.List(context.Background(), ViewOpen)
 	if err == nil {
@@ -452,7 +454,7 @@ func TestJsonCallNeverLeaksRawOutput(t *testing.T) {
 	if strings.Contains(err.Error(), "SECRET-STDOUT") {
 		t.Errorf("raw stdout leaked into error: %q", err)
 	}
-	if !strings.Contains(err.Error(), "workspace is locked") {
+	if !strings.Contains(err.Error(), "exploded badly") {
 		t.Errorf("stderr hint missing from error: %q", err)
 	}
 }
@@ -484,5 +486,96 @@ func TestTimeoutIsNamedPlainly(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "signal: killed") {
 		t.Fatalf("err leaks the raw kill signal: %v", err)
+	}
+}
+
+// busyTimeoutStub returns a client whose every bd attempt hangs until the
+// attempt deadline kills it (the SIGKILL path), plus the attempt count.
+func busyTimeoutStub(t *testing.T) (*Client, *int) {
+	t.Helper()
+	attempts := 0
+	c := &Client{
+		lookPath: func(string) (string, error) { return "/fake/bd", nil },
+		run: func(context.Context, string, ...string) (string, string, error) {
+			// What the production run reports when the attempt deadline
+			// kills a bd wedged on the store lock.
+			return "", "", context.DeadlineExceeded
+		},
+		waitOverride: time.Millisecond,
+	}
+	realRun := c.run
+	c.run = func(ctx context.Context, path string, args ...string) (string, string, error) {
+		attempts++
+		return realRun(ctx, path, args...)
+	}
+	return c, &attempts
+}
+
+// A locked store must be retried, not dropped: the first busy attempt
+// recovers on a later one.
+func TestBusyStoreIsRetriedUntilSuccess(t *testing.T) {
+	c, attempts := busyTimeoutStub(t)
+	failures := 2
+	c.run = func(ctx context.Context, path string, args ...string) (string, string, error) {
+		*attempts++
+		if failures > 0 {
+			failures--
+			return "", "", context.DeadlineExceeded
+		}
+		return readyFixture, "", nil
+	}
+	issues, err := c.List(context.Background(), ViewOpen)
+	if err != nil {
+		t.Fatalf("transient lock must recover, got %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "fm-2fw" {
+		t.Errorf("unexpected issues after retry: %+v", issues)
+	}
+	if *attempts != 3 {
+		t.Errorf("attempts = %d, want 3 (two busy retries then success)", *attempts)
+	}
+}
+
+// Bounded retries: once the schedule is exhausted the single sanitized
+// busy error is surfaced, never the raw bd output.
+func TestBusyStoreSurfacesBusyMessageAfterBoundedRetries(t *testing.T) {
+	c, attempts := busyTimeoutStub(t)
+	_, err := c.List(context.Background(), ViewOpen)
+	if err == nil {
+		t.Fatal("expected busy error after exhausting retries")
+	}
+	if !strings.Contains(err.Error(), "timed out; the beads store is busy or locked") {
+		t.Errorf("err = %v, want the plain busy message", err)
+	}
+	if *attempts != callAttempts {
+		t.Errorf("attempts = %d, want %d", *attempts, callAttempts)
+	}
+}
+
+// A lock diagnostic on bd's own stderr is the same transient condition:
+// retry, then surface the busy message.
+func TestLockDiagnosticOnStderrIsRetried(t *testing.T) {
+	c := stubClient(t, func(args []string) (string, string, error) {
+		return "", "bd: database is locked", errors.New("exit status 1")
+	})
+	_, err := c.List(context.Background(), ViewOpen)
+	if err == nil || !strings.Contains(err.Error(), "timed out; the beads store is busy or locked") {
+		t.Fatalf("err = %v, want the plain busy message", err)
+	}
+}
+
+// A non-busy failure is not retried and keeps bd's actionable stderr.
+func TestNonBusyFailureIsNotRetried(t *testing.T) {
+	calls := 0
+	c := stubClient(t, func(args []string) (string, string, error) {
+		calls++
+		return "", "bd: no workspace found", errors.New("exit status 1")
+	})
+	_, err := c.List(context.Background(), ViewOpen)
+	if err == nil || !strings.Contains(err.Error(), "no workspace found") {
+		t.Fatalf("err = %v, want the stderr hint", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (no retry for non-busy errors)", calls)
 	}
 }
