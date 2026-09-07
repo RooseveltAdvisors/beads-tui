@@ -46,9 +46,10 @@ start_tui() {
   tmux new-session -d -s "$SESSION" -n tui -c "$ROOT"
   # Hermetic per-run config/state so the operator's persisted view/sort/layout
   # cannot change which rows the gate expects to see, and so each phase starts
-  # without another phase's board snapshot.
-  mkdir -p "$config_dir"
-  printf -v command 'exec env BEADS_DIR=%q BEADS_TUI_CONFIG_DIR=%q %q' "$beads_dir" "$config_dir" "$TMP_DIR/beads-tui"
+  # without another phase's board snapshot. The log dir is hermetic for the
+  # same reason: the gate asserts on this run's trail, not the operator's.
+  mkdir -p "$config_dir" "$LOG_DIR"
+  printf -v command 'exec env BEADS_DIR=%q BEADS_TUI_CONFIG_DIR=%q BEADS_TUI_LOG_DIR=%q %q' "$beads_dir" "$config_dir" "$LOG_DIR" "$TMP_DIR/beads-tui"
   tmux send-keys -t "$TARGET" "$command" C-m
 }
 
@@ -74,6 +75,7 @@ stop_tui() {
 
 preflight
 build
+LOG_DIR="$TMP_DIR/state"
 
 ready_json="$(ready_snapshot)" || die 'bd list --ready failed'
 ready_count="$(jq -e 'if type == "array" then length else error("expected array") end' <<<"$ready_json")" || die 'bd list --ready did not return a JSON array'
@@ -128,6 +130,15 @@ first_id="$(printf '%s\n' "$pane" | grep -oE '[a-z0-9][a-z0-9-]{3,}' | sort -u |
 printf '✓ real board loaded (%s ready rows; visible ready bead %s)\n' "$ready_count" "$first_id"
 stop_tui
 
+# A run that dies with its host window (the Herdr prefix+h popup) must still be
+# reconstructable, so require a timestamped start/exit trail on disk.
+log_file="$LOG_DIR/beads-tui.log"
+[ -s "$log_file" ] || die "no durable log written to $log_file"
+grep -qE '^[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9:.]+ start: beads-tui ' "$log_file" || die 'log has no timestamped start line'
+grep -q 'exit: ok' "$log_file" || die 'log did not record the clean exit'
+printf '\n--- log ---\n%s\n' "$(cat "$log_file")" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
+printf '✓ durable log written (%s)\n' "$log_file"
+
 missing_root="$TMP_DIR/missing-beads"
 start_tui "$missing_root" "$TMP_DIR/config-missing"
 missing_ok=0
@@ -141,7 +152,8 @@ for _ in $(seq 1 10); do
 done
 printf '\n--- missing workspace ---\n%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
 [ "$missing_ok" -eq 1 ] || die 'missing workspace did not produce a loud board error'
-printf '✓ missing workspace renders a loud error\n'
+grep -q 'board load failed' "$log_file" || die 'missing workspace left no board-error trail in the log'
+printf '✓ missing workspace renders a loud error and logs it\n'
 stop_tui
 
 printf '✓ verify passed; evidence: %s\n' "$EVIDENCE_DIR/beads-tui-verify.txt"

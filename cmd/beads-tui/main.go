@@ -7,6 +7,7 @@
 //
 //	beads-tui list [--status STATUS] # native/custom status as JSON
 //	beads-tui show <id>                      # one bead as JSON
+//	beads-tui log-path                       # where crashes are recorded
 package main
 
 import (
@@ -14,11 +15,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
+	"github.com/RooseveltAdvisors/beads-tui/internal/logfile"
 	"github.com/RooseveltAdvisors/beads-tui/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -42,6 +45,8 @@ func run(args []string) error {
 			return runShow(args[1:])
 		case "tui":
 			return runTUI()
+		case "log-path":
+			return runLogPath()
 		case "version", "--version", "-v":
 			fmt.Printf("beads-tui %s\n", version)
 			return nil
@@ -65,9 +70,38 @@ func runTUI() error {
 		}
 		return printJSON(issues)
 	}
-	p := tea.NewProgram(tui.New(bd.New()), tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	// The TUI owns the screen and may die with its host window (a Herdr
+	// popup), so route diagnostics to disk before anything can fail.
+	path, done, err := logfile.Init(version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "beads-tui: logging disabled (%v)\n", err)
+		path = "" // nothing was opened; do not point at a file that isn't there
+	}
+	defer done()
+	defer logfile.Recover()
+
+	p := tea.NewProgram(logfile.Guard(tui.New(bd.New())), tea.WithAltScreen())
+	_, runErr := p.Run()
+	if runErr != nil {
+		// Bubbletea recovers panics itself and reports ErrProgramPanic; the
+		// stack it prints lands in the log via the redirected stderr.
+		log.Printf("exit: %v", runErr)
+		if path != "" {
+			runErr = fmt.Errorf("%w (details: %s)", runErr, path)
+		}
+		return runErr
+	}
+	log.Printf("exit: ok")
+	return nil
+}
+
+func runLogPath() error {
+	path, err := logfile.Path()
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
 }
 
 func runList(args []string) error {
@@ -142,6 +176,7 @@ Usage:
   beads-tui                interactive board (open status by default)
   beads-tui list [--status STATUS]
   beads-tui show <id>
+  beads-tui log-path       print the crash/error log path
   beads-tui --version
 
 The TUI is keyboard-driven: j/k or arrow keys move, g/G jump, space/b page, and

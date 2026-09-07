@@ -38,6 +38,7 @@ with `./.beads`, or anywhere with `BEADS_DIR` set:
 beads-tui                   # interactive board (open status by default)
 beads-tui list [--status STATUS]         # board as JSON (no TTY needed)
 beads-tui show <id>         # one bead as JSON
+beads-tui log-path          # where crashes and errors are recorded
 beads-tui --version
 ```
 
@@ -170,6 +171,32 @@ Dependency metadata is best effort: a failed graph lookup is logged
 without hiding the loaded list rows. Missing `bd`, a store it cannot reach, or
 an empty board all render as explicit states rather than crashes or raw command
 output.
+
+## Logs
+
+The TUI owns the screen, so anything it writes to stderr is painted over or
+lost outright when the host window closes - a crash in a Herdr `prefix+h`
+popup would otherwise leave no trace. Every interactive run therefore appends a
+timestamped trail to disk:
+
+```sh
+beads-tui log-path          # print the path
+tail -f "$(beads-tui log-path)"
+```
+
+The default is `$XDG_STATE_HOME/beads-tui/beads-tui.log`, falling back to
+`~/.local/state/beads-tui/beads-tui.log` when `XDG_STATE_HOME` is unset.
+`BEADS_TUI_LOG_DIR` overrides the directory (the verification gate uses it to
+stay hermetic). Session state lives separately under the config dir; only the
+diagnostic trail is state-dir material.
+
+It records the start and exit of each run, panics with their stack, board and
+detail load failures with bd's diagnostic, and state read/write errors. It is a
+diagnostic trail only - bead titles, descriptions, and other issue content are
+never written to it. The file rotates to `beads-tui.log.old` once it passes
+1 MiB, so it stays bounded at roughly 2 MiB while the previous session's crash
+context survives one restart. Logging failures are never fatal: the TUI reports
+them on stderr once and runs unlogged.
 
 ## Planned mapping
 
