@@ -27,8 +27,21 @@ to point at any real embedded-Dolt `.beads` fixture. The gate TUI runs with a
 temporary `BEADS_TUI_CONFIG_DIR` and expects the newest open root bead (the
 deterministic first row under the default sort), so a shared user state.json
 cannot flip the expectation. It is deliberately not in
-GitHub CI - runners have no `bd` and no fleet workspace. `scripts/dev-local.sh`
+GitHub CI - runners have no `bd` and no fleet workspace. It also asserts the
+durable log: a timestamped start line, a clean `exit: ok`, and a
+`board load failed` entry from the missing-workspace phase. `scripts/dev-local.sh`
 (skill: `/dev-local`) is the same launch path for interactive use.
+
+## Crash and error log
+
+The TUI's stderr is invisible (alt screen) and dies with its host window, and
+Bubbletea recovers panics itself rather than re-panicking. `internal/logfile`
+closes both holes: `Init` redirects the standard logger and `os.Stderr` to
+`$XDG_STATE_HOME/beads-tui/beads-tui.log` (override: `BEADS_TUI_LOG_DIR`,
+printed by `beads-tui log-path`), and `Guard` wraps the model so a panic value
+is logged before Bubbletea swallows it. Every `log.Printf` in the codebase
+therefore lands on disk - keep them diagnostic (ids, counts, bd errors) and
+never log bead titles, descriptions, or other issue content.
 
 ## Sharp edges
 

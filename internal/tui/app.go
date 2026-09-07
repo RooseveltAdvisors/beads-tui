@@ -1628,6 +1628,9 @@ func (m *Model) applyBoard(msg boardMsg) tea.Cmd {
 	m.loading = false
 	if msg.err != nil {
 		m.reloadAttempts++
+		// The screen shows this, but the screen dies with the window; the log
+		// is what survives to explain a board that never loaded.
+		log.Printf("beads-tui: board load failed (view=%s attempt=%d): %v", msg.view, m.reloadAttempts, msg.err)
 		m.boardErr = msg.err.Error()
 		if len(m.allRows) > 0 {
 			m.reloadNotice = reloadFailureNotice(msg.err, msg.timeout, m.boardLoadedAt)
@@ -1752,6 +1755,7 @@ func (m *Model) applyDetail(msg detailMsg) tea.Cmd {
 	m.checking = false
 	m.detailRefreshing = false
 	if msg.err != nil {
+		log.Printf("beads-tui: detail load failed (id=%s): %v", msg.id, msg.err)
 		m.detailErr = msg.err.Error()
 		if msg.issue != nil {
 			issue := normalizeIssueCounts(*msg.issue, msg.down, msg.up)
