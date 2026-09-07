@@ -1,11 +1,9 @@
-// Package bd wraps the `bd` CLI (Beads) with typed, read-only access to the
-// bead graph.
+// Package bd wraps the `bd` CLI (Beads) with typed access to the bead graph
+// and its comment thread.
 //
-// beads-tui is deliberately read-only: it only ever invokes read-only bd
-// commands (list, show, dep list, statuses) and never mutates the graph. The
-// graph lives wherever the ambient `bd` configuration resolves it (BEADS_DIR,
-// an active worktree, or a created workspace); beads-tui never hardcodes a
-// store path.
+// The graph lives wherever the ambient `bd` configuration resolves it
+// (BEADS_DIR, an active worktree, or a created workspace); beads-tui never
+// hardcodes a store path.
 package bd
 
 import "strings"
@@ -107,4 +105,16 @@ type StatusInfo struct {
 	Icon        string `json:"icon"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
+}
+
+// Comment is one entry in an issue's chronological comment thread.
+// CreatedBy is retained as a compatibility fallback for bd versions that use
+// that field name instead of author.
+type Comment struct {
+	ID        string `json:"id"`
+	IssueID   string `json:"issue_id"`
+	Author    string `json:"author"`
+	CreatedBy string `json:"created_by"`
+	Text      string `json:"text"`
+	CreatedAt string `json:"created_at"`
 }

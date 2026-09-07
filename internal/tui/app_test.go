@@ -15,15 +15,19 @@ import (
 
 // fakeClient serves canned data without touching a real Beads store.
 type fakeClient struct {
-	mu        sync.Mutex
-	issues    map[bd.View][]bd.Issue
-	issue     *bd.Issue
-	issueByID map[string]*bd.Issue
-	down      []bd.DepRecord
-	downByID  map[string][]bd.DepRecord
-	up        []bd.DepRecord
-	upByID    map[string][]bd.DepRecord
-	statuses  []bd.StatusInfo
+	mu             sync.Mutex
+	issues         map[bd.View][]bd.Issue
+	issue          *bd.Issue
+	issueByID      map[string]*bd.Issue
+	down           []bd.DepRecord
+	downByID       map[string][]bd.DepRecord
+	up             []bd.DepRecord
+	upByID         map[string][]bd.DepRecord
+	statuses       []bd.StatusInfo
+	commentsByID   map[string][]bd.Comment
+	commentAdds    []string
+	failComments   error
+	failCommentAdd error
 
 	failList    error
 	failShow    error
@@ -122,6 +126,24 @@ func (f *fakeClient) DepsBatch(_ context.Context, ids []string, up bool) (map[st
 
 func (f *fakeClient) Statuses(context.Context) ([]bd.StatusInfo, error) {
 	return f.statuses, nil
+}
+
+func (f *fakeClient) Comments(_ context.Context, id string) ([]bd.Comment, error) {
+	if f.failComments != nil {
+		return nil, f.failComments
+	}
+	return append([]bd.Comment(nil), f.commentsByID[id]...), nil
+}
+
+func (f *fakeClient) AddComment(_ context.Context, id, text string) error {
+	if f.failCommentAdd != nil {
+		return f.failCommentAdd
+	}
+	f.commentAdds = append(f.commentAdds, id+":"+text)
+	f.commentsByID[id] = append(f.commentsByID[id], bd.Comment{
+		IssueID: id, Author: "tester", Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	return nil
 }
 
 func testIssues() []bd.Issue {
@@ -1116,6 +1138,74 @@ func TestEmptyBoardStates(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("empty board missing %q", want)
 		}
+	}
+}
+
+func TestCommentsViewLoadsScrollsAndAddsWithoutBoardReload(t *testing.T) {
+	f := &fakeClient{
+		issues: map[bd.View][]bd.Issue{bd.ViewOpen: {{ID: "fm-comments", Title: "Commentable task", Status: "open"}}},
+		issue:  &bd.Issue{ID: "fm-comments", Title: "Commentable task", Status: "open"},
+		commentsByID: map[string][]bd.Comment{
+			"fm-comments": {
+				{ID: "old", Author: "Ada", Text: "Old note", CreatedAt: "2026-09-07T12:00:00Z"},
+			},
+		},
+	}
+	m := drive(t, f)
+	listCalls := f.listCalls
+	m = step(t, m, "c")
+	if !m.commentsOpen || m.commentsID != "fm-comments" || m.commentsLoading {
+		t.Fatalf("comments view state = open:%v id:%q loading:%v", m.commentsOpen, m.commentsID, m.commentsLoading)
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Commentable task", "ID fm-comments", "Ada", "Old note"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("comments view missing %q:\n%s", want, view)
+		}
+	}
+	m = step(t, m, "a")
+	if !m.commentsInputActive {
+		t.Fatal("a did not focus the inline comment input")
+	}
+	m = step(t, m, "Added from the comments view")
+	m = step(t, m, "enter")
+	if m.commentsInputActive || m.commentsLoading || len(f.commentAdds) != 1 {
+		t.Fatalf("comment submit state: active=%v loading=%v adds=%v", m.commentsInputActive, m.commentsLoading, f.commentAdds)
+	}
+	if !strings.Contains(stripANSI(m.View()), "Added from the comments view") {
+		t.Fatalf("new comment missing from reloaded thread:\n%s", stripANSI(m.View()))
+	}
+	if m.rows[0].CommentCount != 2 || m.allRows[0].CommentCount != 2 {
+		t.Fatalf("comment count not updated in place: rows=%d all=%d", m.rows[0].CommentCount, m.allRows[0].CommentCount)
+	}
+	if f.listCalls != listCalls {
+		t.Fatalf("adding a comment reloaded board: before=%d after=%d", listCalls, f.listCalls)
+	}
+	m = step(t, m, "esc")
+	if m.commentsOpen {
+		t.Fatal("esc did not leave comments view")
+	}
+}
+
+func TestBoardCOpensCommentsWithInput(t *testing.T) {
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {{ID: "fm-comments", Title: "Commentable task", Status: "open"}}}}
+	m := drive(t, f)
+	m = step(t, m, "C")
+	if !m.commentsOpen || !m.commentsInputActive {
+		t.Fatalf("C state = open:%v input:%v", m.commentsOpen, m.commentsInputActive)
+	}
+}
+
+func TestCommentsErrorsStayInStatusAndDoNotCrash(t *testing.T) {
+	f := &fakeClient{
+		issues:       map[bd.View][]bd.Issue{bd.ViewOpen: {{ID: "fm-comments", Title: "Commentable task", Status: "open"}}},
+		failComments: errors.New("bd comments fm-comments: timed out; the beads store is busy or locked"),
+	}
+	m := drive(t, f)
+	m = step(t, m, "c")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Could not load comments") || !strings.Contains(view, "busy or locked") {
+		t.Fatalf("comment error missing from rendered view:\n%s", view)
 	}
 }
 
