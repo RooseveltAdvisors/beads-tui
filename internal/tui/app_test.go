@@ -301,8 +301,10 @@ func TestSelectionMovesAndLoadsDetail(t *testing.T) {
 	if m.selected != 1 {
 		t.Fatalf("selected = %d, want 1", m.selected)
 	}
-	if !showLogContains(f, "fm-bbb") {
-		t.Errorf("j should load detail for fm-bbb, got %v", f.showLog)
+	// The board row already holds every detail field, so loading detail for
+	// a bead on the board must not round-trip `bd show` at all.
+	if f.showCalls != 0 {
+		t.Errorf("detail load made %d show calls, want 0 (board data covers it)", f.showCalls)
 	}
 	if m.detail == nil || m.detail.ID != "fm-bbb" {
 		t.Fatalf("detail not applied: %+v", m.detail)
@@ -490,11 +492,12 @@ func TestBoardRetryBackoffAndAdaptiveTimeout(t *testing.T) {
 			t.Errorf("boardRetryBackoff(%d) = %v, want %v", tc.attempt, got, tc.want)
 		}
 	}
-	if got := boardLoadTimeout(0); got != bdTimeout {
-		t.Errorf("first board load timeout = %v, want %v", got, bdTimeout)
-	}
-	if got := boardLoadTimeout(2); got != boardRetryTimeout {
-		t.Errorf("retry board load timeout = %v, want %v", got, boardRetryTimeout)
+	// bd retries busy stores internally, so every board load gets the same
+	// generous cap instead of a short first-attempt deadline.
+	for _, attempt := range []int{0, 1, 2} {
+		if got := boardLoadTimeout(attempt); got != boardRetryTimeout {
+			t.Errorf("boardLoadTimeout(%d) = %v, want %v", attempt, got, boardRetryTimeout)
+		}
 	}
 }
 
@@ -525,20 +528,23 @@ func TestBoardRetrySucceedsAndClearsFailureState(t *testing.T) {
 }
 
 func TestDetailCacheHitRendersWithoutBdCall(t *testing.T) {
-	f := &fakeClient{issueByID: map[string]*bd.Issue{
-		"fm-aaa": testDetailOf("fm-aaa"),
-		"fm-bbb": testDetailOf("fm-bbb"),
-		"fm-ccc": testDetailOf("fm-ccc"),
-	}}
-	m := drive(t, f) // row 0 detail fetched, cached, neighbours prefetched
-	calls := f.showCalls
-	if calls == 0 {
-		t.Fatal("drive did not fetch any detail")
+	// Board rows carry every detail field (description included), so the
+	// detail pane is served entirely from board data and the cache.
+	issues := testIssues()
+	for i := range issues {
+		issues[i].Description = "Needs the alpha milestone before it can start."
+		issues[i].Notes = "Assigned last sprint."
+	}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: issues}}
+	m := drive(t, f) // row 0 detail loaded from board data, cache warm
+	// Board rows carry every detail field, so no `bd show` runs at all.
+	if f.showCalls != 0 {
+		t.Fatalf("drive made %d show calls, want 0 (board data covers detail)", f.showCalls)
 	}
 	updated, _ := m.Update(teaKeyMsg("j"))
 	m = updated.(Model)
-	if f.showCalls != calls {
-		t.Fatalf("cached selection change made %d new bd calls", f.showCalls-calls)
+	if f.showCalls != 0 {
+		t.Fatalf("cached selection change made %d new bd calls", f.showCalls)
 	}
 	if m.detail == nil || m.detail.ID != "fm-bbb" {
 		t.Fatalf("cached detail not installed: %+v", m.detail)
@@ -560,8 +566,9 @@ func TestDetailCacheHitRendersWithoutBdCall(t *testing.T) {
 	if m.detailRefreshing {
 		t.Error("refreshing marker stuck after refresh landed")
 	}
-	if f.showCalls != calls+1 {
-		t.Fatalf("background refresh made %d show calls, want 1", f.showCalls-calls)
+	// The refresh also runs from board data: still zero bd calls.
+	if f.showCalls != 0 {
+		t.Fatalf("background refresh made %d show calls, want 0", f.showCalls)
 	}
 }
 
@@ -583,15 +590,14 @@ func TestDebounceCoalescesRapidMoves(t *testing.T) {
 		t.Fatalf("superseded debounce tick fetched detail: %v", f.showLog)
 	}
 	m = runCmd(t, m, secondCmd)
-	if len(f.showLog) == 0 || f.showLog[0] != "fm-ccc" {
-		t.Fatalf("first detail fetch after coalescing = %v, want fm-ccc first", f.showLog)
+	// Board data covers the detail fields, so `bd show` never runs. Without
+	// a loaded graph the dep edges still come from bd: two directions for
+	// the final selection plus two each for the two prefetched neighbours.
+	if f.showCalls != 0 {
+		t.Fatalf("final detail fetch made %d show calls, want 0", f.showCalls)
 	}
-	// One fetch for the final selection, the rest are neighbour prefetches.
-	if f.showCalls != 3 {
-		t.Fatalf("rapid moves produced %d show calls, want 3 (final + 2 prefetch)", f.showCalls)
-	}
-	if !showLogContains(f, "fm-aaa") || !showLogContains(f, "fm-bbb") {
-		t.Errorf("neighbours not prefetched: %v", f.showLog)
+	if f.depCalls != 6 {
+		t.Fatalf("final detail fetch made %d dep calls, want 6 (final + 2 prefetch, both directions)", f.depCalls)
 	}
 	if m.detail == nil || m.detail.ID != "fm-ccc" {
 		t.Fatalf("detail = %+v, want fm-ccc", m.detail)
@@ -624,8 +630,13 @@ func TestUppercaseRResetsWithoutReloadingDefaultBoard(t *testing.T) {
 	if f.listCalls != 0 {
 		t.Fatalf("reset's debounced detail reloaded the board %d times", f.listCalls)
 	}
-	if !showLogContains(f, m.selectedID()) {
-		t.Fatalf("reset did not request selected detail: shown=%v selected=%q", f.showLog, m.selectedID())
+	// Board data covers the detail fields, so the debounced load runs
+	// without any bd round-trip yet still installs the selected detail.
+	if f.showCalls != 0 {
+		t.Fatalf("reset's debounced detail made %d show calls, want 0", f.showCalls)
+	}
+	if m.detail == nil || m.detail.ID != m.selectedID() {
+		t.Fatalf("reset did not install selected detail: %+v, want %q", m.detail, m.selectedID())
 	}
 }
 

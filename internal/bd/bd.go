@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DefaultLookPath and DefaultRun are the production wiring for a Client.
@@ -17,11 +18,24 @@ var (
 	DefaultRun      = runCommand
 )
 
+// Store-lock contention policy: every read-only bd invocation gets one
+// attemptTimeout budget per attempt and, when the store looks busy or
+// locked, waits retryDelay and tries again - up to callAttempts total -
+// before surfacing the busy error to the caller.
+const (
+	attemptTimeout = 8 * time.Second
+	callAttempts   = 3
+	retryDelay     = 2 * time.Second
+)
+
 // Client executes the `bd` CLI. Dependencies are injectable so tests can
 // exercise parsing and error handling without a real Beads install.
 type Client struct {
 	lookPath func(file string) (string, error)
 	run      func(ctx context.Context, path string, args ...string) (stdout, stderr string, err error)
+	// waitOverride shortens the inter-attempt retry delay; tests set it so
+	// retries stay fast. Zero (production) means the full retryDelay.
+	waitOverride time.Duration
 }
 
 const depsBatchWorkers = 8
@@ -168,30 +182,67 @@ func uniqueIDs(ids []string) []string {
 // jsonCall runs a read-only bd invocation, requires JSON on stdout, and
 // translates failures into a single clean error carrying the actionable part
 // of bd's own stderr. Raw dependency output never leaks to the caller.
+//
+// Under store lock contention bd hangs until the attempt deadline or exits
+// with a busy/locked diagnostic. That is transient, so the call is retried
+// with a bounded attempt/attempt/wait schedule (see the constants above)
+// before the single sanitized busy error is surfaced.
 func (c *Client) jsonCall(ctx context.Context, out any, args ...string) error {
 	path, err := c.lookPath("bd")
 	if err != nil {
 		return errors.New("bd not found in PATH; install Beads first (https://github.com/steveyegge/beads)")
 	}
-	stdout, stderr, err := c.run(ctx, path, args...)
 	cmdDesc := "bd " + strings.Join(args, " ")
-	if err != nil {
-		// A context deadline kills the child with SIGKILL, which Go reports
-		// as the bare, uninformative "signal: killed". Under a loaded fleet
-		// store that is the common case, so name it plainly.
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
-		}
-		return fmt.Errorf("%s: %s", cmdDesc, c.hint(stderr, err))
+	delay := c.waitOverride
+	if delay <= 0 {
+		delay = retryDelay
 	}
-	if err := json.Unmarshal([]byte(stdout), out); err != nil {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" {
-			msg = fmt.Sprintf("unexpected output (not JSON): %v", err)
+	for attempt := 1; ; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		stdout, stderr, err := c.run(attemptCtx, path, args...)
+		cancel()
+		if err == nil {
+			// A JSON parse failure is not transient; return immediately.
+			if uerr := json.Unmarshal([]byte(stdout), out); uerr != nil {
+				msg := strings.TrimSpace(stderr)
+				if msg == "" {
+					msg = fmt.Sprintf("unexpected output (not JSON): %v", uerr)
+				}
+				return fmt.Errorf("%s: %s", cmdDesc, c.hint(msg, uerr))
+			}
+			return nil
 		}
-		return fmt.Errorf("%s: %s", cmdDesc, c.hint(msg, err))
+		busy := storeBusy(attemptCtx, err, stderr)
+		if !busy || attempt >= callAttempts {
+			if busy {
+				return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
+			}
+			return fmt.Errorf("%s: %s", cmdDesc, c.hint(stderr, err))
+		}
+		select {
+		case <-ctx.Done():
+			// The caller's own window expired while we waited to retry:
+			// that is still a store timeout, so name it plainly. A plain
+			// cancellation is reported as-is.
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("%s: timed out; the beads store is busy or locked", cmdDesc)
+			}
+			return fmt.Errorf("%s: %s", cmdDesc, c.hint(stderr, ctx.Err()))
+		case <-time.After(delay):
+		}
 	}
-	return nil
+}
+
+// storeBusy reports whether a failed attempt looks like transient store
+// lock contention: the attempt ran out of its own deadline (bd killed with
+// SIGKILL while wedged on the lock), the run reported the deadline itself,
+// or bd reported a busy/locked store on stderr.
+func storeBusy(attemptCtx context.Context, err error, stderr string) bool {
+	if attemptCtx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(stderr)
+	return strings.Contains(msg, "lock") || strings.Contains(msg, "busy")
 }
 
 // hint picks a short, actionable diagnostic: bd's stderr when it has
