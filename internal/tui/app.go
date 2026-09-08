@@ -364,7 +364,7 @@ func loadState() (savedState, bool) {
 	default:
 		state.Layout = LayoutAuto
 	}
-	if state.Filter.Kind > FilterSearch || len(state.Filter.Query) > 120 {
+	if state.Filter.Kind > FilterRecurring || len(state.Filter.Query) > 120 {
 		state.Filter = Filter{}
 	}
 	return state, true
@@ -421,7 +421,7 @@ func (m Model) saveState() {
 func New(backend Backend) Model {
 	input := textinput.New()
 	input.Prompt = "Search / › "
-	input.Placeholder = "status:open  priority:P1  label:frontend  text"
+	input.Placeholder = "status:open  recurring  label:frontend  text"
 	input.CharLimit = 120
 	input.Width = 60
 	commentInput := textinput.New()
@@ -2369,7 +2369,7 @@ func (m Model) helpLines(width int) []string {
 		"  Navigation:    esc close detail / clear search",
 		viewHelp,
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
-		"  Search:        / prompt · Enter apply · status:open · priority:P1 · label:frontend · text · Esc cancel",
+		"  Search:        / prompt · Enter apply · status:open · recurring · priority:P1 · label:frontend · text · Esc cancel",
 		"  Tags:          t search by the selected bead's labels",
 		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? (any key closes) · Quit: q/Ctrl+C",
 		"",

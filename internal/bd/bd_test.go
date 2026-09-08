@@ -51,6 +51,10 @@ const allFixture = `[
     "priority": 0,
     "issue_type": "task",
     "assignee": "Jon Roosevelt",
+    "repeat": "0 9 * * 1",
+    "recurrence_start": "2026-09-08T09:00:00Z",
+    "recurrence_end": "2026-12-31T23:59:59Z",
+    "recurrence_tz": "America/New_York",
     "created_at": "2026-08-30T01:08:20Z",
     "updated_at": "2026-08-30T02:39:22Z",
     "dependency_count": 2,
@@ -258,6 +262,10 @@ func TestListAllBuildsRightArgs(t *testing.T) {
 	}
 	if len(issues) != 1 || issues[0].ID != "fm-rbc" {
 		t.Errorf("ListAll issues = %+v", issues)
+	}
+	i := issues[0]
+	if !i.IsRecurring() || i.RecurrenceStart != "2026-09-08T09:00:00Z" || i.RecurrenceEnd != "2026-12-31T23:59:59Z" || i.RecurrenceTZ != "America/New_York" {
+		t.Errorf("unexpected recurrence fields: %+v", i)
 	}
 }
 
