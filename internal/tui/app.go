@@ -184,6 +184,7 @@ type Model struct {
 	comments            []bd.Comment
 	commentsErr         string
 	commentsLoading     bool
+	commentsPendingID   string
 	commentsOffset      int
 	commentsGeneration  uint64
 	commentsInput       textinput.Model
@@ -924,6 +925,7 @@ func (m *Model) prepareDetailForSelection() tea.Cmd {
 	if id == "" {
 		return nil
 	}
+	m.prepareCommentsForSelection(id)
 	if m.detailPendingID != "" && m.detailPendingID != id {
 		m.detailGen++
 		m.detailPendingID = ""
@@ -983,7 +985,7 @@ func (m *Model) startDetailLoad() tea.Cmd {
 		return nil
 	}
 	fetch := m.beginDetailFetch(id, true)
-	return tea.Batch(fetch, m.prefetchNeighboursCmd(id))
+	return tea.Batch(fetch, m.prefetchNeighboursCmd(id), m.startPendingCommentsLoad(id))
 }
 
 // beginDetailFetch marks a detail fetch for id as in flight and returns the
@@ -1232,7 +1234,14 @@ func (m Model) buildDetail(width int) []string {
 		m.markdown = &markdownRenderer{}
 	}
 	chain, children := m.hierarchyFor(m.detail)
-	return buildDetail(m.vocab, m.detail, m.down, m.up, chain, children, width, m.markdown)
+	commentCount := len(m.comments)
+	if m.detail != nil && m.detail.CommentCount > commentCount {
+		commentCount = m.detail.CommentCount
+	}
+	return buildDetailWithComments(
+		m.vocab, m.detail, m.down, m.up, chain, children, width, m.markdown,
+		m.comments, m.commentsLoading, m.commentsErr, commentCount, m.inlineCommentsMaxLines(),
+	)
 }
 
 // hierarchyFor derives the parent chain and direct children of d from the
@@ -1559,6 +1568,13 @@ func (m *Model) invalidateDetail() {
 	m.searchDown = nil
 	m.searchUp = nil
 	m.searchDErr = ""
+	m.commentsID = ""
+	m.comments = nil
+	m.commentsErr = ""
+	m.commentsLoading = false
+	m.commentsPendingID = ""
+	m.commentsGeneration++
+	m.commentsOffset = 0
 }
 
 // detailSeed carries what the board already knows about a bead so
@@ -2494,6 +2510,17 @@ func (m Model) detailContentBudget(lines int) (contentVis, maxOffset int) {
 		maxOffset = 0
 	}
 	return
+}
+
+// inlineCommentsMaxLines keeps a long comment thread from crowding every
+// other detail section out of the first viewport. The complete thread remains
+// reachable through the detail scroll and the c view.
+func (m Model) inlineCommentsMaxLines() int {
+	maxLines := m.detailVisLines() * 2 / 5
+	if maxLines < 4 {
+		maxLines = 4
+	}
+	return maxLines
 }
 
 // pane frames content lines (which may carry ANSI) into a bordered pane of

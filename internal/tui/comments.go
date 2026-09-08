@@ -18,24 +18,60 @@ func (m *Model) openComments(focusInput bool) tea.Cmd {
 		return nil
 	}
 	m.commentsOpen = true
-	m.commentsID = id
-	m.comments = nil
-	m.commentsErr = ""
-	m.commentsLoading = true
-	m.commentsOffset = 0
+	load := m.beginCommentsLoad(id)
 	m.commentsSubmitting = false
-	m.commentsGeneration++
 	m.commentsInput.SetValue("")
 	m.commentsInputActive = focusInput
 	var focus tea.Cmd
 	if focusInput {
 		focus = m.commentsInput.Focus()
 	}
-	load := m.loadCommentsCmd(id, m.commentsGeneration)
 	if focus != nil {
 		return tea.Batch(focus, load)
 	}
 	return load
+}
+
+// beginCommentsLoad resets the selected bead's comment snapshot and starts the
+// same asynchronous fetch used by the full comments view. Keeping the
+// generation here prevents a slow response for a previous selection from
+// replacing the current inline thread.
+func (m *Model) beginCommentsLoad(id string) tea.Cmd {
+	m.commentsID = id
+	m.comments = nil
+	m.commentsErr = ""
+	m.commentsLoading = true
+	m.commentsPendingID = ""
+	m.commentsOffset = 0
+	m.commentsGeneration++
+	return m.loadCommentsCmd(id, m.commentsGeneration)
+}
+
+// prepareCommentsForSelection starts an inline comment load when the selected
+// bead changes. It is deliberately independent of detail rendering so the bd
+// call never blocks list navigation or the detail pane.
+func (m *Model) prepareCommentsForSelection(id string) tea.Cmd {
+	if id == "" || m.commentsID == id {
+		return nil
+	}
+	m.commentsID = id
+	m.comments = nil
+	m.commentsErr = ""
+	m.commentsLoading = true
+	m.commentsPendingID = id
+	m.commentsOffset = 0
+	m.commentsGeneration++
+	return nil
+}
+
+// startPendingCommentsLoad launches the inline fetch after the detail
+// debounce settles, preserving the existing non-blocking navigation cadence.
+func (m *Model) startPendingCommentsLoad(id string) tea.Cmd {
+	if m.commentsPendingID != id {
+		return nil
+	}
+	m.commentsPendingID = ""
+	return m.loadCommentsCmd(id, m.commentsGeneration)
 }
 
 func (m *Model) closeComments() {
@@ -136,7 +172,10 @@ func (m Model) submitCommentCmd(id, text string) tea.Cmd {
 }
 
 func (m *Model) applyComments(msg commentsMsg) tea.Cmd {
-	if !m.commentsOpen || msg.id != m.commentsID || msg.generation != m.commentsGeneration {
+	if msg.id != m.commentsID || msg.generation != m.commentsGeneration {
+		return nil
+	}
+	if !m.commentsOpen && msg.id != m.selectedID() {
 		return nil
 	}
 	m.commentsLoading = false
@@ -167,9 +206,7 @@ func (m *Model) applyCommentSubmit(msg commentSubmitMsg) tea.Cmd {
 	m.commentsErr = ""
 	m.commentsInputActive = false
 	m.commentsInput.SetValue("")
-	m.commentsLoading = true
-	m.commentsGeneration++
-	return m.loadCommentsCmd(msg.id, m.commentsGeneration)
+	return m.beginCommentsLoad(msg.id)
 }
 
 func sortComments(comments []bd.Comment) []bd.Comment {
@@ -231,6 +268,63 @@ func (m Model) commentsThreadLines(width int) []string {
 	}
 	if m.commentsErr != "" && len(m.comments) > 0 {
 		lines = append(lines, styleError.Render("✗ "+truncate(m.commentsErr, width)))
+	}
+	return lines
+}
+
+// inlineCommentLines renders the compact, newest-first comment section used
+// by the detail pane. The full thread remains in commentsThreadLines so its
+// shipped chronological order and scrolling behavior do not change.
+func inlineCommentLines(comments []bd.Comment, loading bool, err string, count, width, maxLines int) []string {
+	if count < len(comments) {
+		count = len(comments)
+	}
+	lines := []string{styleSection.Render("Comments (" + itoa(count) + ")")}
+	if loading && len(comments) == 0 {
+		lines = append(lines, styleDim.Render("loading comments…"))
+	} else if err != "" && len(comments) == 0 {
+		lines = append(lines, styleError.Render("✗ Could not load comments."))
+		lines = append(lines, styleDim.Render(truncate(err, width)))
+	} else if len(comments) == 0 {
+		lines = append(lines, styleDim.Render("No comments - a to add"))
+	} else {
+		ordered := sortComments(comments)
+		for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
+			ordered[i], ordered[j] = ordered[j], ordered[i]
+		}
+		for i, comment := range ordered {
+			if i >= 5 {
+				break
+			}
+			author := comment.Author
+			if author == "" {
+				author = comment.CreatedBy
+			}
+			lines = append(lines, styleSection.Render(orDash(author)+" · "+relativeCommentTime(comment.CreatedAt)))
+			text := strings.TrimSpace(comment.Text)
+			if text == "" {
+				text = "(empty comment)"
+			}
+			for _, line := range wrapText(text, max(1, width-2)) {
+				lines = append(lines, "  "+line)
+			}
+			if i < min(4, len(ordered)-1) {
+				lines = append(lines, "")
+			}
+		}
+		if len(ordered) > 5 {
+			lines = append(lines, styleDim.Render("… c for all "+itoa(count)))
+		}
+	}
+	if maxLines < 1 {
+		maxLines = 1
+	}
+	if len(lines) > maxLines {
+		marker := styleDim.Render("… c for all " + itoa(count))
+		if maxLines == 1 {
+			return lines[:1]
+		}
+		lines = append(append([]string(nil), lines[:maxLines-1]...), marker)
 	}
 	return lines
 }
