@@ -61,7 +61,8 @@ The TUI is keyboard-driven:
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
 - `/` opens the incremental search prompt. Search by bead id, title, or
-  description, or use `status:open`, `priority:P1`, or `label:frontend`;
+  description, or use `status:open`, `priority:P1`, `label:frontend`,
+  `recurring`, or `recurring:false`;
   `enter` applies and `esc` cancels/restores the prior context.
 - `t` searches the selected bead's labels.
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);
@@ -107,8 +108,9 @@ priority (`P0`-`P4`), id, and title, plus at most two subdued dim labels
 inline (`[tag] [tag] +N` marks overflow); the full label set appears in the
 detail pane. Rows also carry `⇣N blocked-by`/`⇡N blocks` dependency chips and
 deferred rows include their `defer_until` date.
-In-progress rows include the owner beside their glyph when available, and the
-status is vibrant. View, search, sort, layout, and the tree fold state persist
+In-progress rows include the owner beside their glyph when available. Recurring
+rows carry `↻` and show their canonical agent assignee. The status is vibrant.
+View, search, sort, layout, and the tree fold state persist
 under the user's config directory.
 The footer reports the number of graph edges loaded, so dependency counts are
 observable rather than inferred from the list response.

@@ -60,6 +60,7 @@ const (
 	FilterLabel
 	FilterText
 	FilterSearch
+	FilterRecurring
 )
 
 // Filter is the parsed form of the filter prompt. Prefixes are optional for
@@ -83,6 +84,11 @@ func (f Filter) String() string {
 		return "priority:" + f.Query
 	case FilterLabel:
 		return "label:" + f.Query
+	case FilterRecurring:
+		if f.Query == "true" {
+			return "recurring"
+		}
+		return "recurring:" + f.Query
 	default:
 		return f.Query
 	}
@@ -104,10 +110,14 @@ func ParseFilter(input string) Filter {
 		{"priority:", FilterPriority},
 		{"label:", FilterLabel},
 		{"tag:", FilterLabel},
+		{"recurring:", FilterRecurring},
 	} {
 		if strings.HasPrefix(lower, prefix.name) {
 			return Filter{Kind: prefix.kind, Query: strings.TrimSpace(lower[len(prefix.name):])}
 		}
+	}
+	if lower == "recurring" {
+		return Filter{Kind: FilterRecurring, Query: "true"}
 	}
 	if strings.HasPrefix(lower, "p") && isPriority(lower) {
 		return Filter{Kind: FilterPriority, Query: lower}
@@ -137,10 +147,13 @@ func ParseSearchFilter(input string) Filter {
 		return Filter{}
 	}
 	lower := strings.ToLower(input)
-	for _, prefix := range []string{"status:", "priority:", "label:", "tag:"} {
+	for _, prefix := range []string{"status:", "priority:", "label:", "tag:", "recurring:"} {
 		if strings.HasPrefix(lower, prefix) {
 			return ParseFilter(input)
 		}
+	}
+	if lower == "recurring" {
+		return ParseFilter(input)
 	}
 	if isPriority(lower) {
 		return ParseFilter(input)
@@ -177,6 +190,15 @@ func (f Filter) Matches(issue bd.Issue) bool {
 			}
 		}
 		return false
+	case FilterRecurring:
+		switch f.Query {
+		case "true":
+			return issue.IsRecurring()
+		case "false":
+			return !issue.IsRecurring()
+		default:
+			return false
+		}
 	case FilterSearch:
 		needle := strings.ToLower(f.Query)
 		return strings.Contains(strings.ToLower(issue.Title), needle) ||

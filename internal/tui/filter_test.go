@@ -43,7 +43,7 @@ func TestSortIssuesModes(t *testing.T) {
 
 func TestFilterMatching(t *testing.T) {
 	issues := []bd.Issue{
-		{ID: "open", Title: "Write API docs", Description: "Explain the filter syntax", Status: "open", Priority: 1, Labels: []string{"docs", "ux"}},
+		{ID: "open", Title: "Write API docs", Description: "Explain the filter syntax", Status: "open", Priority: 1, Labels: []string{"docs", "ux"}, Repeat: "0 9 * * 1"},
 		{ID: "blocked", Title: "Fix runner", Description: "Needs credentials", Status: "blocked", Priority: 2, Labels: []string{"infra"}},
 		{ID: "closed", Title: "Ship it", Status: "closed", Priority: 0},
 	}
@@ -56,6 +56,9 @@ func TestFilterMatching(t *testing.T) {
 		{"label:UX", []string{"open"}},
 		{"credentials", []string{"blocked"}},
 		{"status:open", []string{"open"}},
+		{"recurring", []string{"open"}},
+		{"recurring:true", []string{"open"}},
+		{"recurring:false", []string{"blocked", "closed"}},
 	}
 	for _, tc := range tests {
 		got := FilterIssues(issues, ParseFilter(tc.input))
@@ -67,6 +70,33 @@ func TestFilterMatching(t *testing.T) {
 				t.Errorf("%q match %d = %q, want %q", tc.input, i, got[i].ID, want)
 			}
 		}
+	}
+}
+
+func TestRecurringRowsShowIconAndCanonicalAssignee(t *testing.T) {
+	vocab := NewVocab(nil)
+	recurring := stripANSI(vocab.ListRow(bd.Issue{
+		ID: "blog", Title: "Publish blog", Status: "open", Repeat: "weekly",
+		Assignee: "jr-voice", Owner: "spawned-worker-42",
+	}, 80, false))
+	oneOff := stripANSI(vocab.ListRow(bd.Issue{
+		ID: "once", Title: "One-off", Status: "open", Assignee: "jr-voice",
+	}, 80, false))
+	missingAssignee := stripANSI(vocab.ListRow(bd.Issue{
+		ID: "unassigned", Title: "Recurring", Status: "in_progress", Repeat: "daily",
+		Owner: "spawned-worker-42",
+	}, 80, false))
+	if !strings.Contains(recurring, recurringIcon) || !strings.Contains(recurring, "· jr-voice") {
+		t.Fatalf("recurring row missing icon or canonical assignee: %q", recurring)
+	}
+	if strings.Contains(recurring, "spawned-worker-42") {
+		t.Fatalf("recurring row displayed transient owner: %q", recurring)
+	}
+	if strings.Contains(missingAssignee, "spawned-worker-42") {
+		t.Fatalf("recurring row fell back to transient owner: %q", missingAssignee)
+	}
+	if strings.Contains(oneOff, recurringIcon) || strings.Contains(oneOff, "jr-voice") {
+		t.Fatalf("one-off row changed: %q", oneOff)
 	}
 }
 

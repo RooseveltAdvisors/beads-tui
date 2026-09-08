@@ -26,6 +26,8 @@ import (
 //   - Cycle and error markers keep bold red but are always paired with their
 //     own glyphs (⚠ for cycles, ✗ for errors), so red never reads as P0.
 const (
+	recurringIcon = "↻"
+
 	priorityP0 = "196" // red
 	priorityP1 = "208" // orange
 	priorityP2 = "220" // yellow
@@ -270,6 +272,9 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		usable = 1
 	}
 	icon := v.Icon(issue.Status)
+	if issue.IsRecurring() {
+		icon += recurringIcon
+	}
 	counts := ""
 	if issue.DependencyCount > 0 {
 		counts += "⇣" + itoa(issue.DependencyCount)
@@ -464,13 +469,24 @@ func compactRowStatus(issue bd.Issue, width int) string {
 
 func rowStatusTextForView(issue bd.Issue) string {
 	status := strings.TrimSpace(issue.Status)
+	owner := ""
+	if issue.IsRecurring() {
+		// Recurring work belongs to the canonical agent in assignee; Owner may
+		// identify a transient worker and must not replace it.
+		owner = strings.TrimSpace(issue.Assignee)
+	}
 	switch strings.ToLower(status) {
 	case "open", "blocked", "closed":
+		if owner != "" {
+			return "· " + owner
+		}
 		return ""
 	case "in_progress":
-		owner := strings.TrimSpace(issue.Assignee)
-		if owner == "" {
-			owner = strings.TrimSpace(issue.Owner)
+		if !issue.IsRecurring() {
+			owner = strings.TrimSpace(issue.Assignee)
+			if owner == "" {
+				owner = strings.TrimSpace(issue.Owner)
+			}
 		}
 		if owner != "" {
 			return "· " + owner
@@ -481,9 +497,18 @@ func rowStatusTextForView(issue bd.Issue) string {
 			if date, _, ok := strings.Cut(until, "T"); ok {
 				until = date
 			}
+			if owner != "" {
+				return "until " + until + " · " + owner
+			}
 			return "until " + until
 		}
+		if owner != "" {
+			return "· " + owner
+		}
 		return ""
+	}
+	if owner != "" {
+		return status + " · " + owner
 	}
 	return status
 }

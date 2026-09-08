@@ -76,6 +76,10 @@ type Issue struct {
 	ParentID        string   `json:"parent_id"`
 	Assignee        string   `json:"assignee"`
 	Owner           string   `json:"owner"`
+	Repeat          string   `json:"repeat"`
+	RecurrenceStart string   `json:"recurrence_start"`
+	RecurrenceEnd   string   `json:"recurrence_end"`
+	RecurrenceTZ    string   `json:"recurrence_tz"`
 	URL             string   `json:"url"`
 	Labels          []string `json:"labels"`
 	DeferUntil      string   `json:"defer_until"`
@@ -86,6 +90,9 @@ type Issue struct {
 	DependentCount  int      `json:"dependent_count"`
 	CommentCount    int      `json:"comment_count"`
 }
+
+// IsRecurring reports whether the issue carries a repeat schedule.
+func (i Issue) IsRecurring() bool { return strings.TrimSpace(i.Repeat) != "" }
 
 // DepRecord is one edge from `bd dep list --json`. DependencyType is the
 // edge kind as printed by bd's own tree view ("blocks", "tracks", ...).
