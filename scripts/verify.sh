@@ -193,7 +193,9 @@ tmux send-keys -t "$TARGET" C-m
 comment_visible=0
 for _ in $(seq 1 "$WAIT_SECONDS"); do
   pane="$(capture)"
-  if printf '%s\n' "$pane" | grep -qF "$comment_marker"; then
+  # The marker is visible in the input while AddComment is still running; only
+  # treat it as submitted once the input has closed and the thread owns it.
+  if printf '%s\n' "$pane" | grep -qF "$comment_marker" && ! printf '%s\n' "$pane" | grep -qF 'Comment ›'; then
     comment_visible=1
     break
   fi

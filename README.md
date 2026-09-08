@@ -58,11 +58,16 @@ The TUI is keyboard-driven:
   `q` (or `ctrl+c`) quits
 - `V` cycles the pane layout: side-by-side, stacked (list above detail), or
   auto; the choice persists across restarts
+- `o` opens persisted view options for task-row fields, detail sections, and
+  detail-pane visibility; `r` in that screen restores the defaults. Labels are
+  hidden from rows by default but remain available here and in task detail.
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
 - `/` opens the incremental search prompt. Search by bead id, title, or
   description, or use `status:open`, `priority:P1`, `label:frontend`,
-  `recurring`, or `recurring:false`;
+  `assignee:pi`, `comments:true`, `recurring`, or `recurring:false`. Spaces
+  combine conditions with AND, `|` means OR, `!` negates, and parentheses
+  group expressions;
   `enter` applies and `esc` cancels/restores the prior context.
 - `t` searches the selected bead's labels.
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);

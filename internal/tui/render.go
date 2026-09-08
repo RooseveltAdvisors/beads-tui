@@ -111,6 +111,35 @@ type Vocab struct {
 	cats  map[string]string
 }
 
+// ListFields is the persisted set of optional board-row fields. Title stays
+// on because a task list without it is not useful.
+type ListFields struct {
+	Status       bool `json:"status"`
+	Priority     bool `json:"priority"`
+	ID           bool `json:"id"`
+	Assignee     bool `json:"assignee"`
+	Comments     bool `json:"comments"`
+	Recurrence   bool `json:"recurrence"`
+	Labels       bool `json:"labels"`
+	Dependencies bool `json:"dependencies"`
+}
+
+func defaultListFields() ListFields {
+	return ListFields{Status: true, Priority: true, ID: true, Assignee: true, Comments: true, Recurrence: true, Dependencies: true}
+}
+
+type DetailFields struct {
+	Metadata    bool `json:"metadata"`
+	Description bool `json:"description"`
+	Notes       bool `json:"notes"`
+	Relations   bool `json:"relations"`
+	Comments    bool `json:"comments"`
+}
+
+func defaultDetailFields() DetailFields {
+	return DetailFields{Metadata: true, Description: true, Notes: true, Relations: true, Comments: true}
+}
+
 // markdownRenderer owns the width-specific Glamour renderer used by a model.
 // The TUI renders detail content for both scrolling and painting, so reusing
 // this renderer avoids rebuilding it on every keypress and frame.
@@ -235,17 +264,29 @@ func (v Vocab) StatusPillIssue(issue bd.Issue) string {
 
 // ListRow renders one flat board row at the given width.
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
-	return v.renderRow(issue, "", "", "", width, selected)
+	fields := defaultListFields()
+	fields.Labels = true // compatibility for callers that explicitly render a row
+	return v.ListRowWith(issue, width, selected, fields)
+}
+
+func (v Vocab) ListRowWith(issue bd.Issue, width int, selected bool, fields ListFields) string {
+	return v.renderRow(issue, "", "", "", width, selected, fields)
 }
 
 // TreeRow renders one dependency-tree row, including its branch connector,
 // expand/collapse marker, and depth-cap marker.
 func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
+	fields := defaultListFields()
+	fields.Labels = true
+	return v.TreeRowWith(row, width, selected, fields)
+}
+
+func (v Vocab) TreeRowWith(row TreeRow, width int, selected bool, fields ListFields) string {
 	deeper := ""
 	if row.Deeper > 0 {
 		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
 	}
-	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected)
+	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected, fields)
 }
 
 // treeMarker picks the expand/collapse glyph. A row carrying hidden deeper
@@ -263,7 +304,7 @@ func (v Vocab) treeMarker(row TreeRow) string {
 	return "▸ "
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool) string {
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool, fields ListFields) string {
 	usable := width
 	if selected {
 		usable -= 2
@@ -271,21 +312,27 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	if usable < 1 {
 		usable = 1
 	}
-	icon := v.Icon(issue.Status)
-	if issue.IsRecurring() {
+	icon := ""
+	if fields.Status {
+		icon = v.Icon(issue.Status)
+	}
+	if fields.Recurrence && issue.IsRecurring() {
 		icon += recurringIcon
 	}
 	counts := ""
-	if issue.DependencyCount > 0 {
+	if fields.Dependencies && issue.DependencyCount > 0 {
 		counts += "⇣" + itoa(issue.DependencyCount)
 	}
-	if issue.DependentCount > 0 {
+	if fields.Dependencies && issue.DependentCount > 0 {
 		if counts != "" {
 			counts += " "
 		}
 		counts += "⇡" + itoa(issue.DependentCount)
 	}
-	commentBadge := commentBadgeText(issue.CommentCount)
+	commentBadge := ""
+	if fields.Comments {
+		commentBadge = commentBadgeText(issue.CommentCount)
+	}
 	if width >= 48 && counts != "" {
 		counts = dependencyChips(issue)
 	}
@@ -302,10 +349,17 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		}
 		counts += styleCommentBadge.Render(commentBadge)
 	}
-	compactCounts := compactRowMetadata(issue, displayWidth(counts))
+	metadataIssue := issue
+	if !fields.Dependencies {
+		metadataIssue.DependencyCount, metadataIssue.DependentCount = 0, 0
+	}
+	if !fields.Comments {
+		metadataIssue.CommentCount = 0
+	}
+	compactCounts := compactRowMetadata(metadataIssue, displayWidth(counts))
 	reservedCounts := 0
 	compactCountReserve := 0
-	if issue.DependencyCount > 0 || issue.DependentCount > 0 {
+	if fields.Dependencies && (issue.DependencyCount > 0 || issue.DependentCount > 0) {
 		reservedCounts = displayWidth(counts) + 1
 		compactCountReserve = 2
 		if issue.DependencyCount > 0 && issue.DependentCount > 0 {
@@ -315,25 +369,40 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	if commentBadge != "" {
 		compactCountReserve += displayWidth(commentBadge) + 1
 	}
-	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+	core := func() string {
+		var parts []string
+		if icon != "" {
+			parts = append(parts, v.statusStyle(issue.Status).Render(icon))
+		}
+		if fields.Priority {
+			parts = append(parts, formatPriority(issue.Priority))
+		}
+		return marker + strings.Join(parts, " ")
+	}
+	corePrefix := core()
 	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-compactCountReserve))
 	statusBudget := max(0, usable-displayWidth(treePrefix)-displayWidth(corePrefix)-reservedCounts-1)
-	status := compactRowStatus(issue, statusBudget)
+	if fields.Assignee && strings.TrimSpace(issue.Assignee) != "" {
+		// Keep ownership recognizable without letting a long agent id consume
+		// the title column.
+		statusBudget = min(statusBudget, min(18, max(6, usable/4)))
+	}
+	status := compactRowStatus(issue, statusBudget, fields.Assignee)
 	prefixWithStatus := func() string {
-		prefix := treePrefix + marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
+		prefix := treePrefix + core()
 		if status != "" {
 			prefix += " " + v.statusStyle(issue.Status).Render(status)
 		}
 		return prefix
 	}
 	prefix := prefixWithStatus()
-	if issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
+	if fields.Dependencies && issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
 		icon = compactStatusIcon(issue.Status)
 		prefix = prefixWithStatus()
 	}
 
 	var body strings.Builder
-	if issue.ID != "" {
+	if fields.ID && issue.ID != "" {
 		body.WriteString(" ")
 		body.WriteString(issue.ID)
 	}
@@ -341,7 +410,10 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		body.WriteString(" ")
 		body.WriteString(issue.Title)
 	}
-	tags := renderTags(issue.Labels)
+	tags := ""
+	if fields.Labels {
+		tags = renderTags(issue.Labels)
+	}
 
 	// Status and priority stay present; extreme rows reduce wide status icons
 	// to one cell before compressing count digits for both dependency directions.
@@ -355,7 +427,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	if counts != "" && countWidth+1 > usable-prefixWidth {
 		countBudget := max(0, usable-prefixWidth-1)
 		line := prefix
-		if compact := compactRowMetadata(issue, countBudget); compact != "" {
+		if compact := compactRowMetadata(metadataIssue, countBudget); compact != "" {
 			line += " " + styleDim.Render(compact)
 		}
 		if selected {
@@ -447,11 +519,11 @@ func rowStatusText(issue bd.Issue) string {
 	return status
 }
 
-func compactRowStatus(issue bd.Issue, width int) string {
+func compactRowStatus(issue bd.Issue, width int, showAssignee bool) string {
 	if width <= 0 {
 		return ""
 	}
-	status := rowStatusTextForView(issue)
+	status := rowStatusTextForView(issue, showAssignee)
 	if displayWidth(status) <= width {
 		return status
 	}
@@ -467,12 +539,12 @@ func compactRowStatus(issue bd.Issue, width int) string {
 	return truncate(status, width)
 }
 
-func rowStatusTextForView(issue bd.Issue) string {
+func rowStatusTextForView(issue bd.Issue, showAssignee bool) string {
 	status := strings.TrimSpace(issue.Status)
 	owner := ""
-	if issue.IsRecurring() {
-		// Recurring work belongs to the canonical agent in assignee; Owner may
-		// identify a transient worker and must not replace it.
+	if showAssignee {
+		// Assignee is the canonical owning agent. Owner may identify a delegated
+		// worker, so it is intentionally never used in task rows.
 		owner = strings.TrimSpace(issue.Assignee)
 	}
 	switch strings.ToLower(status) {
@@ -482,12 +554,6 @@ func rowStatusTextForView(issue bd.Issue) string {
 		}
 		return ""
 	case "in_progress":
-		if !issue.IsRecurring() {
-			owner = strings.TrimSpace(issue.Assignee)
-			if owner == "" {
-				owner = strings.TrimSpace(issue.Owner)
-			}
-		}
 		if owner != "" {
 			return "· " + owner
 		}
@@ -617,6 +683,10 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children 
 }
 
 func buildDetailWithComments(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children []bd.Issue, width int, markdown *markdownRenderer, comments []bd.Comment, commentsLoading bool, commentsErr string, commentCount, inlineCommentsMaxLines int) []string {
+	return buildDetailVisible(v, d, down, up, chain, children, width, markdown, comments, commentsLoading, commentsErr, commentCount, inlineCommentsMaxLines, defaultDetailFields())
+}
+
+func buildDetailVisible(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children []bd.Issue, width int, markdown *markdownRenderer, comments []bd.Comment, commentsLoading bool, commentsErr string, commentCount, inlineCommentsMaxLines int, fields DetailFields) []string {
 	if d == nil {
 		return []string{styleDim.Render("No selection.")}
 	}
@@ -625,23 +695,25 @@ func buildDetailWithComments(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chai
 	if d.Title != "" {
 		lines = append(lines, styleBold.Render(d.Title))
 	}
-	meta := "ID " + d.ID + "  ·  " + formatPriority(d.Priority)
-	if d.IssueType != "" {
-		meta += "  ·  " + d.IssueType
+	if fields.Metadata {
+		meta := "ID " + d.ID + "  ·  " + formatPriority(d.Priority)
+		if d.IssueType != "" {
+			meta += "  ·  " + d.IssueType
+		}
+		lines = append(lines, styleDim.Render(meta))
+		lines = append(lines, styleDim.Render("Assignee: "+orDash(d.Assignee)))
+		if len(d.Labels) > 0 {
+			lines = append(lines, styleDim.Render("Labels: "+strings.Join(d.Labels, ", ")))
+		}
 	}
-	lines = append(lines, styleDim.Render(meta))
-	lines = append(lines, styleDim.Render("Assignee: "+orDash(d.Assignee)))
-	if len(d.Labels) > 0 {
-		lines = append(lines, styleDim.Render("Labels: "+strings.Join(d.Labels, ", ")))
-	}
-	if len(chain) > 0 {
+	if fields.Relations && len(chain) > 0 {
 		parts := make([]string, 0, len(chain))
 		for _, ancestor := range chain {
 			parts = append(parts, ancestor.ID)
 		}
 		lines = append(lines, styleDim.Render(truncate("Path: "+strings.Join(parts, " › "), width)))
 	}
-	if d.CreatedAt != "" {
+	if fields.Metadata && d.CreatedAt != "" {
 		lines = append(lines, styleDim.Render("Created: "+d.CreatedAt+"   Updated: "+orDash(d.UpdatedAt)))
 	}
 	dependencyCount := d.DependencyCount
@@ -652,12 +724,25 @@ func buildDetailWithComments(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chai
 	if len(up) > dependentCount {
 		dependentCount = len(up)
 	}
-	counts := "Depends " + itoa(dependencyCount) + " · Dependents " + itoa(dependentCount) + " · Comments " + itoa(d.CommentCount)
-	lines = append(lines, styleDim.Render(counts))
-	lines = append(lines, inlineCommentLines(comments, commentsLoading, commentsErr, commentCount, width, inlineCommentsMaxLines)...)
+	if fields.Relations || fields.Comments {
+		counts := ""
+		if fields.Relations {
+			counts = "Depends " + itoa(dependencyCount) + " · Dependents " + itoa(dependentCount)
+		}
+		if fields.Comments {
+			if counts != "" {
+				counts += " · "
+			}
+			counts += "Comments " + itoa(d.CommentCount)
+		}
+		lines = append(lines, styleDim.Render(counts))
+	}
+	if fields.Comments {
+		lines = append(lines, inlineCommentLines(comments, commentsLoading, commentsErr, commentCount, width, inlineCommentsMaxLines)...)
+	}
 	lines = append(lines, "")
 
-	if d.Description != "" {
+	if fields.Description && d.Description != "" {
 		lines = append(lines, styleSection.Render("Description"))
 		if markdown == nil {
 			markdown = &markdownRenderer{}
@@ -665,19 +750,19 @@ func buildDetailWithComments(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chai
 		lines = append(lines, markdown.render(d.Description, width)...)
 		lines = append(lines, "")
 	}
-	if d.Notes != "" {
+	if fields.Notes && d.Notes != "" {
 		lines = append(lines, styleSection.Render("Notes"))
 		lines = append(lines, wrapText(strings.TrimSpace(d.Notes), width)...)
 		lines = append(lines, "")
 	}
-	if len(down) > 0 {
+	if fields.Relations && len(down) > 0 {
 		lines = append(lines, styleSection.Render("Depends on ("+itoa(len(down))+") · blocked-by"))
 		for _, dep := range down {
 			lines = append(lines, depLine(v, dep, width, "↳ "))
 		}
 		lines = append(lines, "")
 	}
-	if len(children) > 0 {
+	if fields.Relations && len(children) > 0 {
 		lines = append(lines, styleSection.Render("Children ("+itoa(len(children))+")"))
 		for _, child := range children {
 			lines = append(lines, depLine(v, bd.DepRecord{
@@ -689,7 +774,7 @@ func buildDetailWithComments(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chai
 			}, width, "↳ "))
 		}
 	}
-	if len(up) > 0 {
+	if fields.Relations && len(up) > 0 {
 		lines = append(lines, styleSection.Render("Dependents ("+itoa(len(up))+") · blocks"))
 		for _, dep := range up {
 			lines = append(lines, depLine(v, dep, width, "↳ "))

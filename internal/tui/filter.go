@@ -61,6 +61,9 @@ const (
 	FilterText
 	FilterSearch
 	FilterRecurring
+	FilterAssignee
+	FilterComments
+	FilterExpression
 )
 
 // Filter is the parsed form of the filter prompt. Prefixes are optional for
@@ -68,6 +71,7 @@ const (
 type Filter struct {
 	Kind  FilterKind
 	Query string
+	expr  *filterExpr
 }
 
 func (f Filter) Active() bool { return f.Kind != FilterNone && strings.TrimSpace(f.Query) != "" }
@@ -89,6 +93,10 @@ func (f Filter) String() string {
 			return "recurring"
 		}
 		return "recurring:" + f.Query
+	case FilterAssignee:
+		return "assignee:" + f.Query
+	case FilterComments:
+		return "comments:" + f.Query
 	default:
 		return f.Query
 	}
@@ -97,6 +105,10 @@ func (f Filter) String() string {
 // ParseFilter turns the prompt syntax into a filter. Unknown values remain
 // valid filters and simply produce no matches, which makes typos visible.
 func ParseFilter(input string) Filter {
+	return parseFilterInput(input, false)
+}
+
+func parseLeaf(input string, search bool) Filter {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return Filter{}
@@ -111,6 +123,9 @@ func ParseFilter(input string) Filter {
 		{"label:", FilterLabel},
 		{"tag:", FilterLabel},
 		{"recurring:", FilterRecurring},
+		{"assignee:", FilterAssignee},
+		{"comments:", FilterComments},
+		{"text:", FilterText},
 	} {
 		if strings.HasPrefix(lower, prefix.name) {
 			return Filter{Kind: prefix.kind, Query: strings.TrimSpace(lower[len(prefix.name):])}
@@ -119,6 +134,9 @@ func ParseFilter(input string) Filter {
 	if lower == "recurring" {
 		return Filter{Kind: FilterRecurring, Query: "true"}
 	}
+	if lower == "comments" {
+		return Filter{Kind: FilterComments, Query: "true"}
+	}
 	if strings.HasPrefix(lower, "p") && isPriority(lower) {
 		return Filter{Kind: FilterPriority, Query: lower}
 	}
@@ -126,6 +144,9 @@ func ParseFilter(input string) Filter {
 	case "open", "in_progress", "blocked", "closed", "deferred":
 		return Filter{Kind: FilterStatus, Query: lower}
 	default:
+		if search {
+			return SearchFilter(lower)
+		}
 		return Filter{Kind: FilterText, Query: lower}
 	}
 }
@@ -142,27 +163,24 @@ func SearchFilter(input string) Filter {
 // ParseSearchFilter combines structured status/priority/label queries with
 // free-text slash search.
 func ParseSearchFilter(input string) Filter {
+	return parseFilterInput(input, true)
+}
+
+func parseFilterInput(input string, search bool) Filter {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return Filter{}
 	}
-	lower := strings.ToLower(input)
-	for _, prefix := range []string{"status:", "priority:", "label:", "tag:", "recurring:"} {
-		if strings.HasPrefix(lower, prefix) {
-			return ParseFilter(input)
-		}
+	tokens := filterTokens(input)
+	if len(tokens) == 1 {
+		return parseLeaf(tokens[0], search)
 	}
-	if lower == "recurring" {
-		return ParseFilter(input)
+	p := filterParser{tokens: tokens, search: true}
+	expr := p.parseOr()
+	if expr == nil || p.pos != len(tokens) {
+		return Filter{Kind: FilterExpression, Query: strings.ToLower(input)}
 	}
-	if isPriority(lower) {
-		return ParseFilter(input)
-	}
-	switch lower {
-	case "open", "in_progress", "blocked", "closed", "deferred":
-		return ParseFilter(input)
-	}
-	return SearchFilter(input)
+	return Filter{Kind: FilterExpression, Query: strings.ToLower(input), expr: expr}
 }
 
 // Matches reports whether issue satisfies f. Text searches intentionally use
@@ -199,6 +217,28 @@ func (f Filter) Matches(issue bd.Issue) bool {
 		default:
 			return false
 		}
+	case FilterAssignee:
+		return strings.EqualFold(strings.TrimSpace(issue.Assignee), strings.TrimSpace(f.Query))
+	case FilterComments:
+		switch f.Query {
+		case "true", "yes", "any":
+			return issue.CommentCount > 0
+		case "false", "no", "none":
+			return issue.CommentCount == 0
+		default:
+			n, err := strconv.Atoi(f.Query)
+			return err == nil && issue.CommentCount == n
+		}
+	case FilterExpression:
+		expr := f.expr
+		if expr == nil {
+			p := filterParser{tokens: filterTokens(f.Query), search: true}
+			expr = p.parseOr()
+			if p.pos != len(p.tokens) {
+				return false
+			}
+		}
+		return expr != nil && expr.matches(issue)
 	case FilterSearch:
 		needle := strings.ToLower(f.Query)
 		return strings.Contains(strings.ToLower(issue.Title), needle) ||
@@ -209,6 +249,128 @@ func (f Filter) Matches(issue bd.Issue) bool {
 		return strings.Contains(strings.ToLower(issue.Title), needle) ||
 			strings.Contains(strings.ToLower(issue.Description), needle)
 	}
+}
+
+type filterExpr struct {
+	op          byte
+	term        Filter
+	left, right *filterExpr
+}
+
+func (e *filterExpr) matches(issue bd.Issue) bool {
+	if e == nil {
+		return false
+	}
+	switch e.op {
+	case '!':
+		return !e.left.matches(issue)
+	case '&':
+		return e.left.matches(issue) && e.right.matches(issue)
+	case '|':
+		return e.left.matches(issue) || e.right.matches(issue)
+	default:
+		return e.term.Matches(issue)
+	}
+}
+
+// filterTokens keeps the existing one-term grammar and adds a small boolean
+// layer: whitespace (or &) means AND, | means OR, ! negates, and parentheses
+// group. Quoted text remains one search term.
+func filterTokens(input string) []string {
+	var tokens []string
+	var word strings.Builder
+	var quote rune
+	flush := func() {
+		if word.Len() > 0 {
+			tokens = append(tokens, word.String())
+			word.Reset()
+		}
+	}
+	for _, r := range input {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			} else {
+				word.WriteRune(r)
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case '(', ')', '!', '|', '&':
+			flush()
+			tokens = append(tokens, string(r))
+		case ' ', '\t', '\n':
+			flush()
+		default:
+			word.WriteRune(r)
+		}
+	}
+	flush()
+	return tokens
+}
+
+type filterParser struct {
+	tokens []string
+	pos    int
+	search bool
+}
+
+func (p *filterParser) parseOr() *filterExpr {
+	left := p.parseAnd()
+	for p.take("|") {
+		right := p.parseAnd()
+		if left == nil || right == nil {
+			return nil
+		}
+		left = &filterExpr{op: '|', left: left, right: right}
+	}
+	return left
+}
+
+func (p *filterParser) parseAnd() *filterExpr {
+	left := p.parseUnary()
+	for left != nil && p.pos < len(p.tokens) && p.tokens[p.pos] != ")" && p.tokens[p.pos] != "|" {
+		p.take("&")
+		right := p.parseUnary()
+		if right == nil {
+			return nil
+		}
+		left = &filterExpr{op: '&', left: left, right: right}
+	}
+	return left
+}
+
+func (p *filterParser) parseUnary() *filterExpr {
+	if p.take("!") {
+		child := p.parseUnary()
+		if child == nil {
+			return nil
+		}
+		return &filterExpr{op: '!', left: child}
+	}
+	if p.take("(") {
+		e := p.parseOr()
+		if !p.take(")") {
+			return nil
+		}
+		return e
+	}
+	if p.pos >= len(p.tokens) || strings.ContainsAny(p.tokens[p.pos], "()!|&") {
+		return nil
+	}
+	term := parseLeaf(p.tokens[p.pos], p.search)
+	p.pos++
+	return &filterExpr{term: term}
+}
+
+func (p *filterParser) take(token string) bool {
+	if p.pos < len(p.tokens) && p.tokens[p.pos] == token {
+		p.pos++
+		return true
+	}
+	return false
 }
 
 // FilterIssues returns a new slice containing only matching issues.

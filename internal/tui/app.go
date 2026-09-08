@@ -159,9 +159,12 @@ type Model struct {
 	detailDebounce    time.Duration
 	graph             bool
 	layout            LayoutMode
+	visibility        ViewVisibility
 
 	help         bool
 	helpOffset   int
+	options      bool
+	optionIndex  int
 	filtering    bool
 	searching    bool
 	searchBase   Filter
@@ -304,12 +307,24 @@ type yankMsg struct {
 }
 
 type savedState struct {
-	View     bd.View         `json:"view"`
-	SortMode SortMode        `json:"sort_mode"`
-	Filter   Filter          `json:"filter"`
-	Expanded map[string]bool `json:"expanded,omitempty"`
-	Layout   LayoutMode      `json:"layout,omitempty"`
-	Snapshot *boardSnapshot  `json:"board_snapshot,omitempty"`
+	View       bd.View         `json:"view"`
+	SortMode   SortMode        `json:"sort_mode"`
+	Filter     Filter          `json:"filter"`
+	Expanded   map[string]bool `json:"expanded,omitempty"`
+	Layout     LayoutMode      `json:"layout,omitempty"`
+	Visibility *ViewVisibility `json:"visibility,omitempty"`
+	Snapshot   *boardSnapshot  `json:"board_snapshot,omitempty"`
+}
+
+// ViewVisibility owns the independently persisted board and detail choices.
+type ViewVisibility struct {
+	DetailPane bool         `json:"detail_pane"`
+	List       ListFields   `json:"list"`
+	Detail     DetailFields `json:"detail"`
+}
+
+func defaultViewVisibility() ViewVisibility {
+	return ViewVisibility{DetailPane: true, List: defaultListFields(), Detail: defaultDetailFields()}
 }
 
 func statePath() (string, error) {
@@ -364,8 +379,15 @@ func loadState() (savedState, bool) {
 	default:
 		state.Layout = LayoutAuto
 	}
-	if state.Filter.Kind > FilterRecurring || len(state.Filter.Query) > 120 {
+	if state.Filter.Kind > FilterExpression || len(state.Filter.Query) > 120 {
 		state.Filter = Filter{}
+	}
+	if state.Filter.Kind == FilterExpression {
+		state.Filter = ParseSearchFilter(state.Filter.Query)
+	}
+	if state.Visibility == nil {
+		defaults := defaultViewVisibility()
+		state.Visibility = &defaults
 	}
 	return state, true
 }
@@ -397,12 +419,13 @@ func (m Model) saveState() {
 		return
 	}
 	data, err := json.MarshalIndent(savedState{
-		View:     m.view,
-		SortMode: m.sortMode,
-		Filter:   m.filter,
-		Expanded: cloneExpanded(m.expanded),
-		Layout:   m.layout,
-		Snapshot: cloneBoardSnapshot(m.lastSnapshot),
+		View:       m.view,
+		SortMode:   m.sortMode,
+		Filter:     m.filter,
+		Expanded:   cloneExpanded(m.expanded),
+		Layout:     m.layout,
+		Visibility: &m.visibility,
+		Snapshot:   cloneBoardSnapshot(m.lastSnapshot),
 	}, "", "  ")
 	if err != nil {
 		log.Printf("beads-tui: encode state: %v", err)
@@ -421,7 +444,7 @@ func (m Model) saveState() {
 func New(backend Backend) Model {
 	input := textinput.New()
 	input.Prompt = "Search / › "
-	input.Placeholder = "status:open  recurring  label:frontend  text"
+	input.Placeholder = "status:open assignee:pi comments:true !recurring"
 	input.CharLimit = 120
 	input.Width = 60
 	commentInput := textinput.New()
@@ -448,12 +471,14 @@ func New(backend Backend) Model {
 		detailCache:    map[string]cachedDetail{},
 		detailDebounce: detailDebounceDelay,
 		commentsInput:  commentInput,
+		visibility:     defaultViewVisibility(),
 	}
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
 			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
 			m.expanded = state.Expanded
 			m.layout = state.Layout
+			m.visibility = *state.Visibility
 			m.lastSnapshot = cloneBoardSnapshot(state.Snapshot)
 			if m.lastSnapshot != nil && m.lastSnapshot.View == m.view {
 				m.allRows = cloneIssues(m.lastSnapshot.Issues)
@@ -652,6 +677,23 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.helpOffset = 0
 		return m, nil
 	}
+	if m.options {
+		switch msg.String() {
+		case "esc", "q", "o":
+			m.options = false
+		case "j", "down":
+			m.optionIndex = min(m.optionIndex+1, len(viewOptionLabels)-1)
+		case "k", "up":
+			m.optionIndex = max(m.optionIndex-1, 0)
+		case " ", "enter":
+			m.toggleViewOption(m.optionIndex)
+			m.saveState()
+		case "r", "R":
+			m.visibility = defaultViewVisibility()
+			m.saveState()
+		}
+		return m, nil
+	}
 	if m.filtering {
 		switch msg.String() {
 		case "esc":
@@ -706,6 +748,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		m.saveState()
 		return m, tea.Quit
+	case "o":
+		m.options = true
+		m.optionIndex = 0
+		return m, nil
 	case "c":
 		return m, m.openComments(false)
 	case "C":
@@ -1130,8 +1176,10 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "tab" {
 			return m, nil
 		}
-		m.focus = FocusDetail
-		m.dOffset = 0
+		if m.visibility.DetailPane {
+			m.focus = FocusDetail
+			m.dOffset = 0
+		}
 	case "h", "left":
 		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && row.Expanded {
 			return m, m.foldRow(row.Issue.ID)
@@ -1141,11 +1189,15 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && !row.Expanded {
 			return m, m.unfoldRow(row.Issue.ID)
 		}
-		m.focus = FocusDetail
-		m.dOffset = 0
+		if m.visibility.DetailPane {
+			m.focus = FocusDetail
+			m.dOffset = 0
+		}
 	case "L":
-		m.focus = FocusDetail
-		m.dOffset = 0
+		if m.visibility.DetailPane {
+			m.focus = FocusDetail
+			m.dOffset = 0
+		}
 	case "*":
 		return m, m.expandAll()
 	case " ", "pgdown", "ctrl+f":
@@ -1254,9 +1306,10 @@ func (m Model) buildDetail(width int) []string {
 	if m.detail != nil && m.detail.CommentCount > commentCount {
 		commentCount = m.detail.CommentCount
 	}
-	return buildDetailWithComments(
+	return buildDetailVisible(
 		m.vocab, m.detail, m.down, m.up, chain, children, width, m.markdown,
 		m.comments, m.commentsLoading, m.commentsErr, commentCount, m.inlineCommentsMaxLines(),
+		m.visibility.Detail,
 	)
 }
 
@@ -1946,6 +1999,9 @@ func (m Model) View() string {
 	if m.help {
 		return m.renderHelp()
 	}
+	if m.options {
+		return m.renderViewOptions()
+	}
 	if m.commentsOpen {
 		return m.renderComments()
 	}
@@ -1970,7 +2026,12 @@ func (m Model) View() string {
 	var sb strings.Builder
 	sb.WriteString(m.renderHeader(w))
 	sb.WriteString("\n")
-	if m.layoutSideBySide() {
+	if !m.visibility.DetailPane {
+		for _, line := range listPane {
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+	} else if m.layoutSideBySide() {
 		for i := 0; i < paneH; i++ {
 			sb.WriteString(listPane[i])
 			sb.WriteString(" ")
@@ -1993,6 +2054,110 @@ func (m Model) View() string {
 	}
 	sb.WriteString(m.renderFooter(w))
 	return sb.String()
+}
+
+var viewOptionLabels = []string{
+	"Detail pane", "List status", "List priority", "List ID", "List assignee",
+	"List comments", "List recurrence", "List labels", "List dependencies",
+	"Detail metadata", "Detail description", "Detail notes", "Detail relations", "Detail comments",
+}
+
+func (m Model) viewOptionEnabled(index int) bool {
+	switch index {
+	case 0:
+		return m.visibility.DetailPane
+	case 1:
+		return m.visibility.List.Status
+	case 2:
+		return m.visibility.List.Priority
+	case 3:
+		return m.visibility.List.ID
+	case 4:
+		return m.visibility.List.Assignee
+	case 5:
+		return m.visibility.List.Comments
+	case 6:
+		return m.visibility.List.Recurrence
+	case 7:
+		return m.visibility.List.Labels
+	case 8:
+		return m.visibility.List.Dependencies
+	case 9:
+		return m.visibility.Detail.Metadata
+	case 10:
+		return m.visibility.Detail.Description
+	case 11:
+		return m.visibility.Detail.Notes
+	case 12:
+		return m.visibility.Detail.Relations
+	case 13:
+		return m.visibility.Detail.Comments
+	default:
+		return false
+	}
+}
+
+func (m *Model) toggleViewOption(index int) {
+	switch index {
+	case 0:
+		m.visibility.DetailPane = !m.visibility.DetailPane
+	case 1:
+		m.visibility.List.Status = !m.visibility.List.Status
+	case 2:
+		m.visibility.List.Priority = !m.visibility.List.Priority
+	case 3:
+		m.visibility.List.ID = !m.visibility.List.ID
+	case 4:
+		m.visibility.List.Assignee = !m.visibility.List.Assignee
+	case 5:
+		m.visibility.List.Comments = !m.visibility.List.Comments
+	case 6:
+		m.visibility.List.Recurrence = !m.visibility.List.Recurrence
+	case 7:
+		m.visibility.List.Labels = !m.visibility.List.Labels
+	case 8:
+		m.visibility.List.Dependencies = !m.visibility.List.Dependencies
+	case 9:
+		m.visibility.Detail.Metadata = !m.visibility.Detail.Metadata
+	case 10:
+		m.visibility.Detail.Description = !m.visibility.Detail.Description
+	case 11:
+		m.visibility.Detail.Notes = !m.visibility.Detail.Notes
+	case 12:
+		m.visibility.Detail.Relations = !m.visibility.Detail.Relations
+	case 13:
+		m.visibility.Detail.Comments = !m.visibility.Detail.Comments
+	}
+	if !m.visibility.DetailPane {
+		m.focus = FocusList
+		m.dOffset = 0
+	} else if index >= 9 {
+		m.dOffset = 0
+	}
+}
+
+func (m Model) renderViewOptions() string {
+	options := make([]string, 0, len(viewOptionLabels))
+	for i, label := range viewOptionLabels {
+		cursor := "  "
+		if i == m.optionIndex {
+			cursor = "▸ "
+		}
+		mark := "[ ] "
+		if m.viewOptionEnabled(i) {
+			mark = "[✓] "
+		}
+		options = append(options, cursor+mark+label)
+	}
+	visible := max(1, m.height-3)
+	top := max(0, m.optionIndex-visible/2)
+	if top+visible > len(options) {
+		top = max(0, len(options)-visible)
+	}
+	end := min(len(options), top+visible)
+	lines := []string{"space toggle · r defaults · esc close"}
+	lines = append(lines, options[top:end]...)
+	return strings.Join(pane("View options", lines, m.width, m.height), "\n")
 }
 
 func (m Model) renderYank() string {
@@ -2133,9 +2298,9 @@ func (m Model) renderListPane(w, h int) []string {
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
 			if m.treeMode && i < len(m.treeRows) {
-				lines = append(lines, m.vocab.TreeRow(m.treeRows[i], inner, i == m.selected))
+				lines = append(lines, m.vocab.TreeRowWith(m.treeRows[i], inner, i == m.selected, m.visibility.List))
 			} else {
-				lines = append(lines, m.vocab.ListRow(m.rows[i], inner, i == m.selected))
+				lines = append(lines, m.vocab.ListRowWith(m.rows[i], inner, i == m.selected, m.visibility.List))
 			}
 		}
 		if m.loading {
@@ -2257,7 +2422,7 @@ func (m Model) renderFooter(w int) string {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
 	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
-	defaultHints := styleDim.Render("r reload R reset s sort / search t tag c comments C add comment ? help q quit")
+	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view c comments C add comment ? help q quit")
 	shortHints := styleDim.Render("c comments C add ? help q quit")
 	hints := defaultHints
 	var left string
@@ -2360,18 +2525,19 @@ func (m Model) helpLines(width int) []string {
 	raw := []string{
 		"beads-tui - read-only board for Beads (bd)",
 		"",
-		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · G graph when edges · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back",
-		"  Half-page:     ctrl-u/d in list and detail",
+		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · G graph · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back · ctrl-u/d half-page",
 		"  Tree:          enter/tab toggle · * expand all · h collapse · l unfold or detail · v flat/tree (preserves selection) · siblings use active sort",
-		"  Layout:        V cycles side-by-side / stacked / auto (auto stacks below 140 columns)",
+		"  Layout:        V cycles side/stacked/auto (auto stacks below 140)",
 		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
-		"  Comments:      c view comments · a add from the thread · C add from the board · Esc/q back",
 		"  Navigation:    esc close detail / clear search",
+		"  Comments:      c view comments · a add from the thread · C add from the board · Esc/q back",
 		viewHelp,
 		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
-		"  Search:        / prompt · Enter apply · status:open · recurring · priority:P1 · label:frontend · text · Esc cancel",
 		"  Tags:          t search by the selected bead's labels",
-		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? (any key closes) · Quit: q/Ctrl+C",
+		"  View options:  o configure rows/detail/panes · r restores defaults",
+		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? · Quit: q/Ctrl+C",
+		"  Search:        / prompt · Enter apply · spaces AND · | OR · ! NOT · ( ) group · quote phrases · Esc cancel",
+		"                 status:open · priority:P1 · label:frontend · assignee:pi · comments:true · recurring:false · text:word",
 		"",
 		rowLegend,
 		"PRIORITY_COLORS",
@@ -2419,6 +2585,9 @@ func (m Model) helpMaxOffset() int {
 // side-by-side mode the panes share every row; in stacked mode the list sits
 // on top (~60% height) with the detail pane below.
 func (m Model) splitPanes(w, contentH int) (listPane, detailPane []string, lines int) {
+	if !m.visibility.DetailPane {
+		return m.renderListPane(w, contentH), nil, contentH
+	}
 	if m.layoutSideBySide() {
 		listW := listPaneWidth(w)
 		detailW := w - 1 - listW
@@ -2495,6 +2664,9 @@ func (m Model) detailWidth() int {
 }
 
 func (m Model) detailVisLines() int {
+	if !m.visibility.DetailPane {
+		return 0
+	}
 	h := m.height
 	if h <= 0 {
 		return 10
