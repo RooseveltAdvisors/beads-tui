@@ -525,6 +525,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		prev := m.selectedID()
+		commentCounts := make(map[string]int, len(m.allRows))
+		for _, issue := range m.allRows {
+			if issue.CommentCount > 0 {
+				commentCounts[issue.ID] = issue.CommentCount
+			}
+		}
+		for i := range msg.issues {
+			if count := commentCounts[msg.issues[i].ID]; count > msg.issues[i].CommentCount {
+				msg.issues[i].CommentCount = count
+			}
+		}
+		for i := range msg.graphIssues {
+			if count := commentCounts[msg.graphIssues[i].ID]; count > msg.graphIssues[i].CommentCount {
+				msg.graphIssues[i].CommentCount = count
+			}
+		}
 		m.allRows = append([]bd.Issue(nil), msg.issues...)
 		m.graphRows = append([]bd.Issue(nil), msg.graphIssues...)
 		m.deps = cloneDepMap(msg.deps)
