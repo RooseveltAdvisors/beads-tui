@@ -118,6 +118,97 @@ func TestLayoutToggleKeyCyclesAndPersists(t *testing.T) {
 	}
 }
 
+func TestViewOptionsPersistAcrossRestart(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	f := &fakeClient{}
+	m := newTestModel(f)
+	m.visibility.List.ID = false
+	m.visibility.List.Labels = true
+	m.visibility.Detail.Notes = false
+	m.visibility.DetailPane = false
+	m.saveState()
+
+	reloaded := New(f)
+	if reloaded.visibility.List.ID || !reloaded.visibility.List.Labels || reloaded.visibility.Detail.Notes || reloaded.visibility.DetailPane {
+		t.Fatalf("visibility did not persist: %+v", reloaded.visibility)
+	}
+}
+
+func TestHiddenDetailPaneUsesFullSpaceAndRestoresDefaults(t *testing.T) {
+	m := drive(t, nil)
+	m.width, m.height = 80, 20
+	m.focus = FocusDetail
+	m.options = true
+	m.optionIndex = 0
+	m = sendKey(t, m, "enter")
+	if m.visibility.DetailPane || m.focus != FocusList {
+		t.Fatalf("detail toggle = visible:%v focus:%v", m.visibility.DetailPane, m.focus)
+	}
+	view := stripANSI(m.View())
+	if strings.Contains(view, "┌Detail") {
+		t.Fatalf("hidden detail pane still rendered:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if displayWidth(line) > 80 {
+			t.Fatalf("hidden-pane line overflowed: %q", line)
+		}
+	}
+	m.options = true
+	m = sendKey(t, m, "r")
+	if !m.visibility.DetailPane || m.visibility.List.Labels {
+		t.Fatalf("restore defaults failed: %+v", m.visibility)
+	}
+}
+
+func TestDefaultRowsPreferTitleSpaceAndOptionsRespectResize(t *testing.T) {
+	m := drive(t, &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{
+			ID: "fm-density", Title: strings.Repeat("useful title ", 8), Status: "open", Priority: 1,
+			Assignee: "pi", CommentCount: 3, Labels: []string{"a-very-long-tag-that-should-stay-hidden"},
+		},
+	}}})
+	for _, width := range []int{42, 180} {
+		m.width = width
+		view := stripANSI(strings.Join(m.renderListPane(width, 8), "\n"))
+		if strings.Contains(view, "a-very-long-tag") || !strings.Contains(view, "pi") || !strings.Contains(view, "💬3") {
+			t.Fatalf("width %d default row fields wrong: %q", width, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if displayWidth(line) > width {
+				t.Fatalf("width %d overflow: %q", width, line)
+			}
+		}
+	}
+}
+
+func TestDetailSectionsToggleIndependently(t *testing.T) {
+	m := New(nil)
+	m.detail = testDetail()
+	m.visibility.Detail.Description = false
+	m.visibility.Detail.Notes = true
+	plain := stripANSI(strings.Join(m.buildDetail(70), "\n"))
+	if strings.Contains(plain, "Description") || !strings.Contains(plain, "Notes") {
+		t.Fatalf("detail section visibility ignored: %q", plain)
+	}
+	m.visibility.Detail.Notes = false
+	m.visibility.Detail.Metadata = false
+	plain = stripANSI(strings.Join(m.buildDetail(70), "\n"))
+	if strings.Contains(plain, "Assigned last sprint") || strings.Contains(plain, "Assignee:") {
+		t.Fatalf("hidden detail sections leaked: %q", plain)
+	}
+}
+
+func TestViewOptionsKeepSelectionVisibleInNarrowTerminal(t *testing.T) {
+	m := New(nil)
+	m.width, m.height = 38, 7
+	m.options = true
+	m.optionIndex = len(viewOptionLabels) - 1
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Detail comments") || !strings.Contains(view, "r defaults") {
+		t.Fatalf("narrow options hid selection or restore control: %q", view)
+	}
+}
+
 func TestDetailScrollOffsetStaysValidAcrossLayoutChange(t *testing.T) {
 	issues := []bd.Issue{{ID: "fm-long", Title: "Long", Status: "open"}}
 	long := testDetailOf("fm-long")

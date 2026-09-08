@@ -73,7 +73,7 @@ func TestFilterMatching(t *testing.T) {
 	}
 }
 
-func TestRecurringRowsShowIconAndCanonicalAssignee(t *testing.T) {
+func TestRowsShowCanonicalAssigneeAndRecurringIcon(t *testing.T) {
 	vocab := NewVocab(nil)
 	recurring := stripANSI(vocab.ListRow(bd.Issue{
 		ID: "blog", Title: "Publish blog", Status: "open", Repeat: "weekly",
@@ -95,8 +95,33 @@ func TestRecurringRowsShowIconAndCanonicalAssignee(t *testing.T) {
 	if strings.Contains(missingAssignee, "spawned-worker-42") {
 		t.Fatalf("recurring row fell back to transient owner: %q", missingAssignee)
 	}
-	if strings.Contains(oneOff, recurringIcon) || strings.Contains(oneOff, "jr-voice") {
-		t.Fatalf("one-off row changed: %q", oneOff)
+	if strings.Contains(oneOff, recurringIcon) || !strings.Contains(oneOff, "· jr-voice") {
+		t.Fatalf("one-off row lost assignee or gained recurrence: %q", oneOff)
+	}
+}
+
+func TestMixedFilterCompositionNegationAndGrouping(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "a", Title: "Write docs", Status: "open", Priority: 1, Labels: []string{"ux"}, Assignee: "pi", Repeat: "weekly", CommentCount: 2},
+		{ID: "b", Title: "Fix runner", Status: "blocked", Priority: 1, Labels: []string{"infra"}, Assignee: "pi"},
+		{ID: "c", Title: "Write docs", Status: "open", Priority: 1, Labels: []string{"ux"}, Assignee: "worker", CommentCount: 1},
+	}
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"recurring assignee:pi comments:true status:open priority:p1 label:ux text:docs", "a"},
+		{"(status:open | status:blocked) !recurring comments:false assignee:pi", "b"},
+		{"status:closed | (assignee:worker comments:true !recurring)", "c"},
+	} {
+		got := FilterIssues(issues, ParseFilter(tc.query))
+		if len(got) != 1 || got[0].ID != tc.want {
+			t.Fatalf("%q matched %+v, want %s", tc.query, got, tc.want)
+		}
+	}
+	got := FilterIssues(issues, ParseFilter("status:blocked | status:open assignee:worker"))
+	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "c" {
+		t.Fatalf("AND did not bind tighter than OR: %+v", got)
 	}
 }
 
@@ -178,6 +203,20 @@ func TestBoardStatePersistsAcrossModels(t *testing.T) {
 	reloaded := New(f)
 	if reloaded.view != bd.ViewClosed || reloaded.sortMode != SortDependencies || reloaded.filter.String() != "priority:p1" {
 		t.Fatalf("reloaded state = view:%s sort:%s filter:%s", reloaded.view, reloaded.sortMode, reloaded.filter)
+	}
+}
+
+func TestCompositeFilterPersistsAcrossModels(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	f := &fakeClient{}
+	m := newTestModel(f)
+	m.filter = ParseSearchFilter("assignee:pi comments:true !recurring")
+	m.saveState()
+
+	reloaded := New(f)
+	matching := bd.Issue{Assignee: "pi", CommentCount: 1}
+	if reloaded.filter.Kind != FilterExpression || !reloaded.filter.Matches(matching) || reloaded.filter.Matches(bd.Issue{Assignee: "pi"}) {
+		t.Fatalf("reloaded composite filter = %+v", reloaded.filter)
 	}
 }
 
