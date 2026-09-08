@@ -250,12 +250,7 @@ func (m Model) commentsThreadLines(width int) []string {
 		lines = append(lines, styleDim.Render("No comments - press a to add"))
 	default:
 		for _, comment := range m.comments {
-			author := comment.Author
-			if author == "" {
-				author = comment.CreatedBy
-			}
-			meta := orDash(author) + " · " + relativeCommentTime(comment.CreatedAt)
-			lines = append(lines, styleSection.Render(meta))
+			lines = append(lines, commentHeader(comment, width))
 			text := strings.TrimSpace(comment.Text)
 			if text == "" {
 				text = "(empty comment)"
@@ -296,11 +291,7 @@ func inlineCommentLines(comments []bd.Comment, loading bool, err string, count, 
 			if i >= 5 {
 				break
 			}
-			author := comment.Author
-			if author == "" {
-				author = comment.CreatedBy
-			}
-			lines = append(lines, styleSection.Render(orDash(author)+" · "+relativeCommentTime(comment.CreatedAt)))
+			lines = append(lines, commentHeader(comment, width))
 			text := strings.TrimSpace(comment.Text)
 			if text == "" {
 				text = "(empty comment)"
@@ -327,6 +318,22 @@ func inlineCommentLines(comments []bd.Comment, loading bool, err string, count, 
 		lines = append(append([]string(nil), lines[:maxLines-1]...), marker)
 	}
 	return lines
+}
+
+// commentHeader keeps the author as the first, visually distinct part of
+// every comment header while reserving room for the relative timestamp.
+func commentHeader(comment bd.Comment, width int) string {
+	author := strings.TrimSpace(comment.Author)
+	if author == "" {
+		author = strings.TrimSpace(comment.CreatedBy)
+	}
+	author = orDash(author)
+	timestamp := " · " + relativeCommentTime(comment.CreatedAt)
+	authorWidth := width - displayWidth(timestamp)
+	if authorWidth < 1 {
+		return truncatePhys(styleCommentAuthor.Render(author), width)
+	}
+	return styleCommentAuthor.Render(truncate(author, authorWidth)) + styleDim.Render(timestamp)
 }
 
 func (m Model) commentsMaxOffset() int {

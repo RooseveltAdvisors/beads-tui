@@ -1178,6 +1178,16 @@ func TestCommentsViewLoadsScrollsAndAddsWithoutBoardReload(t *testing.T) {
 	if m.rows[0].CommentCount != 2 || m.allRows[0].CommentCount != 2 {
 		t.Fatalf("comment count not updated in place: rows=%d all=%d", m.rows[0].CommentCount, m.allRows[0].CommentCount)
 	}
+	graph := graphMsg{
+		view: bd.ViewOpen, generation: m.boardGen,
+		issues:      []bd.Issue{{ID: "fm-comments", Title: "Commentable task", Status: "open"}},
+		graphIssues: []bd.Issue{{ID: "fm-comments", Title: "Commentable task", Status: "open"}},
+		complete:    true,
+	}
+	m = applyMsg(t, m, graph)
+	if m.rows[0].CommentCount != 2 {
+		t.Fatalf("graph enrichment dropped in-memory comment count: %d", m.rows[0].CommentCount)
+	}
 	if f.listCalls != listCalls {
 		t.Fatalf("adding a comment reloaded board: before=%d after=%d", listCalls, f.listCalls)
 	}
@@ -1232,6 +1242,63 @@ func TestListRowsCarryMarks(t *testing.T) {
 	}
 	if strings.Contains(plain, "fm-xT") {
 		t.Errorf("row fields jammed: %q", plain)
+	}
+}
+
+func TestListRowsRenderCommentBadgesAtResponsiveWidths(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	v := NewVocab(nil)
+	for _, count := range []int{0, 1, 12, 120} {
+		for _, width := range []int{24, 80} {
+			row := v.ListRow(bd.Issue{
+				ID: "fm-comments", Title: "Commentable task", Status: "open", CommentCount: count,
+			}, width, false)
+			plain := stripANSI(row)
+			if displayWidth(row) > width {
+				t.Errorf("count %d at width %d overflowed: %q", count, width, plain)
+			}
+			badge := commentBadgeText(count)
+			if count == 0 {
+				if strings.Contains(plain, "💬") || strings.Contains(plain, "C0") {
+					t.Errorf("zero-count row rendered a comment badge: %q", plain)
+				}
+			} else if !strings.Contains(plain, badge) {
+				t.Errorf("count %d at width %d missing badge %q: %q", count, width, badge, plain)
+			}
+		}
+	}
+}
+
+func TestListRowsUseASCIICommentBadgeForDumbTerminal(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	row := NewVocab(nil).ListRow(bd.Issue{ID: "fm-comments", Status: "open", CommentCount: 12}, 24, false)
+	plain := stripANSI(row)
+	if !strings.Contains(plain, "C12") || strings.Contains(plain, "💬") {
+		t.Fatalf("dumb terminal badge = %q, want ASCII C12", plain)
+	}
+}
+
+func TestCommentHeadersPutTruncatedAuthorFirst(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	comment := bd.Comment{
+		Author:    "Jon Roosevelt with a very long display name",
+		Text:      "A note",
+		CreatedAt: "2026-09-07T12:00:00Z",
+	}
+	headers := []string{commentHeader(comment, 32)}
+	inline := inlineCommentLines([]bd.Comment{comment}, false, "", 1, 32, 10)
+	headers = append(headers, inline[1])
+	for _, header := range headers {
+		plain := stripANSI(header)
+		if displayWidth(header) > 32 {
+			t.Errorf("comment header overflowed: %q", plain)
+		}
+		if !strings.HasPrefix(plain, "Jon Roosevelt") {
+			t.Errorf("comment author was not first: %q", plain)
+		}
+		if !strings.Contains(plain, "·") || !strings.Contains(plain, "ago") {
+			t.Errorf("comment header missing relative time: %q", plain)
+		}
 	}
 }
 

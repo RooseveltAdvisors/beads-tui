@@ -210,11 +210,17 @@ printf '✓ comments view loaded, submitted, and matched bd JSON (%s)\n' "$comme
 tmux send-keys -t "$TARGET" Escape
 tmux send-keys -t "$TARGET" l
 tmux send-keys -t "$TARGET" G
+comment_badge_visible=0
 inline_comment_visible=0
 for _ in $(seq 1 "$WAIT_SECONDS"); do
   pane="$(capture)"
+  if printf '%s\n' "$pane" | grep -qE "$comment_id.*(💬1|C1)"; then
+    comment_badge_visible=1
+  fi
   if printf '%s\n' "$pane" | grep -qF "Comments (1)" && printf '%s\n' "$pane" | grep -qF "$comment_marker"; then
     inline_comment_visible=1
+  fi
+  if [ "$comment_badge_visible" -eq 1 ] && [ "$inline_comment_visible" -eq 1 ]; then
     break
   fi
   case "$(pane_state)" in
@@ -222,11 +228,11 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
   esac
   sleep 1
 done
+[ "$comment_badge_visible" -eq 1 ] || die 'comment badge did not appear on the board row after posting'
 [ "$inline_comment_visible" -eq 1 ] || die 'submitted comment did not appear in inline detail without opening c view'
 printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
+printf '✓ comment badge appeared on the board row (%s)\n' "$comment_id"
 printf '✓ inline detail refreshed without opening c view (%s)\n' "$comment_id"
-tmux send-keys -t "$TARGET" q
-sleep 0.2
 stop_tui
 
 printf '✓ verify passed; evidence: %s\n' "$EVIDENCE_DIR/beads-tui-verify.txt"

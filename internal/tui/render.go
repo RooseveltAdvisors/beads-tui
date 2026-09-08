@@ -5,6 +5,7 @@ package tui
 
 import (
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -76,11 +77,13 @@ var workStateIcons = map[string]string{
 }
 
 var (
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	styleBold     = lipgloss.NewStyle().Bold(true)
-	styleSection  = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true)
-	styleSelected = lipgloss.NewStyle().
-			Background(lipgloss.Color("238"))
+	styleDim           = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	styleBold          = lipgloss.NewStyle().Bold(true)
+	styleSection       = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true)
+	styleCommentAuthor = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	styleCommentBadge  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	styleSelected      = lipgloss.NewStyle().
+				Background(lipgloss.Color("238"))
 )
 
 func viewStyle(view bd.View) lipgloss.Style {
@@ -268,19 +271,16 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	}
 	icon := v.Icon(issue.Status)
 	counts := ""
-	compactCounts := ""
 	if issue.DependencyCount > 0 {
 		counts += "⇣" + itoa(issue.DependencyCount)
-		compactCounts += itoa(issue.DependencyCount)
 	}
 	if issue.DependentCount > 0 {
 		if counts != "" {
 			counts += " "
-			compactCounts += "/"
 		}
 		counts += "⇡" + itoa(issue.DependentCount)
-		compactCounts += itoa(issue.DependentCount)
 	}
+	commentBadge := commentBadgeText(issue.CommentCount)
 	if width >= 48 && counts != "" {
 		counts = dependencyChips(issue)
 	}
@@ -291,6 +291,13 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		}
 		counts += suffix
 	}
+	if commentBadge != "" {
+		if counts != "" {
+			counts += "  "
+		}
+		counts += styleCommentBadge.Render(commentBadge)
+	}
+	compactCounts := compactRowMetadata(issue, displayWidth(counts))
 	reservedCounts := 0
 	compactCountReserve := 0
 	if issue.DependencyCount > 0 || issue.DependentCount > 0 {
@@ -299,6 +306,9 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		if issue.DependencyCount > 0 && issue.DependentCount > 0 {
 			compactCountReserve = 4
 		}
+	}
+	if commentBadge != "" {
+		compactCountReserve += displayWidth(commentBadge) + 1
 	}
 	corePrefix := marker + v.statusStyle(issue.Status).Render(icon) + " " + formatPriority(issue.Priority)
 	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-compactCountReserve))
@@ -340,7 +350,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	if counts != "" && countWidth+1 > usable-prefixWidth {
 		countBudget := max(0, usable-prefixWidth-1)
 		line := prefix
-		if compact := compactDependencyCounts(issue.DependencyCount, issue.DependentCount, countBudget); compact != "" {
+		if compact := compactRowMetadata(issue, countBudget); compact != "" {
 			line += " " + styleDim.Render(compact)
 		}
 		if selected {
@@ -375,6 +385,45 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+// commentBadgeText is deliberately kept in the row metadata slot so it stays
+// right-aligned beside dependency counts without requiring another bd call.
+// TERM=dumb is the conventional terminal signal that Unicode glyphs should
+// not be used; C1 keeps the count legible in that mode.
+func commentBadgeText(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
+		return "C" + itoa(count)
+	}
+	return "💬" + itoa(count)
+}
+
+func compactRowMetadata(issue bd.Issue, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	badge := commentBadgeText(issue.CommentCount)
+	if badge == "" {
+		return compactDependencyCounts(issue.DependencyCount, issue.DependentCount, width)
+	}
+	if issue.DependencyCount == 0 && issue.DependentCount == 0 {
+		if displayWidth(badge) <= width {
+			return badge
+		}
+		return ""
+	}
+	dependencyWidth := width - displayWidth(badge) - 1
+	dependency := compactDependencyCounts(issue.DependencyCount, issue.DependentCount, dependencyWidth)
+	if dependency == "" {
+		if displayWidth(badge) <= width {
+			return badge
+		}
+		return ""
+	}
+	return dependency + " " + badge
 }
 
 // rowStatus renders the bd status.
