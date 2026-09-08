@@ -539,6 +539,10 @@ func BuildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, width int) []str
 }
 
 func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children []bd.Issue, width int, markdown *markdownRenderer) []string {
+	return buildDetailWithComments(v, d, down, up, chain, children, width, markdown, nil, false, "", 0, 0)
+}
+
+func buildDetailWithComments(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children []bd.Issue, width int, markdown *markdownRenderer, comments []bd.Comment, commentsLoading bool, commentsErr string, commentCount, inlineCommentsMaxLines int) []string {
 	if d == nil {
 		return []string{styleDim.Render("No selection.")}
 	}
@@ -576,6 +580,7 @@ func buildDetail(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, children 
 	}
 	counts := "Depends " + itoa(dependencyCount) + " · Dependents " + itoa(dependentCount) + " · Comments " + itoa(d.CommentCount)
 	lines = append(lines, styleDim.Render(counts))
+	lines = append(lines, inlineCommentLines(comments, commentsLoading, commentsErr, commentCount, width, inlineCommentsMaxLines)...)
 	lines = append(lines, "")
 
 	if d.Description != "" {

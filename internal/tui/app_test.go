@@ -1185,6 +1185,10 @@ func TestCommentsViewLoadsScrollsAndAddsWithoutBoardReload(t *testing.T) {
 	if m.commentsOpen {
 		t.Fatal("esc did not leave comments view")
 	}
+	inline := stripANSI(m.View())
+	if !strings.Contains(inline, "Comments (2)") || !strings.Contains(inline, "Added from the comments view") {
+		t.Fatalf("new comment missing from inline detail section:\n%s", inline)
+	}
 }
 
 func TestBoardCOpensCommentsWithInput(t *testing.T) {
@@ -1413,5 +1417,57 @@ func TestFilterKeepsAncestorsVisible(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "root,mid,hit" {
 		t.Fatalf("filtered tree rows = %v, want ancestors kept", got)
+	}
+}
+
+func TestInlineCommentsRenderCountsOrderTruncationAndWrapping(t *testing.T) {
+	m := New(nil)
+	m.width, m.height, m.layout = 160, 80, LayoutSide
+	m.detail = &bd.Issue{ID: "inline", Title: "Inline comments", Status: "open"}
+	m.commentsID = "inline"
+
+	for _, count := range []int{0, 1, 5, 7} {
+		comments := make([]bd.Comment, count)
+		for i := range comments {
+			comments[i] = bd.Comment{
+				Author:    "author-" + itoa(i),
+				Text:      "comment-" + itoa(i),
+				CreatedAt: fmt.Sprintf("2026-09-07T12:%02d:00Z", i),
+			}
+		}
+		m.detail.CommentCount = count
+		m.comments = sortComments(comments)
+		m.commentsLoading = false
+		plain := stripANSI(strings.Join(m.buildDetail(40), "\n"))
+		if !strings.Contains(plain, "Comments ("+itoa(count)+")") {
+			t.Errorf("count %d missing comments heading:\n%s", count, plain)
+		}
+		switch count {
+		case 0:
+			if !strings.Contains(plain, "No comments - a to add") {
+				t.Errorf("empty inline thread missing add hint:\n%s", plain)
+			}
+		case 1:
+			if !strings.Contains(plain, "author-0") || !strings.Contains(plain, "comment-0") {
+				t.Errorf("single inline comment missing:\n%s", plain)
+			}
+		case 5:
+			if !strings.Contains(plain, "author-4") || !strings.Contains(plain, "author-0") || strings.Contains(plain, "c for all") {
+				t.Errorf("five inline comments rendered incorrectly:\n%s", plain)
+			}
+		case 7:
+			if !strings.Contains(plain, "… c for all 7") {
+				t.Errorf("long inline thread missing truncation line:\n%s", plain)
+			}
+			if strings.Index(plain, "author-6") > strings.Index(plain, "author-5") {
+				t.Errorf("inline comments are not newest first:\n%s", plain)
+			}
+		}
+	}
+
+	m.comments = []bd.Comment{{Author: "wrap", Text: "one two three four five", CreatedAt: "2026-09-07T12:00:00Z"}}
+	plain := stripANSI(strings.Join(m.buildDetail(20), "\n"))
+	if !strings.Contains(plain, "  one two three four\n  five") {
+		t.Fatalf("inline comment text did not wrap to pane width:\n%s", plain)
 	}
 }
