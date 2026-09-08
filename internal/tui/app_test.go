@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1198,6 +1199,24 @@ func TestCommentsViewLoadsScrollsAndAddsWithoutBoardReload(t *testing.T) {
 	inline := stripANSI(m.View())
 	if !strings.Contains(inline, "Comments (2)") || !strings.Contains(inline, "Added from the comments view") {
 		t.Fatalf("new comment missing from inline detail section:\n%s", inline)
+	}
+}
+
+func TestCommentsNewestFirstStableWithoutMutatingRecords(t *testing.T) {
+	sameTime := "2026-09-07T13:00:00Z"
+	stored := []bd.Comment{
+		{ID: "old", Author: "Ada", Text: "Old note", CreatedAt: "2026-09-07T12:00:00Z"},
+		{ID: "new-a", Author: "Grace", Text: "First same-time note", CreatedAt: sameTime},
+		{ID: "new-b", Author: "Linus", Text: "Second same-time note", CreatedAt: sameTime},
+	}
+	wantStored := append([]bd.Comment(nil), stored...)
+
+	ordered := sortComments(stored)
+	if got := []string{ordered[0].ID, ordered[1].ID, ordered[2].ID}; !reflect.DeepEqual(got, []string{"new-a", "new-b", "old"}) {
+		t.Fatalf("comment order = %v, want stable newest-first order", got)
+	}
+	if !reflect.DeepEqual(stored, wantStored) {
+		t.Fatalf("stored comments mutated: got %+v, want %+v", stored, wantStored)
 	}
 }
 

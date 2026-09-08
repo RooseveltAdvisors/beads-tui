@@ -187,7 +187,7 @@ func (m *Model) applyComments(msg commentsMsg) tea.Cmd {
 	m.commentsErr = ""
 	m.comments = sortComments(msg.comments)
 	m.updateCommentCount(msg.id, len(m.comments))
-	m.commentsOffset = m.commentsMaxOffset()
+	m.commentsOffset = 0
 	return nil
 }
 
@@ -217,7 +217,7 @@ func sortComments(comments []bd.Comment) []bd.Comment {
 		if leftErr != nil || rightErr != nil {
 			return false
 		}
-		return left.Before(right)
+		return left.After(right)
 	})
 	return comments
 }
@@ -268,8 +268,7 @@ func (m Model) commentsThreadLines(width int) []string {
 }
 
 // inlineCommentLines renders the compact, newest-first comment section used
-// by the detail pane. The full thread remains in commentsThreadLines so its
-// shipped chronological order and scrolling behavior do not change.
+// by the detail pane.
 func inlineCommentLines(comments []bd.Comment, loading bool, err string, count, width, maxLines int) []string {
 	if count < len(comments) {
 		count = len(comments)
@@ -284,9 +283,6 @@ func inlineCommentLines(comments []bd.Comment, loading bool, err string, count, 
 		lines = append(lines, styleDim.Render("No comments - a to add"))
 	} else {
 		ordered := sortComments(comments)
-		for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
-			ordered[i], ordered[j] = ordered[j], ordered[i]
-		}
 		for i, comment := range ordered {
 			if i >= 5 {
 				break
