@@ -458,6 +458,77 @@ func showLogContains(f *fakeClient, id string) bool {
 	return false
 }
 
+// Regression (fm-isv6): a bead claimed into another status (open ->
+// in_progress three minutes after creation) vanished from the captain's
+// persisted open tab, and searching its ID there reported "No matches".
+// The graph snapshot already holds every issue, so a search must find beads
+// outside the active status tab.
+func TestSearchFindsBeadOnOtherStatusTab(t *testing.T) {
+	claimed := bd.Issue{ID: "fm-0nli", Title: "Update Zeta distribution for new keybindings", Status: "in_progress", Priority: 1, IssueType: "task", Assignee: "fork-converge"}
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{
+		bd.ViewOpen:       {{ID: "fm-aaa", Title: "Alpha task", Status: "open", Priority: 0, IssueType: "task"}},
+		bd.ViewInProgress: {claimed},
+	}}
+	m := drive(t, f)
+	if len(m.graphRows) == 0 {
+		t.Fatal("graph snapshot did not load; the cross-tab search path is untested")
+	}
+
+	// Without a filter the tab stays a strict status slice.
+	if m.rowByID("fm-0nli") {
+		t.Fatal("unfiltered open/ready tab leaked an in_progress bead")
+	}
+
+	// Searching the claimed bead's ID on the default tab finds it.
+	m.filter = ParseSearchFilter("fm-0nli")
+	m.projectRows("")
+	if !m.rowByID("fm-0nli") {
+		t.Fatalf("search missed the bead on another status tab: rows=%+v", issueIDsOf(m.rows))
+	}
+
+	// Title search reaches it too, and existing rows are not duplicated.
+	m.filter = ParseSearchFilter("zeta")
+	m.projectRows("")
+	if !m.rowByID("fm-0nli") {
+		t.Fatal("title search missed the cross-tab bead")
+	}
+	seen := map[string]int{}
+	for _, row := range m.rows {
+		seen[row.ID]++
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("row %s appeared %d times after graph-wide search", id, n)
+		}
+	}
+
+	// Clearing the search restores the strict tab view.
+	m.filter = Filter{}
+	m.projectRows("")
+	if m.rowByID("fm-0nli") {
+		t.Fatal("clearing the search kept cross-status rows on the tab")
+	}
+}
+
+func rowByID(rows []bd.Issue, id string) bool {
+	for _, row := range rows {
+		if row.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) rowByID(id string) bool { return rowByID(m.rows, id) }
+
+func issueIDsOf(rows []bd.Issue) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
 func TestLowercaseRReloadsKeepingViewSortAndFilter(t *testing.T) {
 	// Keep every fixture row claimable so the selection survives the reload.
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{

@@ -1077,6 +1077,10 @@ func (m *Model) beginDetailFetch(id string, keepStale bool) tea.Cmd {
 func (m *Model) projectRows(previousID string) {
 	filtered := FilterIssues(m.allRows, m.filter)
 	if m.filter.Active() {
+		// The active tab is one status slice: a bead claimed into another
+		// status (open -> in_progress) must stay findable from the tab the
+		// user is on, so widen the matches with the graph snapshot.
+		filtered = mergeGraphMatches(filtered, m.graphRows, m.filter)
 		// A matching child keeps its parent chain visible.
 		filtered = withAncestors(filtered, m.allRows)
 	}
@@ -1192,6 +1196,36 @@ func withAncestors(rows, graphRows []bd.Issue) []bd.Issue {
 		}
 	}
 	return out
+}
+
+// mergeGraphMatches widens an active filter's result set with matches from
+// the graph snapshot, so a search or filter reaches beads that live outside
+// the active status tab (for example an in_progress bead while the open tab
+// is showing). Existing rows win on duplicate IDs; the snapshot already
+// carries every issue with full detail fields (bd list --all), so matching
+// needs no extra bd calls.
+func mergeGraphMatches(filtered, graphRows []bd.Issue, filter Filter) []bd.Issue {
+	if len(graphRows) == 0 || !filter.Active() {
+		return filtered
+	}
+	seen := make(map[string]struct{}, len(filtered))
+	for _, issue := range filtered {
+		seen[issue.ID] = struct{}{}
+	}
+	merged := filtered
+	for _, issue := range graphRows {
+		if issue.ID == "" {
+			continue
+		}
+		if _, ok := seen[issue.ID]; ok {
+			continue
+		}
+		if filter.Matches(issue) {
+			seen[issue.ID] = struct{}{}
+			merged = append(merged, issue)
+		}
+	}
+	return merged
 }
 
 // navIndexes returns the wrapped step for list navigation (no-op on empty).
