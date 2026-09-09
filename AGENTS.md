@@ -57,6 +57,10 @@ never log bead titles, descriptions, or other issue content.
   complete graph pass holds all dep edges: `fetchDetail` seeds from
   `detailSeedFor` and only calls bd for what is missing, so navigating the
   board normally makes zero bd round-trips.
+- Status tabs are strict status slices, but an active search/filter also
+  matches the graph snapshot (`mergeGraphMatches` in `internal/tui/app.go`),
+  so beads claimed into another status stay findable from any tab. Keep
+  that split: never leak cross-status rows into an unfiltered tab.
 - The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`).
 - Board reloads never blank the screen: `applyBoard` keeps the last good rows on
   failure, shows a status-line notice, and retries with backoff (2/5/15 s, then
