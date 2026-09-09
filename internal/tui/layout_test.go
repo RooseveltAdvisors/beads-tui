@@ -304,10 +304,14 @@ func TestSingleAndEmptyTagRowsStayClean(t *testing.T) {
 	}
 }
 
-// colorCode extracts the ANSI code from a lipgloss terminal color.
+// colorCode extracts the ANSI code from a lipgloss terminal color. The
+// dark side of an adaptive color is its canonical palette code.
 func colorCode(tc lipgloss.TerminalColor) string {
 	if c, ok := tc.(lipgloss.Color); ok {
 		return string(c)
+	}
+	if c, ok := tc.(lipgloss.AdaptiveColor); ok {
+		return c.Dark
 	}
 	return ""
 }

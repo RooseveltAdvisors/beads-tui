@@ -338,8 +338,9 @@ func TestBuiltInStatusGlyphsAndPriorityColors(t *testing.T) {
 			t.Errorf("%s glyph = %q, want %q", status, got, want)
 		}
 	}
-	for priority, want := range map[int]lipgloss.TerminalColor{
-		0: lipgloss.Color("196"), 1: lipgloss.Color("208"), 2: lipgloss.Color("220"), 3: lipgloss.Color("39"),
+	for priority, want := range map[int]lipgloss.AdaptiveColor{
+		0: paletteColor(priorityP0), 1: paletteColor(priorityP1),
+		2: paletteColor(priorityP2), 3: paletteColor(priorityP3),
 	} {
 		if got := priorityStyle(priority).GetForeground(); got != want {
 			t.Errorf("P%d color = %v, want %v", priority, got, want)
@@ -384,10 +385,10 @@ func TestClosedNativeStatusIsFaint(t *testing.T) {
 	if !vocab.statusStyle("closed").GetFaint() {
 		t.Fatal("closed native status style is not faint")
 	}
-	if got := vocab.statusStyle("blocked").GetForeground(); got != lipgloss.Color(statusBlocked) {
+	if got := colorCode(vocab.statusStyle("blocked").GetForeground()); got != statusBlocked {
 		t.Fatalf("blocked native status color = %v, want magenta %s", got, statusBlocked)
 	}
-	if got := vocab.statusStyle("in_progress").GetForeground(); got != lipgloss.Color(statusInProgress) {
+	if got := colorCode(vocab.statusStyle("in_progress").GetForeground()); got != statusInProgress {
 		t.Fatalf("in_progress native status color = %v, want cyan %s", got, statusInProgress)
 	}
 	if vocab.statusStyle("open").GetFaint() {

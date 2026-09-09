@@ -43,6 +43,31 @@ const (
 	statusHooked     = "43"  // teal
 )
 
+// lightPalette re-tunes the dark-background constants above for light
+// terminals: same hues, deeper codes that stay readable on a white
+// background. Codes absent from the map (grays, dims) read acceptably on
+// both. Priority and status entries stay disjoint within each background.
+var lightPalette = map[string]string{
+	priorityP0: "160", // red
+	priorityP1: "166", // orange
+	priorityP2: "172", // olive yellow
+	priorityP3: "27",  // blue
+	priorityP4: "242", // gray
+
+	statusOpen:       "28", // green
+	statusInProgress: "31", // cyan
+	statusBlocked:    "127",
+	statusDeferred:   "91",
+	statusHold:       "90",
+	statusHooked:     "30",
+}
+
+// paletteColor resolves one palette code for the terminal background so the
+// disjoint color families stay disjoint on light and dark terminals alike.
+func paletteColor(code string) lipgloss.AdaptiveColor {
+	return lipgloss.AdaptiveColor{Light: lightPalette[code], Dark: code}
+}
+
 // statusColors maps a status category to a terminal color so custom statuses
 // inherit a sensible color from their category. The vocabulary shape comes
 // from `bd statuses --json collision-free` colors.
@@ -100,7 +125,7 @@ func viewStyle(view bd.View) lipgloss.Style {
 	case "deferred":
 		color = statusDeferred
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	return lipgloss.NewStyle().Foreground(paletteColor(color))
 }
 
 // Vocab carries status categories and custom icons into rendering, falling
@@ -244,7 +269,7 @@ func (v Vocab) statusStyle(status string) lipgloss.Style {
 	if c, ok := statusOverrides[strings.ToLower(strings.TrimSpace(status))]; ok {
 		color = c
 	}
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	style := lipgloss.NewStyle().Foreground(paletteColor(color))
 	if strings.EqualFold(strings.TrimSpace(status), "closed") {
 		style = style.Faint(true)
 	}
@@ -651,15 +676,15 @@ func renderTags(labels []string) string {
 func priorityStyle(p int) lipgloss.Style {
 	switch p {
 	case 0:
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(priorityP0))
+		return lipgloss.NewStyle().Bold(true).Foreground(paletteColor(priorityP0))
 	case 1:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP1))
+		return lipgloss.NewStyle().Foreground(paletteColor(priorityP1))
 	case 2:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP2))
+		return lipgloss.NewStyle().Foreground(paletteColor(priorityP2))
 	case 3:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP3))
+		return lipgloss.NewStyle().Foreground(paletteColor(priorityP3))
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP4))
+		return lipgloss.NewStyle().Foreground(paletteColor(priorityP4))
 	}
 }
 
