@@ -272,3 +272,56 @@ func TestDetailCountsUseFetchedReverseEdges(t *testing.T) {
 		t.Fatalf("detail counts disagree with fetched edges: %q", plain)
 	}
 }
+
+func TestBoardGraphUsesInlineDependencyEdges(t *testing.T) {
+	// bd's list JSON embeds every dependency edge, so one ListAll call carries
+	// the whole graph: no batched per-bead dep list subprocesses.
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{ID: "root", Title: "Root", Status: "open"},
+		{ID: "child", Title: "Child", Status: "open", ParentID: "root",
+			Dependencies: []bd.DepEdge{{IssueID: "child", DependsOnID: "root", Type: "parent-child"}}},
+		{ID: "leaf", Title: "Leaf", Status: "open", ParentID: "child",
+			Dependencies: []bd.DepEdge{
+				{IssueID: "leaf", DependsOnID: "root", Type: "blocks"},
+				{IssueID: "leaf", DependsOnID: "child", Type: "parent-child"},
+			}},
+	}}}
+	m := drive(t, f)
+	if f.batchCalls != 0 {
+		t.Fatalf("inline edges should skip DepsBatch, got %d batch calls", f.batchCalls)
+	}
+	if !m.graphReady {
+		t.Fatal("graph never completed")
+	}
+	if len(m.deps["leaf"]) != 2 {
+		t.Fatalf("deps[leaf] = %+v, want 2 edges", m.deps["leaf"])
+	}
+	if len(m.reverseDeps["root"]) != 2 { // child parent edge + leaf blocks edge
+		t.Fatalf("reverseDeps[root] = %+v, want 2 edges", m.reverseDeps["root"])
+	}
+	if m.graphEdges != 3 {
+		t.Fatalf("graph edges = %d, want 3", m.graphEdges)
+	}
+}
+
+func TestSelectionChangeSpawnsNoBackendCalls(t *testing.T) {
+	// Detail is served from loaded board data; moving through the list must
+	// not spawn Show or per-bead Deps subprocesses.
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{ID: "a", Title: "Task alpha", Status: "open", Priority: 1, Description: "Alpha description."},
+		{ID: "b", Title: "Task beta", Status: "open", Priority: 2, Description: "Beta description."},
+	}}}
+	m := drive(t, f)
+	beforeShow, beforeDep, beforeBatch := f.showCalls, f.depCalls, f.batchCalls
+	m = step(t, m, "j")
+	if m.selectedID() != "b" {
+		t.Fatalf("selected = %q, want b", m.selectedID())
+	}
+	if m.detail == nil || m.detail.ID != "b" || m.detail.Description != "Beta description." {
+		t.Fatalf("detail not served from board data: %+v", m.detail)
+	}
+	if f.showCalls != beforeShow || f.depCalls != beforeDep || f.batchCalls != beforeBatch {
+		t.Fatalf("selection change hit the backend: show=%d dep=%d batch=%d (want %d/%d/%d)",
+			f.showCalls, f.depCalls, f.batchCalls, beforeShow, beforeDep, beforeBatch)
+	}
+}

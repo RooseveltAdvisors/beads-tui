@@ -26,6 +26,7 @@ const maxTreeDepth = 5
 type TreeRow struct {
 	Issue       bd.Issue
 	Prefix      string
+	Depth       int
 	HasChildren bool
 	Expanded    bool
 	Deeper      int
@@ -77,11 +78,26 @@ func BuildDependencyTree(issues []bd.Issue, deps map[string][]bd.DepRecord, mode
 		children[parent][child] = struct{}{}
 	}
 
+	// Parent/child edges are primary: when an issue has both a real parent and
+	// dependency-edge parents (blocked-by, blocks), it nests under its real
+	// parent only, so hierarchy does not get rewritten by incidental dep edges.
+	parentEdge := make(map[string]string, len(nodes))
+	for _, issue := range issues {
+		if issue.ID == "" || issue.ParentID == "" || issue.ParentID == issue.ID {
+			continue
+		}
+		if _, ok := nodes[issue.ParentID]; ok {
+			parentEdge[issue.ID] = issue.ParentID
+		}
+	}
 	for _, issue := range issues {
 		if issue.ID == "" {
 			continue
 		}
-		addEdge(issue.ParentID, issue.ID)
+		if parent, ok := parentEdge[issue.ID]; ok {
+			addEdge(parent, issue.ID)
+			continue
+		}
 		for _, dep := range deps[issue.ID] {
 			// dep.ID is the blocker; issue.ID is the dependent.
 			addEdge(dep.ID, issue.ID)
@@ -204,8 +220,8 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 	}
 
 	rows := make([]TreeRow, 0)
-	var walk func(*visibleNode, string, []bool, bool)
-	walk = func(visible *visibleNode, ancestorPrefix string, ancestorLast []bool, last bool) {
+	var walk func(*visibleNode, string, []bool, bool, int)
+	walk = func(visible *visibleNode, ancestorPrefix string, ancestorLast []bool, last bool, depth int) {
 		prefix := ancestorPrefix
 		if len(ancestorLast) > 0 {
 			if last {
@@ -217,6 +233,7 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 		rows = append(rows, TreeRow{
 			Issue:       visible.node.Issue,
 			Prefix:      prefix,
+			Depth:       depth,
 			HasChildren: visible.hasChildren,
 			Expanded:    visible.expanded,
 			Deeper:      visible.deeper,
@@ -230,11 +247,11 @@ func FlattenDependencyTree(roots []*TreeNode, expanded map[string]bool) []TreeRo
 					childPrefix += "│   "
 				}
 			}
-			walk(child, childPrefix, append(ancestorLast, last), i == len(visible.children)-1)
+			walk(child, childPrefix, append(ancestorLast, last), i == len(visible.children)-1, depth+1)
 		}
 	}
 	for i, root := range visibleRoots {
-		walk(root, "", nil, i == len(visibleRoots)-1)
+		walk(root, "", nil, i == len(visibleRoots)-1, 1)
 	}
 	return rows
 }

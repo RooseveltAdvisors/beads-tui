@@ -72,7 +72,7 @@ func TestBoardProbeHelper(t *testing.T) {
 		probe.RenderedError = strings.Contains(view, "Could not load board") && strings.Contains(view, "BEADS_DIR")
 	} else {
 		probe.RowCount = len(applied.rows)
-		probe.RenderedRoot = strings.Contains(stripANSI(applied.View()), "Fleet task 00")
+		probe.RenderedRoot = strings.Contains(stripANSI(applied.View()), "Synthetic task 00")
 		for _, row := range applied.treeRows {
 			if row.Issue.ID == "fm-01" && row.Prefix != "" {
 				probe.HasNestedChild = true
@@ -98,8 +98,8 @@ func TestEmptyWorkspaceUsesRealBdLoadingPath(t *testing.T) {
 		t.Skipf("bd is required for workspace discovery coverage: %v", err)
 	}
 	emptyCWD := t.TempDir()
-	env := withoutEnv("BEADS_DIR", boardProbeEnv, fixtureLogEnv, fixtureJSONEnv)
-	env = append(env, boardProbeEnv+"=1")
+	env := withoutEnv("BEADS_DIR", boardProbeEnv, fixtureLogEnv, fixtureJSONEnv, "BEADS_TUI_CONFIG_DIR")
+	env = append(env, boardProbeEnv+"=1", "BEADS_TUI_CONFIG_DIR="+t.TempDir())
 	probe := runBoardProbe(t, emptyCWD, env)
 	if probe.CWD != emptyCWD {
 		t.Fatalf("probe cwd = %q, want %q", probe.CWD, emptyCWD)
@@ -110,8 +110,8 @@ func TestEmptyWorkspaceUsesRealBdLoadingPath(t *testing.T) {
 	if probe.IssueCount != 0 || probe.RowCount != 0 {
 		t.Fatalf("empty workspace loaded issues=%d rows=%d", probe.IssueCount, probe.RowCount)
 	}
-	if !strings.Contains(probe.BoardError, "bd list --status open --json -n 0") {
-		t.Errorf("workspace error %q missing the open status load command", probe.BoardError)
+	if !strings.Contains(probe.BoardError, "bd list --ready --json -n 0") {
+		t.Errorf("workspace error %q missing the ready board load command", probe.BoardError)
 	}
 	lowerError := strings.ToLower(probe.BoardError)
 	if !strings.Contains(lowerError, "beads") || !strings.Contains(probe.BoardError, "BEADS_DIR") {
@@ -125,9 +125,10 @@ func TestEmptyWorkspaceUsesRealBdLoadingPath(t *testing.T) {
 func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 	issues := populatedReadyFixture()
 	workspace, beadsDir, fixtureDir, logPath := installBoardFixture(t, issues)
-	env := withoutEnv("BEADS_DIR", boardProbeEnv, fixtureLogEnv, fixtureJSONEnv)
+	env := withoutEnv("BEADS_DIR", boardProbeEnv, fixtureLogEnv, fixtureJSONEnv, "BEADS_TUI_CONFIG_DIR")
 	env = append(env,
 		boardProbeEnv+"=1",
+		"BEADS_TUI_CONFIG_DIR="+t.TempDir(),
 		fixtureLogEnv+"="+logPath,
 		fixtureJSONEnv+"="+mustJSON(t, issues),
 		"BEADS_DIR="+beadsDir,
@@ -156,7 +157,7 @@ func TestPopulatedReadyFixtureUsesRealBdAndGraphLoadingPath(t *testing.T) {
 			t.Fatalf("bd call environment = cwd %q, BEADS_DIR %q; want %q, %q", call.cwd, call.beadsDir, workspace, beadsDir)
 		}
 		switch {
-		case call.args == "list --status open --json -n 0":
+		case call.args == "list --ready --json -n 0":
 			listCalls++
 		case call.args == "list --all --json -n 0":
 			allCalls++
@@ -203,7 +204,7 @@ func populatedReadyFixture() []bd.Issue {
 	for i := range issues {
 		issues[i] = bd.Issue{
 			ID:       fmt.Sprintf("fm-%02d", i),
-			Title:    fmt.Sprintf("Fleet task %02d", i),
+			Title:    fmt.Sprintf("Synthetic task %02d", i),
 			Status:   "open",
 			Priority: i % 4,
 		}
@@ -225,7 +226,11 @@ func installBoardFixture(t *testing.T, issues []bd.Issue) (workspace, beadsDir, 
 	script := `#!/bin/sh
 set -eu
 printf '%s\t%s\t%s\n' "$PWD" "${BEADS_DIR-}" "$*" >> "$BEADS_TUI_FIXTURE_LOG"
-if [ "${1-}" = "list" ] && [ "${2-}" = "--status" ] && [ "${3-}" = "open" ] && [ "${4-}" = "--json" ] && [ "${5-}" = "-n" ] && [ "${6-}" = "0" ]; then
+if [ "${1-}" = "list" ] && [ "${2-}" = "--ready" ] && [ "${3-}" = "--json" ] && [ "${4-}" = "-n" ] && [ "${5-}" = "0" ]; then
+  printf '%s' "$BEADS_TUI_READY_JSON"
+  exit 0
+fi
+if [ "${1-}" = "list" ] && [ "${2-}" = "--status" ] && [ "${4-}" = "--json" ] && [ "${6-}" = "0" ]; then
   printf '%s' "$BEADS_TUI_READY_JSON"
   exit 0
 fi

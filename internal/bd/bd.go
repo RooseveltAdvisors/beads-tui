@@ -54,6 +54,16 @@ func (c *Client) List(ctx context.Context, view View) ([]Issue, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("beads-tui: unsupported view %q", view)
 	}
+	if view == ViewReady {
+		// Claimable work: open issues with no active blockers and no defer.
+		// The ready projection omits description/parent/labels, which the
+		// graph snapshot (bd list --all) fills back in for the board.
+		var issues []Issue
+		if err := c.jsonCall(ctx, &issues, "list", "--ready", "--json", "-n", "0"); err != nil {
+			return nil, err
+		}
+		return issues, nil
+	}
 	return c.ListStatus(ctx, string(view))
 }
 

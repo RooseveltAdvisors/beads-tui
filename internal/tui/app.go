@@ -358,7 +358,7 @@ func loadState() (savedState, bool) {
 	}
 	state.View = normalizeStateView(state.View)
 	if state.View == "" {
-		state.View = bd.ViewOpen
+		state.View = bd.ViewReady
 	}
 	if state.Expanded == nil {
 		state.Expanded = map[string]bool{}
@@ -394,7 +394,7 @@ func loadState() (savedState, bool) {
 
 func normalizeStateView(view bd.View) bd.View {
 	view = bd.View(strings.ToLower(strings.TrimSpace(string(view))))
-	if !view.Valid() || view == bd.View("ready") || view == bd.View("all") {
+	if !view.Valid() || view == bd.View("all") {
 		return ""
 	}
 	return view
@@ -454,7 +454,7 @@ func New(backend Backend) Model {
 	commentInput.Width = 80
 	m := Model{
 		backend:  backend,
-		view:     bd.ViewOpen,
+		view:     bd.ViewReady,
 		views:    bd.DefaultViews(),
 		loading:  true,
 		boardGen: 1,
@@ -550,6 +550,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		prev := m.selectedID()
+		// Board rows from reduced projections (ready) are swapped for their
+		// full-field graph twins so descriptions, parents, and labels are
+		// always present; comment badges survive the swap because the list
+		// projection does not carry them.
 		commentCounts := make(map[string]int, len(m.allRows))
 		for _, issue := range m.allRows {
 			if issue.CommentCount > 0 {
@@ -566,7 +570,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.graphIssues[i].CommentCount = count
 			}
 		}
-		m.allRows = append([]bd.Issue(nil), msg.issues...)
+		m.allRows = enrichIssues(swapWithGraphRows(msg.issues, msg.graphIssues), msg.deps, msg.reverseDeps)
 		m.graphRows = append([]bd.Issue(nil), msg.graphIssues...)
 		m.deps = cloneDepMap(msg.deps)
 		m.reverseDeps = cloneDepMap(msg.reverseDeps)
@@ -827,11 +831,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// reload never discards the board that is already on screen.
 		return m, m.startBoardLoad()
 	case "R":
-		wasOpen := m.view == bd.ViewOpen
+		wasReady := m.view == bd.ViewReady
 		previousID := m.selectedID()
-		m.view, m.sortMode, m.filter = bd.ViewOpen, SortCreated, Filter{}
+		m.view, m.sortMode, m.filter = bd.ViewReady, SortCreated, Filter{}
 		m.saveState()
-		if !wasOpen {
+		if !wasReady {
 			return m, m.startBoardLoad()
 		}
 		return m, m.rebuildRows(previousID)
@@ -1081,7 +1085,15 @@ func (m *Model) projectRows(previousID string) {
 		m.expanded = map[string]bool{}
 	}
 	if m.treeMode && m.filter.Kind != FilterSearch {
-		roots := BuildDependencyTree(projected, m.deps, m.sortMode)
+		source := projected
+		if len(m.graphRows) > 0 {
+			// Parents can live outside the current status view (a closed epic
+			// with open children). Pull the ancestor chain in from the graph
+			// snapshot so the hierarchy renders connected instead of orphaning
+			// every child whose parent moved on.
+			source = withAncestors(projected, m.graphRows)
+		}
+		roots := BuildDependencyTree(source, m.deps, m.sortMode)
 		m.treeRows = FlattenDependencyTree(roots, m.expanded)
 		m.rows = make([]bd.Issue, len(m.treeRows))
 		for i, row := range m.treeRows {
@@ -1143,6 +1155,43 @@ func (m *Model) expandAncestors(id string) {
 			return
 		}
 	}
+}
+
+// withAncestors appends the ancestor chain of every row (from the full
+// graph snapshot) that is not already part of the rows, so parent/child trees
+// stay connected across status views. Cycles and repeated ancestors are
+// guarded; rows keep their order and the appended ancestors keep first-seen
+// order.
+func withAncestors(rows, graphRows []bd.Issue) []bd.Issue {
+	if len(graphRows) == 0 || len(rows) == 0 {
+		return rows
+	}
+	byID := make(map[string]bd.Issue, len(graphRows))
+	for _, issue := range graphRows {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	present := make(map[string]bool, len(rows))
+	for _, issue := range rows {
+		present[issue.ID] = true
+	}
+	out := rows
+	for _, issue := range rows {
+		seen := map[string]bool{issue.ID: true}
+		parent := issue.ParentID
+		for parent != "" && !seen[parent] && !present[parent] {
+			seen[parent] = true
+			ancestor, ok := byID[parent]
+			if !ok {
+				break
+			}
+			out = append(out, ancestor)
+			present[parent] = true
+			parent = ancestor.ParentID
+		}
+	}
+	return out
 }
 
 // navIndexes returns the wrapped step for list navigation (no-op on empty).
@@ -1388,6 +1437,9 @@ func (m Model) loadBoardCmd() tea.Cmd {
 
 // loadGraphCmd enriches a painted list with one bounded, cached dependency
 // pass. The board never waits for this best-effort metadata before first paint.
+// bd's list JSON embeds every dependency edge inline, so the pass is a single
+// `bd list --all` subprocess; backends without inline edges (older bd, test
+// fakes) fall back to batched per-bead `bd dep list` calls.
 func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) tea.Cmd {
 	backend, supportsGraph := m.backend.(graphBackend)
 	cache := m.graphCache
@@ -1410,14 +1462,24 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 			} else {
 				graphIssues = mergeIssueSnapshots(all, issues)
 			}
-			graphIDs := issueIDs(graphIssues)
-			raw, err := backend.DepsBatch(ctx, graphIDs, false)
-			cancel()
-			if err != nil {
-				log.Printf("beads-tui: graph dependencies skipped: %v", err)
+			if hasInlineEdges(graphIssues) {
+				// One call carries the whole graph: every edge is embedded in the
+				// dependent issue's JSON, so no per-bead subprocesses are needed.
+				deps, reverseDeps = normalizeGraphEdges(graphIssues, inlineDepRecords(graphIssues))
+				graphComplete = allLoaded
+				cancel()
+			} else {
+				// No inline edges anywhere: either the store has zero edges or the
+				// backend predates inline JSON. DepsBatch settles both correctly.
+				graphIDs := issueIDs(graphIssues)
+				raw, err := backend.DepsBatch(ctx, graphIDs, false)
+				cancel()
+				if err != nil {
+					log.Printf("beads-tui: graph dependencies skipped: %v", err)
+				}
+				graphComplete = allLoaded && err == nil
+				deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
 			}
-			graphComplete = allLoaded && err == nil
-			deps, reverseDeps = normalizeGraphEdges(graphIssues, raw)
 		} else {
 			log.Printf("beads-tui: backend does not support batched graph loading")
 		}
@@ -1435,6 +1497,48 @@ func (m Model) loadGraphCmd(view bd.View, generation uint64, issues []bd.Issue) 
 		}
 		return graphMsgFromCache(cache)
 	}
+}
+
+// hasInlineEdges reports whether any issue carries a non-nil inline
+// dependency list. bd omits the key when an issue has no edges, so a store
+// with at least one edge always lights this up.
+func hasInlineEdges(issues []bd.Issue) bool {
+	for i := range issues {
+		if issues[i].Dependencies != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// inlineDepRecords converts the dependency edges embedded in list JSON into
+// the DepRecord shape the board renders, filling target metadata from the
+// same snapshot.
+func inlineDepRecords(issues []bd.Issue) map[string][]bd.DepRecord {
+	byID := make(map[string]bd.Issue, len(issues))
+	for _, issue := range issues {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	raw := make(map[string][]bd.DepRecord)
+	for _, issue := range issues {
+		for _, edge := range issue.Dependencies {
+			if edge.DependsOnID == "" || edge.DependsOnID == issue.ID {
+				continue
+			}
+			target := byID[edge.DependsOnID]
+			raw[issue.ID] = append(raw[issue.ID], bd.DepRecord{
+				ID:             edge.DependsOnID,
+				Title:          target.Title,
+				Status:         target.Status,
+				Priority:       target.Priority,
+				IssueType:      target.IssueType,
+				DependencyType: edge.Type,
+			})
+		}
+	}
+	return raw
 }
 
 func graphCacheMatches(cache *graphCache, view bd.View, generation uint64, currentIDs []string) bool {
@@ -1527,6 +1631,29 @@ func cloneDepMap(source map[string][]bd.DepRecord) map[string][]bd.DepRecord {
 		cloned[id] = append([]bd.DepRecord(nil), records...)
 	}
 	return cloned
+}
+
+// swapWithGraphRows replaces every issue with the same-id issue from the
+// graph snapshot when available, keeping the original row order and membership.
+func swapWithGraphRows(rows, graph []bd.Issue) []bd.Issue {
+	if len(graph) == 0 {
+		return append([]bd.Issue(nil), rows...)
+	}
+	byID := make(map[string]bd.Issue, len(graph))
+	for _, issue := range graph {
+		if issue.ID != "" {
+			byID[issue.ID] = issue
+		}
+	}
+	out := make([]bd.Issue, 0, len(rows))
+	for _, issue := range rows {
+		if full, ok := byID[issue.ID]; ok {
+			out = append(out, full)
+			continue
+		}
+		out = append(out, issue)
+	}
+	return out
 }
 
 func mergeIssueSnapshots(all, current []bd.Issue) []bd.Issue {

@@ -1,0 +1,220 @@
+{
+  "view": "open",
+  "sort_mode": 1,
+  "filter": {
+    "Kind": 0,
+    "Query": ""
+  },
+  "board_snapshot": {
+    "view": "open",
+    "issues": [
+      {
+        "id": "syn-igg",
+        "title": "Root task alpha",
+        "description": "",
+        "notes": "",
+        "status": "open",
+        "priority": 0,
+        "issue_type": "task",
+        "parent_id": "",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": [
+          "epic",
+          "infra"
+        ],
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:22Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:22Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": null
+      },
+      {
+        "id": "syn-269",
+        "title": "Standalone tagged task",
+        "description": "Has many labels.",
+        "notes": "",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "task",
+        "parent_id": "",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": [
+          "a11y",
+          "frontend",
+          "perf",
+          "research",
+          "synthetic",
+          "ui"
+        ],
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:23Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:23Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": null
+      },
+      {
+        "id": "syn-ein",
+        "title": "Grandchild A1a",
+        "description": "Blocked leaf.",
+        "notes": "",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "task",
+        "parent_id": "syn-igg",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": [
+          "research"
+        ],
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:23Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:23Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": [
+          {
+            "issue_id": "syn-ein",
+            "depends_on_id": "syn-igg",
+            "type": "parent-child"
+          }
+        ]
+      },
+      {
+        "id": "syn-wd2",
+        "title": "Child A1 of alpha",
+        "description": "",
+        "notes": "",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "task",
+        "parent_id": "syn-igg",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": null,
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:22Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:22Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": [
+          {
+            "issue_id": "syn-wd2",
+            "depends_on_id": "syn-igg",
+            "type": "parent-child"
+          }
+        ]
+      },
+      {
+        "id": "syn-axy",
+        "title": "Level 5 node",
+        "description": "",
+        "notes": "",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "task",
+        "parent_id": "syn-azk",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": null,
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:23Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:23Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": [
+          {
+            "issue_id": "syn-axy",
+            "depends_on_id": "syn-ein",
+            "type": "blocked-by"
+          },
+          {
+            "issue_id": "syn-axy",
+            "depends_on_id": "syn-azk",
+            "type": "parent-child"
+          }
+        ]
+      },
+      {
+        "id": "syn-x7y",
+        "title": "Great grandchild with many labels",
+        "description": "Has many labels.",
+        "notes": "",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "task",
+        "parent_id": "syn-wd2",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": [
+          "docs",
+          "epic",
+          "infra",
+          "ops",
+          "ui"
+        ],
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:22Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:22Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": [
+          {
+            "issue_id": "syn-x7y",
+            "depends_on_id": "syn-wd2",
+            "type": "parent-child"
+          }
+        ]
+      },
+      {
+        "id": "syn-mve",
+        "title": "Level 6 node",
+        "description": "",
+        "notes": "",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "task",
+        "parent_id": "syn-axy",
+        "assignee": "",
+        "owner": "",
+        "url": "",
+        "labels": null,
+        "defer_until": "",
+        "created_at": "2026-09-05T23:23:23Z",
+        "created_by": "",
+        "updated_at": "2026-09-05T23:23:23Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "dependencies": [
+          {
+            "issue_id": "syn-mve",
+            "depends_on_id": "syn-axy",
+            "type": "parent-child"
+          }
+        ]
+      }
+    ]
+  }
+}

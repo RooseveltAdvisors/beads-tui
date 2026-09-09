@@ -384,45 +384,6 @@ func FilterIssues(issues []bd.Issue, filter Filter) []bd.Issue {
 	return filtered
 }
 
-// withAncestors extends the matching set with the parent-child ancestors of
-// every match so a filtered board keeps the hierarchy navigable: a child that
-// matches never appears without its parents. Ancestors come from all, the
-// unfiltered snapshot, so a hidden parent is restored verbatim.
-func withAncestors(matching, all []bd.Issue) []bd.Issue {
-	byID := make(map[string]bd.Issue, len(all))
-	for _, issue := range all {
-		if issue.ID != "" {
-			byID[issue.ID] = issue
-		}
-	}
-	kept := make([]bd.Issue, 0, len(matching))
-	seen := make(map[string]struct{}, len(matching))
-	for _, issue := range matching {
-		if issue.ID == "" {
-			continue
-		}
-		if _, ok := seen[issue.ID]; ok {
-			continue
-		}
-		seen[issue.ID] = struct{}{}
-		kept = append(kept, issue)
-		parentID := strings.TrimSpace(issue.ParentID)
-		for parentID != "" {
-			if _, ok := seen[parentID]; ok {
-				break
-			}
-			parent, ok := byID[parentID]
-			if !ok {
-				break
-			}
-			seen[parentID] = struct{}{}
-			kept = append(kept, parent)
-			parentID = strings.TrimSpace(parent.ParentID)
-		}
-	}
-	return kept
-}
-
 // SortIssues returns a sorted copy, leaving the backend snapshot untouched.
 func SortIssues(issues []bd.Issue, mode SortMode) []bd.Issue {
 	sorted := append([]bd.Issue(nil), issues...)
