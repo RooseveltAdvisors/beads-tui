@@ -31,7 +31,9 @@ Run `34412781195` completed successfully on runner `gpu-beadstui`, machine
 The workflow's existing build recipe omitted `CGO_ENABLED=0`; its output was
 therefore checked and found dynamically linked. The final installed artifact
 was converged on the same GPU host with the repository-documented static build
-procedure, without a force flag or repository reset:
+procedure, without a force flag or repository reset. The workflow's `Build and
+install` step now sets `CGO_ENABLED=0`, so the operator path builds the same
+static binary on its next run:
 
 ```text
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=94ea4357615f183f9194cc3c09e25a0bc1ecf288" -o /home/jon/.local/bin/beads-tui ./cmd/beads-tui
