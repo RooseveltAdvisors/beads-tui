@@ -91,6 +91,7 @@ type Issue struct {
 	URL             string    `json:"url"`
 	Labels          []string  `json:"labels"`
 	DeferUntil      string    `json:"defer_until"`
+	DueAt           string    `json:"due_at"`
 	CreatedAt       string    `json:"created_at"`
 	CreatedBy       string    `json:"created_by"`
 	UpdatedAt       string    `json:"updated_at"`

@@ -41,6 +41,24 @@ func TestSortIssuesModes(t *testing.T) {
 	}
 }
 
+func TestDueSortAndOverdueFilter(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "later", Status: "open", DueAt: "2099-01-02"},
+		{ID: "past", Status: "open", DueAt: "2020-01-01"},
+		{ID: "closed", Status: "closed", DueAt: "2020-01-03"},
+		{ID: "none", Status: "open"},
+	}
+	sorted := SortIssues(issues, SortDue)
+	got := []string{sorted[0].ID, sorted[1].ID, sorted[2].ID, sorted[3].ID}
+	if strings.Join(got, ",") != "past,closed,later,none" {
+		t.Fatalf("due sort = %v", got)
+	}
+	overdue := FilterIssues(issues, ParseFilter("overdue"))
+	if len(overdue) != 1 || overdue[0].ID != "past" || ParseFilter("overdue").String() != "overdue" {
+		t.Fatalf("overdue filter = %+v", overdue)
+	}
+}
+
 func TestFilterMatching(t *testing.T) {
 	issues := []bd.Issue{
 		{ID: "open", Title: "Write API docs", Description: "Explain the filter syntax", Status: "open", Priority: 1, Labels: []string{"docs", "ux"}, Repeat: "0 9 * * 1"},
@@ -97,6 +115,13 @@ func TestRowsShowCanonicalAssigneeAndRecurringIcon(t *testing.T) {
 	}
 	if strings.Contains(oneOff, recurringIcon) || !strings.Contains(oneOff, "· jr-voice") {
 		t.Fatalf("one-off row lost assignee or gained recurrence: %q", oneOff)
+	}
+}
+
+func TestListRowShowsDueDate(t *testing.T) {
+	row := stripANSI(NewVocab(nil).ListRow(bd.Issue{ID: "due", Title: "Task", Status: "open", DueAt: "2099-01-02"}, 100, false))
+	if !strings.Contains(row, "Due: 2099-01-02") {
+		t.Fatalf("due row = %q", row)
 	}
 }
 
