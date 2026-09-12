@@ -107,8 +107,10 @@ func runLogPath() error {
 func runList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	status := fs.String("status", "open", "native bd status to list")
+	sortBy := fs.String("sort", "", "sort by due date")
+	overdue := fs.Bool("overdue", false, "show only overdue open tasks")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--status STATUS]\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--status STATUS] [--sort due] [--overdue]\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "Print a board as JSON (same data the TUI renders):\n")
 		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list                  # open status\n")
 		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --status closed  # closed status\n")
@@ -125,6 +127,15 @@ func runList(args []string) error {
 	issues, err := bd.New().ListStatus(ctx, *status)
 	if err != nil {
 		return err
+	}
+	if *overdue {
+		issues = tui.FilterIssues(issues, tui.ParseFilter("overdue"))
+	}
+	if *sortBy != "" {
+		if *sortBy != "due" {
+			return fmt.Errorf("list: unsupported sort %q (want due)", *sortBy)
+		}
+		issues = tui.SortIssues(issues, tui.SortDue)
 	}
 	return printJSON(issues)
 }

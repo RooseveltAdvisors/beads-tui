@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
@@ -374,6 +375,16 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		}
 		counts += styleCommentBadge.Render(commentBadge)
 	}
+	if due := dueText(issue); due != "" {
+		if counts != "" {
+			counts += "  "
+		}
+		if isOverdue(issue) {
+			counts += lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("Due: " + due)
+		} else {
+			counts += styleDim.Render("Due: " + due)
+		}
+	}
 	metadataIssue := issue
 	if !fields.Dependencies {
 		metadataIssue.DependencyCount, metadataIssue.DependentCount = 0, 0
@@ -487,6 +498,37 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		return styleSelected.Render("▸ " + line)
 	}
 	return line
+}
+
+func dueDate(value string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if parsed, err := time.Parse(layout, strings.TrimSpace(value)); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func isOverdue(issue bd.Issue) bool {
+	due, ok := dueDate(issue.DueAt)
+	return ok && issue.Status != "closed" && due.Before(time.Now())
+}
+
+func dueText(issue bd.Issue) string {
+	due, ok := dueDate(issue.DueAt)
+	if !ok {
+		return ""
+	}
+	days := int(due.Sub(time.Now()).Hours() / 24)
+	if due.Before(time.Now()) {
+		overdueDays := int(time.Since(due).Hours() / 24)
+		if overdueDays <= 7 {
+			return strconv.Itoa(overdueDays) + "d overdue"
+		}
+	} else if days <= 7 {
+		return strconv.Itoa(days) + "d left"
+	}
+	return due.Format("2006-01-02")
 }
 
 // commentBadgeText is deliberately kept in the row metadata slot so it stays

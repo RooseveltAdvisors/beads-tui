@@ -19,6 +19,7 @@ const (
 	SortAlphabetical
 	SortDependencies
 	SortDependents
+	SortDue
 )
 
 // String returns the short name shown in the status bar.
@@ -34,6 +35,8 @@ func (s SortMode) String() string {
 		return "dependencies"
 	case SortDependents:
 		return "depends"
+	case SortDue:
+		return "due"
 	default:
 		return "priority"
 	}
@@ -41,7 +44,7 @@ func (s SortMode) String() string {
 
 // Next cycles through the board's named sort modes.
 func (s SortMode) Next() SortMode {
-	order := [...]SortMode{SortCreated, SortUpdated, SortAlphabetical, SortDependencies, SortDependents, SortPriority}
+	order := [...]SortMode{SortCreated, SortUpdated, SortAlphabetical, SortDependencies, SortDependents, SortDue, SortPriority}
 	for i, mode := range order {
 		if s == mode {
 			return order[(i+1)%len(order)]
@@ -63,6 +66,7 @@ const (
 	FilterRecurring
 	FilterAssignee
 	FilterComments
+	FilterOverdue
 	FilterExpression
 )
 
@@ -97,6 +101,8 @@ func (f Filter) String() string {
 		return "assignee:" + f.Query
 	case FilterComments:
 		return "comments:" + f.Query
+	case FilterOverdue:
+		return "overdue"
 	default:
 		return f.Query
 	}
@@ -141,6 +147,8 @@ func parseLeaf(input string, search bool) Filter {
 		return Filter{Kind: FilterPriority, Query: lower}
 	}
 	switch lower {
+	case "overdue":
+		return Filter{Kind: FilterOverdue, Query: "true"}
 	case "open", "in_progress", "blocked", "closed", "deferred":
 		return Filter{Kind: FilterStatus, Query: lower}
 	default:
@@ -229,6 +237,8 @@ func (f Filter) Matches(issue bd.Issue) bool {
 			n, err := strconv.Atoi(f.Query)
 			return err == nil && issue.CommentCount == n
 		}
+	case FilterOverdue:
+		return isOverdue(issue)
 	case FilterExpression:
 		expr := f.expr
 		if expr == nil {
@@ -413,6 +423,10 @@ func SortIssues(issues []bd.Issue, mode SortMode) []bd.Issue {
 			if c := compareTimestamp(a.CreatedAt, b.CreatedAt); c != 0 {
 				return c < 0
 			}
+		case SortDue:
+			if c := compareDue(a.DueAt, b.DueAt); c != 0 {
+				return c < 0
+			}
 		default:
 			if a.Priority != b.Priority {
 				return a.Priority < b.Priority
@@ -447,6 +461,27 @@ func compareTimestamp(a, b string) int {
 		return -1
 	}
 	if a < b {
+		return 1
+	}
+	return 0
+}
+
+func compareDue(a, b string) int {
+	ta, oka := dueDate(a)
+	tb, okb := dueDate(b)
+	if !oka && !okb {
+		return 0
+	}
+	if !oka {
+		return 1
+	}
+	if !okb {
+		return -1
+	}
+	if ta.Before(tb) {
+		return -1
+	}
+	if ta.After(tb) {
 		return 1
 	}
 	return 0
