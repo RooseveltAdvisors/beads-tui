@@ -156,8 +156,13 @@ func TestAddCommentUsesStdinAdapter(t *testing.T) {
 	if err := c.AddComment(context.Background(), "fm-ju3", "comment from TUI"); err != nil {
 		t.Fatalf("AddComment: %v", err)
 	}
-	if strings.Join(gotArgs, " ") != "comment fm-ju3 --stdin" || gotInput != "comment from TUI" {
+	// --actor may be prepended for lineage identity
+	joined := strings.Join(gotArgs, " ")
+	if !strings.HasSuffix(joined, "comment fm-ju3 --stdin") || gotInput != "comment from TUI" {
 		t.Fatalf("args=%q input=%q", gotArgs, gotInput)
+	}
+	if !strings.Contains(joined, "--actor") {
+		t.Fatalf("expected --actor in args %q", gotArgs)
 	}
 }
 

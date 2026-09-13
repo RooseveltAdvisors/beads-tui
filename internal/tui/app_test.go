@@ -1198,11 +1198,20 @@ func TestHelpToggle(t *testing.T) {
 	if !m.help {
 		t.Fatal("? should open help")
 	}
-	view := stripANSI(m.View())
-	for _, want := range []string{"1 ready", "2 open", "3 in_progress", "4 blocked", "5 closed", "6", "deferred", "ctrl-u/d", "h collapse", "l unfold", "expand all", "Read-only", "⇣", "⇡"} {
+	var seen strings.Builder
+	for i := 0; i <= m.helpMaxOffset(); i++ {
+		m.helpOffset = i
+		seen.WriteString(stripANSI(m.View()))
+		seen.WriteByte('\n')
+	}
+	view := seen.String()
+	for _, want := range []string{"ready", "open", "in_progress", "blocked", "closed", "deferred", "Ctrl-d", "collapse", "unfold", "expand all", "tui-lineage", "crud", "⇣", "⇡", "keybinds"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help missing %q", want)
 		}
+	}
+	if m.helpMaxOffset() < 1 {
+		t.Fatalf("expected scrollable help, maxOffset=%d", m.helpMaxOffset())
 	}
 	m = sendKey(t, m, "x")
 	if m.help {

@@ -1,6 +1,7 @@
-// Command beads-tui renders the Beads board in the terminal: a read-only,
+// Command beads-tui renders the Beads board in the terminal: a
 // keyboard-driven dependency tree (or flat list) from `bd list`, with
-// per-bead detail, dependency edges, and the status vocabulary.
+// per-bead detail, dependency edges, status vocabulary, and vim-spirited
+// CRUD (n/e/x/D) that stamps tui-lineage comments with actor identity.
 //
 // With no arguments (and a TTY on stdin) it starts the interactive TUI.
 // Subcommands give agents and scripts the same data without a TTY:
@@ -80,7 +81,10 @@ func runTUI() error {
 	defer done()
 	defer logfile.Recover()
 
-	p := tea.NewProgram(logfile.Guard(tui.New(bd.New())), tea.WithAltScreen())
+	client := bd.New()
+	// Actor identity for tui-lineage stamps: agents set BEADS_ACTOR; humans use git/USER.
+	client.SetActor(bd.ResolveActor())
+	p := tea.NewProgram(logfile.Guard(tui.New(client)), tea.WithAltScreen())
 	_, runErr := p.Run()
 	if runErr != nil {
 		// Bubbletea recovers panics itself and reports ErrProgramPanic; the

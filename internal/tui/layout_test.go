@@ -388,14 +388,18 @@ func TestHelpShowsPaletteLegend(t *testing.T) {
 	m.width, m.height = 160, 40
 	legend := strings.Join(m.helpLines(72), "\n")
 	plain := stripANSI(legend)
-	for _, want := range []string{"Priority:", "P0", "P4", "Status:", "V cycles"} {
+	for _, want := range []string{"Priority:", "P0", "P4", "Status:", "layout:"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("help legend missing %q", want)
 		}
 	}
 	m.help = true
-	view := m.View()
-	if !strings.Contains(stripANSI(view), "Priority:") {
+	var seen strings.Builder
+	for i := 0; i <= m.helpMaxOffset(); i++ {
+		m.helpOffset = i
+		seen.WriteString(stripANSI(m.View()))
+	}
+	if !strings.Contains(seen.String(), "Priority:") {
 		t.Fatal("rendered help does not show the palette legend")
 	}
 }

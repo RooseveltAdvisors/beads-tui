@@ -501,20 +501,27 @@ func TestCompactFooterPreservesFallbackFields(t *testing.T) {
 func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 	m := New(nil)
 	m.width, m.height = 80, 24
-	view := stripANSI(m.renderHelp())
-	for _, want := range []string{
-		"j/k", "↑/↓", "g/G", "space/PgDn/Ctrl+F", "b/PgUp/Ctrl+B",
-		"enter/l/→", "h/←", "1 ready", "2 open", "3 in_progress", "4 blocked", "5 closed", "6", "s cycle",
-		"esc close detail / clear search", "Search:", "Enter apply", "status:open",
-		"priority:P1", "label:frontend", "t search", "Reset: R", "Help: ?", "q/Ctrl+C",
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("wrapped help missing %q: %s", want, view)
+	m.help = true
+	var seen strings.Builder
+	for i := 0; i <= m.helpMaxOffset(); i++ {
+		m.helpOffset = i
+		view := stripANSI(m.renderHelp())
+		seen.WriteString(view)
+		seen.WriteByte('\n')
+		for li, line := range strings.Split(view, "\n") {
+			if displayWidth(line) > 80 {
+				t.Errorf("help line %d overflowed at offset %d: %q", li, i, line)
+			}
 		}
 	}
-	for i, line := range strings.Split(view, "\n") {
-		if displayWidth(line) > 80 {
-			t.Errorf("help line %d overflowed: %q", i, line)
+	all := seen.String()
+	for _, want := range []string{
+		"move selection", "page down", "page up", "ready", "open", "in_progress",
+		"blocked", "closed", "sort:", "search", "status:open", "priority:P1",
+		"label:x", "crud", "tui-lineage", "quit", "BEADS_ACTOR", "keybinds",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("scrolled help missing %q", want)
 		}
 	}
 }
@@ -531,7 +538,7 @@ func TestNarrowHelpScrollMakesEveryBindingReachable(t *testing.T) {
 	}
 	all := strings.Join(strings.Fields(seen.String()), " ")
 	for _, want := range []string{
-		"esc close detail /", "clear search", "space/PgDn/Ctrl+F", "label:frontend", "q/Ctrl+C", "Read-only:",
+		"Esc", "page down", "label:x", "quit", "tui-lineage", "crud", "filter",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("scrollable help never exposed %q", want)
