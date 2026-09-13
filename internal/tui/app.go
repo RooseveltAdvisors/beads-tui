@@ -163,6 +163,8 @@ type Model struct {
 
 	help         bool
 	helpOffset   int
+	helpFilter   string
+	helpFilterActive bool
 	options      bool
 	optionIndex  int
 	filtering    bool
@@ -195,6 +197,17 @@ type Model struct {
 	commentsInput       textinput.Model
 	commentsInputActive bool
 	commentsSubmitting  bool
+
+	// CRUD (vim-spirited writes; lineage stamped by bd client)
+	crudMode     crudMode
+	crudMenuIdx  int
+	crudInput    textinput.Model
+	crudErr      string
+	crudBusy     bool
+	statusFlash  string
+	editorPath   string
+	editorID     string
+	editorBefore *bd.Issue
 
 	width  int
 	height int
@@ -608,6 +621,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyComments(msg)
 	case commentSubmitMsg:
 		return m, m.applyCommentSubmit(msg)
+	case crudResultMsg:
+		return m, m.applyCrudResult(msg)
+	case editorReadyMsg:
+		m.editorPath = msg.path
+		m.editorID = msg.id
+		before := msg.before
+		m.editorBefore = &before
+		return m, m.runExternalEditor(msg.path, msg.id, msg.before)
+	case editorDoneMsg:
+		return m, m.applyEditorDone(msg)
 	case yankMsg:
 		if msg.err != nil {
 			m.yankErr = msg.err.Error()
@@ -645,6 +668,9 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.crudActive() {
+		return m.crudKey(msg)
+	}
 	if m.commentsOpen {
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
@@ -671,17 +697,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.help {
-		switch msg.String() {
-		case "j", "down":
-			m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
-			return m, nil
-		case "k", "up":
-			m.helpOffset = max(m.helpOffset-1, 0)
-			return m, nil
-		}
-		m.help = false
-		m.helpOffset = 0
-		return m, nil
+		return m.helpKey(msg)
 	}
 	if m.options {
 		switch msg.String() {
@@ -771,6 +787,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = true
 		m.helpOffset = 0
+		m.helpFilter = ""
+		m.helpFilterActive = false
 		return m, nil
 	case "q":
 		m.quitting = true
@@ -780,6 +798,14 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.options = true
 		m.optionIndex = 0
 		return m, nil
+	case "n":
+		return m, m.openCrudCreate()
+	case "e":
+		return m, m.openCrudMenu()
+	case "x":
+		return m, m.openCrudClose()
+	case "D":
+		return m, m.openCrudDelete()
 	case "c":
 		return m, m.openComments(false)
 	case "C":
@@ -2235,6 +2261,9 @@ func (m Model) View() string {
 	if m.options {
 		return m.renderViewOptions()
 	}
+	if m.crudActive() {
+		return m.renderCrud()
+	}
 	if m.commentsOpen {
 		return m.renderComments()
 	}
@@ -2769,7 +2798,7 @@ func (m Model) renderHelp() string {
 	vis := max(1, height-2)
 	offset := min(m.helpOffset, max(0, len(lines)-vis))
 	end := min(len(lines), offset+vis)
-	title := fmt.Sprintf("Help · j/k scroll · %d/%d", offset+1, max(1, len(lines)-vis+1))
+	title := fmt.Sprintf("keybinds · j/k scroll · esc close · %d/%d", offset+1, max(1, len(lines)-vis+1))
 	box := pane(title, lines[offset:end], width, height)
 	out := make([]string, 0, height)
 	for _, line := range box {
@@ -2787,76 +2816,14 @@ func (m Model) helpDimensions() (w, width, height int) {
 		height = 24
 	}
 	width = w - 4
-	if width > 72 {
-		width = 72
+	// Wider help so two-column key rows stay on one line.
+	if width > 88 {
+		width = 88
+	}
+	if width < 56 {
+		width = min(w-2, 56)
 	}
 	return w, max(3, width), max(3, height)
-}
-
-func (m Model) helpLines(width int) []string {
-	rowLegend := fmt.Sprintf("Rows: %s open  %s in_progress  %s blocked  %s closed  %s deferred  %s hold",
-		m.vocab.Icon("open"), m.vocab.Icon("in_progress"), m.vocab.Icon("blocked"),
-		m.vocab.Icon("closed"), m.vocab.Icon("deferred"), m.vocab.Icon("hold"))
-	viewHelp := "  Views:"
-	for i, view := range m.views {
-		if i == 9 {
-			break
-		}
-		viewHelp += fmt.Sprintf(" %d %s ·", i+1, view.Label())
-	}
-	viewHelp = strings.TrimSuffix(viewHelp, " ·")
-	raw := []string{
-		"beads-tui - read-only board for Beads (bd)",
-		"",
-		"  Move/scroll:   j/k or ↑/↓ · g/G top/bottom · G graph · space/PgDn/Ctrl+F forward · b/PgUp/Ctrl+B back · ctrl-u/d half-page",
-		"  Tree:          enter/tab toggle · * expand all · h collapse · l unfold or detail · v flat/tree (preserves selection) · siblings use active sort",
-		"  Layout:        V cycles side/stacked/auto (auto stacks below 140)",
-		"  Detail:        enter/l/→ open · h/← return · j/k or ↑/↓ scroll",
-		"  Navigation:    esc close detail / clear search",
-		"  Comments:      c view comments · a add from the thread · C add from the board · Esc/q back",
-		viewHelp,
-		"  Sort:          s cycle created · updated · alphabetical · dependencies (blocked-by/in) · depends (blocks/out) · priority",
-		"  Tags:          t search by the selected bead's labels",
-		"  View options:  o configure rows/detail/panes · r restores defaults",
-		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? · Quit: q/Ctrl+C",
-		"  Search:        / · Enter apply · Esc cancel · tab complete · ↑↓ cycle · spaces AND · | OR · ! NOT",
-		"                 status:open · priority:P1 · label:frontend · assignee:pi · overdue · recurring · comments:true · text:word",
-		"",
-		rowLegend,
-		"PRIORITY_COLORS",
-		"STATUS_COLORS",
-		"Markers: ↻ recurring · ⚠ overdue · ⇣N depends on N · ⇡N has N dependents",
-		"",
-		"Read-only: board data never creates, edits or closes beads; comments are the one write action.",
-	}
-	inner := max(1, width-2)
-	var lines []string
-	for _, line := range raw {
-		lines = append(lines, wrapText(line, inner)...)
-	}
-	for i, line := range lines {
-		switch line {
-		case "PRIORITY_COLORS":
-			lines[i] = "Priority: " + strings.Join([]string{
-				priorityStyle(0).Render("P0"), priorityStyle(1).Render("P1"),
-				priorityStyle(2).Render("P2"), priorityStyle(3).Render("P3"),
-				priorityStyle(4).Render("P4"),
-			}, " ")
-		case "STATUS_COLORS":
-			lines[i] = "Status: " + strings.Join([]string{
-				m.vocab.StatusPill("open"), m.vocab.StatusPill("in_progress"),
-				m.vocab.StatusPill("blocked"), m.vocab.StatusPill("closed"),
-				m.vocab.StatusPill("deferred"), m.vocab.StatusPill("hold"),
-			}, " ")
-		}
-	}
-	lines[0] = styleBold.Render(lines[0])
-	for i := len(lines) - 1; i >= 0 && i >= len(lines)-4; i-- {
-		if lines[i] != "" {
-			lines[i] = styleDim.Render(lines[i])
-		}
-	}
-	return lines
 }
 
 func (m Model) helpMaxOffset() int {

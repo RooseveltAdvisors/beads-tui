@@ -178,6 +178,21 @@ running.
 
 ## Comments
 
+### CRUD (vim-spirited)
+
+- `n` new issue (title; due defaults `+7d`)
+- `e` edit bead in `$EDITOR` / vim (full text form; `:wq` applies, `:q!` cancels)
+- `x` close with reason
+- `D` delete (confirm `y`)
+- Esc cancels
+
+The edit buffer is a plain text file with human-readable `due:` timestamps.
+Vim motions work because it *is* vim.
+
+Every write stamps a bead comment:
+`tui-lineage <op> … actor="<who>" via=beads-tui`
+Identity: `BEADS_ACTOR` (agents) or git `user.name` / `$USER` (you).
+
 Select an issue and press `c` to open its comment thread. Press `a` to enter a
 comment, then `Enter` to submit or `Esc` to cancel. `C` from the board opens
 the thread with the input focused. Threads load through `bd comments ID
@@ -186,8 +201,14 @@ the thread with the input focused. Threads load through `bd comments ID
 
 ## Data safety
 
+Board browsing is read-only by default. When CRUD mutations land, every edit
+stamps a **`tui-lineage`** comment on the bead (`create` / `update field:old→new` /
+`close` / `delete`) so audit and troubleshoot have a thread-local history, in
+addition to native `bd events`. Comment submission remains an explicit Enter.
+
+<!-- legacy note kept until full CRUD keys ship:
 beads-tui never creates, edits, or closes beads. The only write is an explicit
-comment submission after the user presses `Enter`. Board-load failures keep
+comment submission after the user presses `Enter`. --> Board-load failures keep
 the loaded rows on screen, surface bd's diagnostic, and retry with backoff
 instead of freezing or blanking.
 Dependency metadata is best effort: a failed graph lookup is logged

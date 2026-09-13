@@ -32,6 +32,9 @@ const (
 // Client executes the `bd` CLI. Dependencies are injectable so tests can
 // exercise parsing and error handling without a real Beads install.
 type Client struct {
+	// Actor is the audit identity stamped into tui-lineage comments and passed
+	// as bd --actor. Empty means ResolveActor() (BEADS_ACTOR / git / USER).
+	Actor    string
 	lookPath func(file string) (string, error)
 	run      func(ctx context.Context, path string, args ...string) (stdout, stderr string, err error)
 	runInput func(ctx context.Context, path, input string, args ...string) (stdout, stderr string, err error)
@@ -286,7 +289,7 @@ func (c *Client) writeCall(ctx context.Context, input string, args ...string) er
 	}
 	for attempt := 1; ; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		_, stderr, err := c.runInput(attemptCtx, path, input, args...)
+		_, stderr, err := c.runInput(attemptCtx, path, input, c.withActor(args)...)
 		busy := storeBusy(attemptCtx, err, stderr)
 		cancel()
 		if err == nil {
