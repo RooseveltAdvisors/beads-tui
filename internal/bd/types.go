@@ -84,10 +84,12 @@ type Issue struct {
 	ParentID        string    `json:"parent_id"`
 	Assignee        string    `json:"assignee"`
 	Owner           string    `json:"owner"`
-	Repeat          string    `json:"repeat"`
-	RecurrenceStart string    `json:"recurrence_start"`
-	RecurrenceEnd   string    `json:"recurrence_end"`
-	RecurrenceTZ    string    `json:"recurrence_tz"`
+	// Repeat holds the recurrence rule. bd JSON may emit either `repeat` or
+	// `repeat_pattern`; UnmarshalJSON accepts both.
+	Repeat          string `json:"repeat"`
+	RecurrenceStart string `json:"recurrence_start"`
+	RecurrenceEnd   string `json:"recurrence_end"`
+	RecurrenceTZ    string `json:"recurrence_tz"`
 	URL             string    `json:"url"`
 	Labels          []string  `json:"labels"`
 	DeferUntil      string    `json:"defer_until"`
@@ -120,11 +122,17 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*i = Issue(alias)
-	var parent struct {
-		Parent *string `json:"parent"`
+	var extra struct {
+		Parent        *string `json:"parent"`
+		RepeatPattern string  `json:"repeat_pattern"`
 	}
-	if err := json.Unmarshal(data, &parent); err == nil && parent.Parent != nil {
-		i.ParentID = strings.TrimSpace(*parent.Parent)
+	if err := json.Unmarshal(data, &extra); err == nil {
+		if extra.Parent != nil {
+			i.ParentID = strings.TrimSpace(*extra.Parent)
+		}
+		if strings.TrimSpace(i.Repeat) == "" && strings.TrimSpace(extra.RepeatPattern) != "" {
+			i.Repeat = strings.TrimSpace(extra.RepeatPattern)
+		}
 	}
 	return nil
 }

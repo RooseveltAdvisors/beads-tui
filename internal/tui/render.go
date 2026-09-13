@@ -600,16 +600,47 @@ func dueText(issue bd.Issue) string {
 	if !ok {
 		return ""
 	}
-	days := int(due.Sub(time.Now()).Hours() / 24)
-	if due.Before(time.Now()) {
-		overdueDays := int(time.Since(due).Hours() / 24)
-		if overdueDays <= 7 {
-			return strconv.Itoa(overdueDays) + "d overdue"
-		}
-	} else if days <= 7 {
-		return strconv.Itoa(days) + "d left"
+	now := time.Now()
+	if due.Before(now) {
+		return formatDueDelta(now.Sub(due)) + " overdue"
+	}
+	left := due.Sub(now)
+	// Within a week, show a relative countdown (minutes/hours/days).
+	// Beyond that, the calendar date is clearer than "12d left".
+	if left <= 7*24*time.Hour {
+		return formatDueDelta(left) + " left"
 	}
 	return due.Format("2006-01-02")
+}
+
+// formatDueDelta picks the smallest useful unit so "0d left" never hides a
+// half-hour deadline. Under 1h → minutes; under 48h → hours; else days.
+func formatDueDelta(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m < 1 {
+			m = 1
+		}
+		return strconv.Itoa(m) + "m"
+	case d < 48*time.Hour:
+		h := int(d.Hours())
+		if h < 1 {
+			h = 1
+		}
+		return strconv.Itoa(h) + "h"
+	default:
+		days := int(d.Hours() / 24)
+		if days < 1 {
+			days = 1
+		}
+		return strconv.Itoa(days) + "d"
+	}
 }
 
 // commentBadgeText is deliberately kept in the row metadata slot so it stays
@@ -890,8 +921,53 @@ func buildDetailVisible(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, ch
 		}
 		lines = append(lines, styleDim.Render(meta))
 		lines = append(lines, styleDim.Render("Assignee: "+orDash(d.Assignee)))
+		if owner := strings.TrimSpace(d.Owner); owner != "" && owner != strings.TrimSpace(d.Assignee) {
+			lines = append(lines, styleDim.Render("Owner: "+owner))
+		}
 		if len(d.Labels) > 0 {
 			lines = append(lines, styleDim.Render("Labels: "+strings.Join(d.Labels, ", ")))
+		}
+		// Scheduling block: due/defer/repeat are first-class board signals and
+		// must appear in detail even when the list chips are off or truncated.
+		if due := strings.TrimSpace(d.DueAt); due != "" {
+			rel := dueText(*d)
+			line := "Due: " + due
+			// Relative countdown when dueText is not just the bare date string.
+			if rel != "" && rel != due && !strings.HasPrefix(due, rel) {
+				line += "  (" + rel + ")"
+			}
+			if isOverdue(*d) {
+				lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP0)).Bold(true).Render(line))
+			} else {
+				lines = append(lines, styleDim.Render(line))
+			}
+		} else {
+			lines = append(lines, styleDim.Render("Due: (none)"))
+		}
+		if def := strings.TrimSpace(d.DeferUntil); def != "" {
+			lines = append(lines, styleDim.Render("Defer until: "+def))
+		}
+		if rep := strings.TrimSpace(d.Repeat); rep != "" {
+			line := "Repeat: " + rep
+			if s := strings.TrimSpace(d.RecurrenceStart); s != "" {
+				line += "  start " + s
+			}
+			if e := strings.TrimSpace(d.RecurrenceEnd); e != "" {
+				line += "  end " + e
+			}
+			if tz := strings.TrimSpace(d.RecurrenceTZ); tz != "" {
+				line += "  " + tz
+			}
+			lines = append(lines, styleDim.Render(line))
+		}
+		if by := strings.TrimSpace(d.CreatedBy); by != "" {
+			lines = append(lines, styleDim.Render("Created by: "+by))
+		}
+		if d.CreatedAt != "" || d.UpdatedAt != "" {
+			lines = append(lines, styleDim.Render("Created: "+orDash(d.CreatedAt)+"   Updated: "+orDash(d.UpdatedAt)))
+		}
+		if u := strings.TrimSpace(d.URL); u != "" {
+			lines = append(lines, styleDim.Render("URL: "+u))
 		}
 	}
 	if fields.Relations && len(chain) > 0 {
@@ -900,9 +976,6 @@ func buildDetailVisible(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, ch
 			parts = append(parts, ancestor.ID)
 		}
 		lines = append(lines, styleDim.Render(truncate("Path: "+strings.Join(parts, " › "), width)))
-	}
-	if fields.Metadata && d.CreatedAt != "" {
-		lines = append(lines, styleDim.Render("Created: "+d.CreatedAt+"   Updated: "+orDash(d.UpdatedAt)))
 	}
 	dependencyCount := d.DependencyCount
 	dependentCount := d.DependentCount
