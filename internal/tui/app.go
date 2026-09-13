@@ -179,8 +179,10 @@ type Model struct {
 	yankIndex    int
 	yankErr      string
 	filterInput  textinput.Model
-	quitting     bool
-	markdown     *markdownRenderer
+	// filterSuggestIdx is the highlighted row in the / assist strip.
+	filterSuggestIdx int
+	quitting         bool
+	markdown         *markdownRenderer
 
 	commentsOpen        bool
 	commentsID          string
@@ -443,8 +445,8 @@ func (m Model) saveState() {
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
 	input := textinput.New()
-	input.Prompt = "Search / › "
-	input.Placeholder = "status:open assignee:pi comments:true !recurring"
+	input.Prompt = "/ "
+	input.Placeholder = "overdue · recurring · status: · tab completes"
 	input.CharLimit = 120
 	input.Width = 60
 	commentInput := textinput.New()
@@ -717,6 +719,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.dOffset = m.searchDOff
 			m.saveState()
 			m.searching = false
+			m.filterSuggestIdx = 0
 			return m, cmd
 		case "enter":
 			m.filtering = false
@@ -724,12 +727,33 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filter = ParseSearchFilter(m.filterInput.Value())
 			m.saveState()
 			m.searching = false
+			m.filterSuggestIdx = 0
 			return m, m.rebuildRows(m.selectedID())
+		case "tab":
+			return m, m.acceptFilterSuggestion()
+		case "shift+tab", "up", "ctrl+p":
+			sugs := m.currentFilterSuggestions()
+			if len(sugs) == 0 {
+				return m, nil
+			}
+			m.filterSuggestIdx = (m.filterSuggestIdx - 1 + len(sugs)) % len(sugs)
+			return m, nil
+		case "down", "ctrl+n":
+			sugs := m.currentFilterSuggestions()
+			if len(sugs) == 0 {
+				return m, nil
+			}
+			m.filterSuggestIdx = (m.filterSuggestIdx + 1) % len(sugs)
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.filterInput, cmd = m.filterInput.Update(msg)
 		previousID := m.selectedID()
 		m.filter = ParseSearchFilter(m.filterInput.Value())
+		// Typing changes the candidate set; keep the highlight in range.
+		if sugs := m.currentFilterSuggestions(); m.filterSuggestIdx >= len(sugs) {
+			m.filterSuggestIdx = 0
+		}
 		filterCmd := m.rebuildRows(previousID)
 		if cmd != nil && filterCmd != nil {
 			return m, tea.Batch(cmd, filterCmd)
@@ -862,10 +886,58 @@ func (m *Model) openPrompt() tea.Cmd {
 	}
 	m.searchID = id
 	m.focus = FocusList
-	m.filterInput.Prompt = "Search / › "
+	m.filterInput.Prompt = "/ "
+	// / always starts a fresh query (vim-style). The live assist strip is what
+	// makes composition easy; seeding the prior filter would turn a second /
+	// into an accidental append (needle + other → needleother).
 	m.filterInput.SetValue("")
+	m.filterInput.CursorEnd()
 	m.filterInput.Focus()
+	m.filterSuggestIdx = 0
 	return textinput.Blink
+}
+
+// currentFilterSuggestions builds the assist strip for the live prompt.
+func (m Model) currentFilterSuggestions() []FilterSuggestion {
+	rows := m.allRows
+	if len(m.graphRows) > 0 {
+		rows = m.graphRows
+	}
+	var statusNames []string
+	for _, view := range m.views {
+		if s := strings.TrimSpace(string(view)); s != "" && s != string(bd.ViewReady) && s != "all" {
+			statusNames = append(statusNames, s)
+		}
+	}
+	st, assignees, labels := boardFilterVocab(rows, statusNames)
+	return FilterSuggestions(m.filterInput.Value(), m.filterInput.Position(), st, assignees, labels)
+}
+
+// acceptFilterSuggestion replaces the token under the cursor with the
+// highlighted assist entry and re-runs the live filter.
+func (m *Model) acceptFilterSuggestion() tea.Cmd {
+	sugs := m.currentFilterSuggestions()
+	if len(sugs) == 0 {
+		return nil
+	}
+	idx := m.filterSuggestIdx
+	if idx < 0 || idx >= len(sugs) {
+		idx = 0
+	}
+	previousID := m.selectedID()
+	newQuery, newCursor := ApplyFilterSuggestion(m.filterInput.Value(), m.filterInput.Position(), sugs[idx])
+	m.filterInput.SetValue(newQuery)
+	m.filterInput.SetCursor(newCursor)
+	m.filter = ParseSearchFilter(newQuery)
+	m.filterSuggestIdx = 0
+	return m.rebuildRows(previousID)
+}
+
+// filterPromptLines is how many terminal rows the / chrome occupies so the
+// list/detail split can shrink instead of painting over the assist strip.
+func (m Model) filterPromptLines() int {
+	// input line + one pill row + one short hint line
+	return 3
 }
 
 // switchView changes the board view, keeping the selection stable by id when
@@ -2178,7 +2250,8 @@ func (m Model) View() string {
 	}
 	contentH := h - 2
 	if m.filtering {
-		contentH--
+		// Input line + assist strip (up to 4 suggestion rows + hint).
+		contentH -= m.filterPromptLines()
 	}
 	if contentH < 1 {
 		contentH = 1
@@ -2339,8 +2412,57 @@ func (m Model) renderYank() string {
 }
 
 func (m Model) renderFilterPrompt(w int) string {
-	input := m.filterInput.View()
-	return truncatePhys(styleDim.Render("SEARCH")+"  "+input, w)
+	if w < 1 {
+		w = 1
+	}
+	m.filterInput.Width = max(8, w-10)
+	lines := []string{
+		truncatePhys(styleBold.Render("FILTER")+"  "+m.filterInput.View(), w),
+	}
+	sugs := m.currentFilterSuggestions()
+	if len(sugs) == 0 {
+		lines = append(lines, truncatePhys(
+			filterChip("overdue", false)+" "+
+				filterChip("recurring", false)+" "+
+				filterChip("status:", false)+" "+
+				styleDim.Render("type to filter"),
+			w))
+	} else {
+		// Pack as many pills as fit on one row, keeping the highlight visible.
+		var pills []string
+		used := 0
+		start := 0
+		if m.filterSuggestIdx > 0 {
+			// Try to start a couple before the highlight so context stays.
+			start = max(0, m.filterSuggestIdx-2)
+		}
+		for i := start; i < len(sugs); i++ {
+			p := filterChip(sugs[i].Label, i == m.filterSuggestIdx)
+			pw := displayWidth(p) + 1
+			if used > 0 && used+pw > w {
+				if i <= m.filterSuggestIdx {
+					// Highlight did not fit - restart from highlight alone.
+					pills = []string{filterChip(sugs[m.filterSuggestIdx].Label, true)}
+					used = displayWidth(pills[0])
+					continue
+				}
+				break
+			}
+			pills = append(pills, p)
+			used += pw
+		}
+		// Hint for the highlighted pill only - one short phrase, not a wall.
+		row := strings.Join(pills, " ")
+		if idx := m.filterSuggestIdx; idx >= 0 && idx < len(sugs) && sugs[idx].Hint != "" {
+			hint := styleDim.Render(sugs[idx].Hint)
+			if displayWidth(row)+displayWidth(hint)+3 <= w {
+				row += "  " + hint
+			}
+		}
+		lines = append(lines, truncatePhys(row, w))
+	}
+	lines = append(lines, truncatePhys(styleDim.Render("tab · ↑↓ · enter · esc"), w))
+	return strings.Join(lines, "\n")
 }
 
 // renderHeader paints the title bar: view name and tabs.
@@ -2697,13 +2819,13 @@ func (m Model) helpLines(width int) []string {
 		"  Tags:          t search by the selected bead's labels",
 		"  View options:  o configure rows/detail/panes · r restores defaults",
 		"  Reset:         R reloads the open board with defaults · r reloads keeping view/sort/search · Help: ? · Quit: q/Ctrl+C",
-		"  Search:        / prompt · Enter apply · spaces AND · | OR · ! NOT · ( ) group · quote phrases · Esc cancel",
-		"                 status:open · priority:P1 · label:frontend · assignee:pi · comments:true · recurring:false · text:word",
+		"  Search:        / · Enter apply · Esc cancel · tab complete · ↑↓ cycle · spaces AND · | OR · ! NOT",
+		"                 status:open · priority:P1 · label:frontend · assignee:pi · overdue · recurring · comments:true · text:word",
 		"",
 		rowLegend,
 		"PRIORITY_COLORS",
 		"STATUS_COLORS",
-		"Markers: ⇣N depends on N · ⇡N has N dependents",
+		"Markers: ↻ recurring · ⚠ overdue · ⇣N depends on N · ⇡N has N dependents",
 		"",
 		"Read-only: board data never creates, edits or closes beads; comments are the one write action.",
 	}

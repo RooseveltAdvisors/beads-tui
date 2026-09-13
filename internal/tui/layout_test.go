@@ -155,7 +155,8 @@ func TestHiddenDetailPaneUsesFullSpaceAndRestoresDefaults(t *testing.T) {
 	}
 	m.options = true
 	m = sendKey(t, m, "r")
-	if !m.visibility.DetailPane || m.visibility.List.Labels {
+	// Defaults: detail pane on, labels on (chip chrome), assignee on.
+	if !m.visibility.DetailPane || !m.visibility.List.Labels || !m.visibility.List.Assignee {
 		t.Fatalf("restore defaults failed: %+v", m.visibility)
 	}
 }

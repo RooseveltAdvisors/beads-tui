@@ -27,7 +27,11 @@ import (
 //   - Cycle and error markers keep bold red but are always paired with their
 //     own glyphs (⚠ for cycles, ✗ for errors), so red never reads as P0.
 const (
+	// Row marker icons ride next to the status glyph. Recurring is a cool
+	// cyan loop; overdue is a hot warning so it never reads as priority P0
+	// alone (P0 is still the bare priority pill).
 	recurringIcon = "↻"
+	overdueIcon   = "⚠"
 
 	priorityP0 = "196" // red
 	priorityP1 = "208" // orange
@@ -112,7 +116,74 @@ var (
 	styleCommentBadge  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
 	styleSelected      = lipgloss.NewStyle().
 				Background(lipgloss.Color("238"))
+	// Chip colors stay outside the priority/status ramps so a pill never
+	// reads as P0 or as an open-status glyph.
+	chipAssigneeFG = "213" // pink
+	chipAssigneeBG = "53"
+	chipLabelFG    = "117" // sky
+	chipLabelBG    = "24"
+	chipDueFG      = "230"
+	chipDueBG      = "94"
+	chipOverdueFG  = "231"
+	chipOverdueBG  = "88"
+	chipRepeatFG   = "159"
+	chipRepeatBG   = "23"
+	chipFilterFG   = "255"
+	chipFilterBG   = "238"
+	chipFilterOnFG = "232"
+	chipFilterOnBG = "45"
 )
+
+// chip renders a short pill. Background (no extra padding) keeps the plain
+// text scannable as the same glyphs tests and copy/paste already expect,
+// while the fill gives the candy the eye needs.
+func chip(text, fg, bg string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(fg)).
+		Background(lipgloss.Color(bg)).
+		Render(text)
+}
+
+func assigneeChip(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if runewidth.StringWidth(name) > 14 {
+		name = runewidth.Truncate(name, 14, "…")
+	}
+	return chip("@"+name, chipAssigneeFG, chipAssigneeBG)
+}
+
+func recurringChip() string {
+	return chip(recurringIcon+" repeat", chipRepeatFG, chipRepeatBG)
+}
+
+func overdueChip(due string) string {
+	label := overdueIcon + " overdue"
+	if due != "" {
+		label = overdueIcon + " " + due
+	}
+	return chip(label, chipOverdueFG, chipOverdueBG)
+}
+
+func dueChip(due string) string {
+	if due == "" {
+		return ""
+	}
+	return chip(due, chipDueFG, chipDueBG)
+}
+
+func filterChip(label string, selected bool) string {
+	if selected {
+		return chip(label, chipFilterOnFG, chipFilterOnBG)
+	}
+	return chip(label, chipFilterFG, chipFilterBG)
+}
 
 func viewStyle(view bd.View) lipgloss.Style {
 	color := statusInProgress
@@ -151,7 +222,7 @@ type ListFields struct {
 }
 
 func defaultListFields() ListFields {
-	return ListFields{Status: true, Priority: true, ID: true, Assignee: true, Comments: true, Recurrence: true, Dependencies: true}
+	return ListFields{Status: true, Priority: true, ID: true, Assignee: true, Comments: true, Recurrence: true, Labels: true, Dependencies: true}
 }
 
 type DetailFields struct {
@@ -342,49 +413,52 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	if fields.Status {
 		icon = v.Icon(issue.Status)
 	}
+	// Right-edge chips carry the scannable signals (repeat, due, deps,
+	// comments). Assignee is a left-side pill so ownership never competes
+	// with the title for attention.
+	var chips []string
 	if fields.Recurrence && issue.IsRecurring() {
-		icon += recurringIcon
-	}
-	counts := ""
-	if fields.Dependencies && issue.DependencyCount > 0 {
-		counts += "⇣" + itoa(issue.DependencyCount)
-	}
-	if fields.Dependencies && issue.DependentCount > 0 {
-		if counts != "" {
-			counts += " "
-		}
-		counts += "⇡" + itoa(issue.DependentCount)
-	}
-	commentBadge := ""
-	if fields.Comments {
-		commentBadge = commentBadgeText(issue.CommentCount)
-	}
-	if width >= 48 && counts != "" {
-		counts = dependencyChips(issue)
-	}
-	// The depth-cap marker rides in the right-hand metadata slot.
-	if suffix != "" {
-		if counts != "" {
-			counts += "  "
-		}
-		counts += suffix
-	}
-	if commentBadge != "" {
-		if counts != "" {
-			counts += "  "
-		}
-		counts += styleCommentBadge.Render(commentBadge)
+		chips = append(chips, recurringChip())
 	}
 	if due := dueText(issue); due != "" {
-		if counts != "" {
-			counts += "  "
-		}
 		if isOverdue(issue) {
-			counts += lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("Due: " + due)
+			chips = append(chips, overdueChip(due))
 		} else {
-			counts += styleDim.Render("Due: " + due)
+			chips = append(chips, dueChip(due))
+		}
+	} else if isOverdue(issue) {
+		chips = append(chips, overdueChip(""))
+	}
+	// Dependency markers stay plain (not chips) so the existing narrow-row
+	// digit compaction path can still shrink ⇣123/⇡456 → 1/4.
+	depCounts := ""
+	if fields.Dependencies {
+		if width >= 48 {
+			depCounts = dependencyChips(issue)
+		} else if issue.DependencyCount > 0 || issue.DependentCount > 0 {
+			if issue.DependencyCount > 0 {
+				depCounts = "⇣" + itoa(issue.DependencyCount)
+			}
+			if issue.DependentCount > 0 {
+				if depCounts != "" {
+					depCounts += " "
+				}
+				depCounts += "⇡" + itoa(issue.DependentCount)
+			}
+		}
+		if depCounts != "" {
+			chips = append(chips, styleDim.Render(depCounts))
 		}
 	}
+	if fields.Comments {
+		if badge := commentBadgeText(issue.CommentCount); badge != "" {
+			chips = append(chips, styleCommentBadge.Render(badge))
+		}
+	}
+	if suffix != "" {
+		chips = append(chips, suffix)
+	}
+	counts := strings.Join(chips, " ")
 	metadataIssue := issue
 	if !fields.Dependencies {
 		metadataIssue.DependencyCount, metadataIssue.DependentCount = 0, 0
@@ -393,17 +467,21 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		metadataIssue.CommentCount = 0
 	}
 	compactCounts := compactRowMetadata(metadataIssue, displayWidth(counts))
-	reservedCounts := 0
+	// Reserve only the compacted digit budget for the tree prefix so deep
+	// connectors still collapse to "…" instead of vanishing entirely.
 	compactCountReserve := 0
 	if fields.Dependencies && (issue.DependencyCount > 0 || issue.DependentCount > 0) {
-		reservedCounts = displayWidth(counts) + 1
 		compactCountReserve = 2
 		if issue.DependencyCount > 0 && issue.DependentCount > 0 {
 			compactCountReserve = 4
 		}
 	}
-	if commentBadge != "" {
-		compactCountReserve += displayWidth(commentBadge) + 1
+	if fields.Comments && issue.CommentCount > 0 {
+		compactCountReserve += 2
+	}
+	assignee := ""
+	if fields.Assignee {
+		assignee = assigneeChip(issue.Assignee)
 	}
 	core := func() string {
 		var parts []string
@@ -413,23 +491,25 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		if fields.Priority {
 			parts = append(parts, formatPriority(issue.Priority))
 		}
+		if assignee != "" {
+			parts = append(parts, assignee)
+		}
+		// Deferred until-date always earns a slot when it fits. Custom status
+		// names only appear on comfortable widths so narrow rows keep 1/4
+		// dependency digits instead of a long unknown status string.
+		if note := deferredNote(issue); note != "" {
+			parts = append(parts, v.statusStyle(issue.Status).Render(note))
+		} else if usable >= 36 {
+			if note := statusNote(issue, 12); note != "" {
+				parts = append(parts, v.statusStyle(issue.Status).Render(note))
+			}
+		}
 		return marker + strings.Join(parts, " ")
 	}
 	corePrefix := core()
 	treePrefix = truncate(treePrefix, max(0, usable-displayWidth(corePrefix)-compactCountReserve))
-	statusBudget := max(0, usable-displayWidth(treePrefix)-displayWidth(corePrefix)-reservedCounts-1)
-	if fields.Assignee && strings.TrimSpace(issue.Assignee) != "" {
-		// Keep ownership recognizable without letting a long agent id consume
-		// the title column.
-		statusBudget = min(statusBudget, min(18, max(6, usable/4)))
-	}
-	status := compactRowStatus(issue, statusBudget, fields.Assignee)
 	prefixWithStatus := func() string {
-		prefix := treePrefix + core()
-		if status != "" {
-			prefix += " " + v.statusStyle(issue.Status).Render(status)
-		}
-		return prefix
+		return treePrefix + core()
 	}
 	prefix := prefixWithStatus()
 	if fields.Dependencies && issue.DependencyCount > 0 && issue.DependentCount > 0 && displayWidth(icon) > 1 && usable-displayWidth(prefix)-1 < 3 {
@@ -440,7 +520,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	var body strings.Builder
 	if fields.ID && issue.ID != "" {
 		body.WriteString(" ")
-		body.WriteString(issue.ID)
+		body.WriteString(styleDim.Render(issue.ID))
 	}
 	if issue.Title != "" {
 		body.WriteString(" ")
@@ -492,7 +572,8 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		line = truncatePhys(line, contentBudget)
 	}
 	if counts != "" {
-		line = padRight(line, contentBudget) + " " + styleDim.Render(counts)
+		// Chips already carry their own color; do not re-dim them.
+		line = padRight(line, contentBudget) + " " + counts
 	}
 	if selected {
 		return styleSelected.Render("▸ " + line)
@@ -615,25 +696,18 @@ func rowStatusTextForView(issue bd.Issue, showAssignee bool) string {
 		owner = strings.TrimSpace(issue.Assignee)
 	}
 	switch strings.ToLower(status) {
-	case "open", "blocked", "closed":
-		if owner != "" {
-			return "· " + owner
-		}
-		return ""
-	case "in_progress":
+	case "open", "blocked", "closed", "in_progress":
 		if owner != "" {
 			return "· " + owner
 		}
 		return ""
 	case "deferred":
-		if until := strings.TrimSpace(issue.DeferUntil); until != "" {
-			if date, _, ok := strings.Cut(until, "T"); ok {
-				until = date
-			}
-			if owner != "" {
-				return "until " + until + " · " + owner
-			}
-			return "until " + until
+		note := deferredNote(issue)
+		if note != "" && owner != "" {
+			return note + " · " + owner
+		}
+		if note != "" {
+			return note
 		}
 		if owner != "" {
 			return "· " + owner
@@ -641,9 +715,53 @@ func rowStatusTextForView(issue bd.Issue, showAssignee bool) string {
 		return ""
 	}
 	if owner != "" {
-		return status + " · " + owner
+		return "· " + owner
 	}
-	return status
+	// Custom statuses: keep a short name so unknown states stay readable.
+	return statusNote(issue, 18)
+}
+
+// deferredNote is the until-date phrase for deferred beads.
+func deferredNote(issue bd.Issue) string {
+	if strings.ToLower(strings.TrimSpace(issue.Status)) != "deferred" {
+		return ""
+	}
+	until := strings.TrimSpace(issue.DeferUntil)
+	if until == "" {
+		return ""
+	}
+	if date, _, ok := strings.Cut(until, "T"); ok {
+		until = date
+	}
+	return "until " + until
+}
+
+// builtinStatusNames are glyph-only on the board; their text form is noise.
+var builtinStatusNames = map[string]bool{
+	"open": true, "in_progress": true, "blocked": true, "closed": true,
+	"deferred": true, "hold": true, "on_hold": true, "pinned": true, "hooked": true,
+}
+
+// statusNote picks the short status phrase for a row: deferred until-date, or
+// a truncated custom status name. Built-ins render as glyph only.
+func statusNote(issue bd.Issue, width int) string {
+	if note := deferredNote(issue); note != "" {
+		if width > 0 && displayWidth(note) > width {
+			return truncate(note, width)
+		}
+		return note
+	}
+	status := strings.TrimSpace(issue.Status)
+	if status == "" || builtinStatusNames[strings.ToLower(status)] {
+		return ""
+	}
+	if width <= 0 {
+		return status
+	}
+	if displayWidth(status) <= width {
+		return status
+	}
+	return truncate(status, width)
 }
 
 func compactDependencyCounts(down, up, width int) string {
@@ -691,10 +809,8 @@ func compactStatusIcon(status string) string {
 // collapse into a "+N" marker and the full set lives in the detail pane.
 const maxInlineTags = 2
 
-// renderTags keeps labels compact and deliberately low-contrast: at most two
-// dim labels render inline after the title, overflow becomes "+N", and the
-// detail pane carries the full set. Labels are metadata; status and priority
-// carry the visual meaning.
+// renderTags keeps labels compact: at most two chips after the title,
+// overflow becomes "+N", and the detail pane carries the full set.
 func renderTags(labels []string) string {
 	var tags []string
 	overflow := 0
@@ -704,13 +820,18 @@ func renderTags(labels []string) string {
 			continue
 		}
 		if len(tags) < maxInlineTags {
-			tags = append(tags, styleDim.Render("["+label+"]"))
+			if runewidth.StringWidth(label) > 12 {
+				label = runewidth.Truncate(label, 12, "…")
+			}
+			// Keep the [label] glyph so existing scanners and tests still see
+			// brackets; the chip background is the scannable upgrade.
+			tags = append(tags, chip("["+label+"]", chipLabelFG, chipLabelBG))
 		} else {
 			overflow++
 		}
 	}
 	if overflow > 0 {
-		tags = append(tags, styleDim.Render("+"+itoa(overflow)))
+		tags = append(tags, chip("+"+itoa(overflow), chipLabelFG, chipLabelBG))
 	}
 	return strings.Join(tags, " ")
 }

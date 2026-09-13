@@ -68,12 +68,14 @@ The TUI is keyboard-driven:
   hidden from rows by default but remain available here and in task detail.
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
-- `/` opens the incremental search prompt. Search by bead id, title, or
-  description, or use `status:open`, `priority:P1`, `label:frontend`,
-  `assignee:pi`, `comments:true`, `recurring`, or `recurring:false`. Spaces
-  combine conditions with AND, `|` means OR, `!` negates, and parentheses
-  group expressions;
-  `enter` applies and `esc` cancels/restores the prior context.
+- `/` opens the incremental search prompt with a live assist strip.
+  Type freely or pick a completion: `tab` accepts the highlighted suggestion,
+  `↑`/`↓` (or `ctrl-p`/`ctrl-n`) cycles, `enter` applies, `esc` cancels.
+  Keywords: `overdue`, `recurring` / `recurring:false`, `status:open`,
+  `priority:P1`, `label:frontend`, `assignee:pi`, `comments:true`, `text:word`.
+  Value completions for `status:`, `assignee:`, and `label:` come from the
+  loaded board. Spaces combine with AND, `|` is OR, `!` negates, and
+  parentheses group expressions. `/` always starts a fresh query.
 - `t` searches the selected bead's labels.
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);
   `enter` copies through `clipboard-copy` or OSC52.
@@ -114,7 +116,8 @@ Custom statuses inherit their category's color (`bd statuses --json`). The
 `?` help screen renders the same legend live.
 
 Each list row carries its bd status as a glyph (never the word `open`),
-priority (`P0`-`P4`), id, and title, plus at most two subdued dim labels
+priority (`P0`-`P4`), id, title, assignee as an `@name` pill, marker chips
+(`↻ repeat`, `⚠ overdue`, due dates), and at most two label chips
 inline (`[tag] [tag] +N` marks overflow); the full label set appears in the
 detail pane. Rows also carry `⇣N blocked-by`/`⇡N blocks` dependency chips and
 deferred rows include their `defer_until` date.
