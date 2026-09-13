@@ -27,7 +27,11 @@ import (
 //   - Cycle and error markers keep bold red but are always paired with their
 //     own glyphs (⚠ for cycles, ✗ for errors), so red never reads as P0.
 const (
+	// Row marker icons ride next to the status glyph. Recurring is a cool
+	// cyan loop; overdue is a hot warning so it never reads as priority P0
+	// alone (P0 is still the bare priority pill).
 	recurringIcon = "↻"
+	overdueIcon   = "⚠"
 
 	priorityP0 = "196" // red
 	priorityP1 = "208" // orange
@@ -342,8 +346,15 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	if fields.Status {
 		icon = v.Icon(issue.Status)
 	}
+	// Recurring and overdue markers are always-on high-signal badges: a
+	// loop for anything with a repeat schedule, a warning for past-due open
+	// work. Recurrence still respects the view-options toggle; overdue is
+	// never hidden (missing a past-due cue is worse than a denser row).
 	if fields.Recurrence && issue.IsRecurring() {
-		icon += recurringIcon
+		icon += lipgloss.NewStyle().Foreground(lipgloss.Color(statusInProgress)).Render(recurringIcon)
+	}
+	if isOverdue(issue) {
+		icon += lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP0)).Bold(true).Render(overdueIcon)
 	}
 	counts := ""
 	if fields.Dependencies && issue.DependencyCount > 0 {
@@ -380,7 +391,9 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 			counts += "  "
 		}
 		if isOverdue(issue) {
-			counts += lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("Due: " + due)
+			// Pair the ⚠ badge with a red due chip so the right edge carries
+			// the same signal as the left-side icon.
+			counts += lipgloss.NewStyle().Foreground(lipgloss.Color(priorityP0)).Bold(true).Render(overdueIcon + " " + due)
 		} else {
 			counts += styleDim.Render("Due: " + due)
 		}
