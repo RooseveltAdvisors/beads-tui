@@ -107,7 +107,7 @@ func TestListRowShowsOverdueAndRecurringIcons(t *testing.T) {
 	if strings.Contains(future, overdueIcon) {
 		t.Fatalf("future due should not show overdue icon: %q", future)
 	}
-	if !strings.Contains(future, "Due: 2099-01-02") {
+	if !strings.Contains(future, "2099-01-02") {
 		t.Fatalf("future due chip missing: %q", future)
 	}
 }

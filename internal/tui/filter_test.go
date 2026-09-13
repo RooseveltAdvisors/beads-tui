@@ -104,7 +104,7 @@ func TestRowsShowCanonicalAssigneeAndRecurringIcon(t *testing.T) {
 		ID: "unassigned", Title: "Recurring", Status: "in_progress", Repeat: "daily",
 		Owner: "spawned-worker-42",
 	}, 80, false))
-	if !strings.Contains(recurring, recurringIcon) || !strings.Contains(recurring, "· jr-voice") {
+	if !strings.Contains(recurring, recurringIcon) || !strings.Contains(recurring, "@jr-voice") {
 		t.Fatalf("recurring row missing icon or canonical assignee: %q", recurring)
 	}
 	if strings.Contains(recurring, "spawned-worker-42") {
@@ -113,14 +113,14 @@ func TestRowsShowCanonicalAssigneeAndRecurringIcon(t *testing.T) {
 	if strings.Contains(missingAssignee, "spawned-worker-42") {
 		t.Fatalf("recurring row fell back to transient owner: %q", missingAssignee)
 	}
-	if strings.Contains(oneOff, recurringIcon) || !strings.Contains(oneOff, "· jr-voice") {
+	if strings.Contains(oneOff, recurringIcon) || !strings.Contains(oneOff, "@jr-voice") {
 		t.Fatalf("one-off row lost assignee or gained recurrence: %q", oneOff)
 	}
 }
 
 func TestListRowShowsDueDate(t *testing.T) {
 	row := stripANSI(NewVocab(nil).ListRow(bd.Issue{ID: "due", Title: "Task", Status: "open", DueAt: "2099-01-02"}, 100, false))
-	if !strings.Contains(row, "Due: 2099-01-02") {
+	if !strings.Contains(row, "2099-01-02") {
 		t.Fatalf("due row = %q", row)
 	}
 }
@@ -282,9 +282,16 @@ func TestListRowsRenderTagsWithActiveRenderer(t *testing.T) {
 	row := NewVocab(nil).ListRow(bd.Issue{
 		ID: "fm-x", Title: "Task", Status: "open", Labels: []string{"ops"},
 	}, 80, false)
-	wantTag := renderer.NewStyle().Foreground(lipgloss.Color("245")).Render("[ops]")
+	// Labels render as chips (fg+bg), not dim text.
+	wantTag := renderer.NewStyle().
+		Foreground(lipgloss.Color(chipLabelFG)).
+		Background(lipgloss.Color(chipLabelBG)).
+		Render("[ops]")
 	if !strings.Contains(row, wantTag) {
-		t.Fatalf("tag was not rendered with the active color renderer: %q", row)
+		t.Fatalf("tag was not rendered as a chip: %q\nwant substring: %q", row, wantTag)
+	}
+	if !strings.Contains(stripANSI(row), "[ops]") {
+		t.Fatalf("tag plain text missing [ops]: %q", stripANSI(row))
 	}
 }
 
@@ -318,7 +325,7 @@ func TestRowsShowWorkStateInsteadOfComputedOpen(t *testing.T) {
 	claimed := stripANSI(vocab.ListRow(bd.Issue{
 		ID: "claimed", Title: "In flight", Status: "in_progress", Assignee: "ada",
 	}, 80, false))
-	if !strings.Contains(claimed, "●") || !strings.Contains(claimed, "· ada") || strings.Contains(claimed, "in_progress") {
+	if !strings.Contains(claimed, "●") || !strings.Contains(claimed, "@ada") || strings.Contains(claimed, "in_progress") {
 		t.Fatalf("claimed Ready row lost real work state or owner: %q", claimed)
 	}
 	blocked := stripANSI(vocab.ListRow(bd.Issue{ID: "blocked", Title: "Blocked", Status: "blocked"}, 80, false))

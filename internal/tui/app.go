@@ -936,17 +936,8 @@ func (m *Model) acceptFilterSuggestion() tea.Cmd {
 // filterPromptLines is how many terminal rows the / chrome occupies so the
 // list/detail split can shrink instead of painting over the assist strip.
 func (m Model) filterPromptLines() int {
-	// input + up to 4 suggestions + 1 hint line
-	n := 1 + 1
-	sugs := m.currentFilterSuggestions()
-	shown := len(sugs)
-	if shown > 4 {
-		shown = 4
-	}
-	if shown == 0 {
-		shown = 1 // keep a "no matches" row so the chrome height is stable
-	}
-	return n + shown
+	// input line + one pill row + one short hint line
+	return 3
 }
 
 // switchView changes the board view, keeping the selection stable by id when
@@ -2424,44 +2415,53 @@ func (m Model) renderFilterPrompt(w int) string {
 	if w < 1 {
 		w = 1
 	}
-	m.filterInput.Width = max(8, w-4)
+	m.filterInput.Width = max(8, w-10)
 	lines := []string{
 		truncatePhys(styleBold.Render("FILTER")+"  "+m.filterInput.View(), w),
 	}
 	sugs := m.currentFilterSuggestions()
 	if len(sugs) == 0 {
-		lines = append(lines, truncatePhys(styleDim.Render("  (no completions — try overdue, recurring, status:…)"), w))
+		lines = append(lines, truncatePhys(
+			filterChip("overdue", false)+" "+
+				filterChip("recurring", false)+" "+
+				filterChip("status:", false)+" "+
+				styleDim.Render("type to filter"),
+			w))
 	} else {
+		// Pack as many pills as fit on one row, keeping the highlight visible.
+		var pills []string
+		used := 0
 		start := 0
-		// Keep the highlighted row visible in a 4-line window.
-		if m.filterSuggestIdx >= 4 {
-			start = m.filterSuggestIdx - 3
+		if m.filterSuggestIdx > 0 {
+			// Try to start a couple before the highlight so context stays.
+			start = max(0, m.filterSuggestIdx-2)
 		}
-		end := start + 4
-		if end > len(sugs) {
-			end = len(sugs)
-			start = max(0, end-4)
-		}
-		for i := start; i < end; i++ {
-			s := sugs[i]
-			prefix := "  "
-			label := s.Label
-			hint := s.Hint
-			if i == m.filterSuggestIdx {
-				prefix = "▸ "
-				label = styleBold.Render(label)
-			} else {
-				label = styleDim.Render(label)
-				hint = styleDim.Render(hint)
+		for i := start; i < len(sugs); i++ {
+			p := filterChip(sugs[i].Label, i == m.filterSuggestIdx)
+			pw := displayWidth(p) + 1
+			if used > 0 && used+pw > w {
+				if i <= m.filterSuggestIdx {
+					// Highlight did not fit - restart from highlight alone.
+					pills = []string{filterChip(sugs[m.filterSuggestIdx].Label, true)}
+					used = displayWidth(pills[0])
+					continue
+				}
+				break
 			}
-			row := prefix + label
-			if hint != "" {
-				row += "  " + styleDim.Render(hint)
-			}
-			lines = append(lines, truncatePhys(row, w))
+			pills = append(pills, p)
+			used += pw
 		}
+		// Hint for the highlighted pill only - one short phrase, not a wall.
+		row := strings.Join(pills, " ")
+		if idx := m.filterSuggestIdx; idx >= 0 && idx < len(sugs) && sugs[idx].Hint != "" {
+			hint := styleDim.Render(sugs[idx].Hint)
+			if displayWidth(row)+displayWidth(hint)+3 <= w {
+				row += "  " + hint
+			}
+		}
+		lines = append(lines, truncatePhys(row, w))
 	}
-	lines = append(lines, truncatePhys(styleDim.Render("tab complete · ↑↓ cycle · enter apply · esc cancel · space=AND · |=OR · !=NOT"), w))
+	lines = append(lines, truncatePhys(styleDim.Render("tab · ↑↓ · enter · esc"), w))
 	return strings.Join(lines, "\n")
 }
 

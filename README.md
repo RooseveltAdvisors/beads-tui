@@ -116,8 +116,8 @@ Custom statuses inherit their category's color (`bd statuses --json`). The
 `?` help screen renders the same legend live.
 
 Each list row carries its bd status as a glyph (never the word `open`),
-priority (`P0`-`P4`), id, and title, plus marker icons (`↻` recurring,
-`⚠` overdue) and at most two subdued dim labels
+priority (`P0`-`P4`), id, title, assignee as an `@name` pill, marker chips
+(`↻ repeat`, `⚠ overdue`, due dates), and at most two label chips
 inline (`[tag] [tag] +N` marks overflow); the full label set appears in the
 detail pane. Rows also carry `⇣N blocked-by`/`⇡N blocks` dependency chips and
 deferred rows include their `defer_until` date.
