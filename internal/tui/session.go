@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-// SessionKind names the live-session backend.
+// SessionKind names the live-session backend (attach and comment-notify).
 type SessionKind string
 
 const (
@@ -17,7 +20,10 @@ const (
 	sessionTmux  SessionKind = "tmux"
 )
 
-// LiveSession is a running Herdr or tmux session that can receive a prompt.
+const liveSessionMark = "●"
+
+// LiveSession is a running Herdr or tmux session the board can attach into
+// or ping with a comment notification.
 type LiveSession struct {
 	Kind SessionKind
 	Name string
@@ -153,9 +159,51 @@ func substringScore(want, name string, kind SessionKind) int {
 	if name == want {
 		score += 1000
 	}
+	// Prefer the tighter name so "wiseman" beats "wiseman-lab".
 	score += 200 - min(200, len(name))
 	if kind == sessionHerdr {
 		score += 50
 	}
 	return score
+}
+
+func attachSessionCmd(s LiveSession) *exec.Cmd {
+	switch s.Kind {
+	case sessionHerdr:
+		return exec.Command("herdr", "session", "attach", s.Name)
+	default:
+		return exec.Command("tmux", "attach-session", "-t", s.Name)
+	}
+}
+
+type sessionsMsg struct {
+	sessions []LiveSession
+}
+
+type attachDoneMsg struct {
+	err error
+}
+
+func loadSessionsCmd() tea.Cmd {
+	return func() tea.Msg {
+		return sessionsMsg{sessions: discoverLiveSessions()}
+	}
+}
+
+func (m Model) attachSelectedSession() tea.Cmd {
+	iss := m.selectedIssue()
+	if iss == nil {
+		return nil
+	}
+	hit := MatchAssignee(iss.Assignee, discoverLiveSessions())
+	if hit == nil {
+		return nil
+	}
+	cmd := attachSessionCmd(*hit)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return attachDoneMsg{err: err}
+	})
 }
