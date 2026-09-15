@@ -127,6 +127,8 @@ var (
 	chipOverdueFG  = "231"
 	chipOverdueBG  = "88"
 	chipRepeatFG   = "159"
+	chipLiveFG     = "48"
+	chipLiveBG     = "22"
 	chipRepeatBG   = "23"
 	chipFilterFG   = "255"
 	chipFilterBG   = "238"
@@ -149,6 +151,10 @@ func chip(text, fg, bg string) string {
 }
 
 func assigneeChip(name string) string {
+	return assigneeChipLive(name, false)
+}
+
+func assigneeChipLive(name string, live bool) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return ""
@@ -156,7 +162,12 @@ func assigneeChip(name string) string {
 	if runewidth.StringWidth(name) > 14 {
 		name = runewidth.Truncate(name, 14, "…")
 	}
-	return chip("@"+name, chipAssigneeFG, chipAssigneeBG)
+	label := "@" + name
+	if live {
+		label = liveSessionMark + label
+		return chip(label, chipLiveFG, chipLiveBG)
+	}
+	return chip(label, chipAssigneeFG, chipAssigneeBG)
 }
 
 func recurringChip() string {
@@ -367,7 +378,11 @@ func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 }
 
 func (v Vocab) ListRowWith(issue bd.Issue, width int, selected bool, fields ListFields) string {
-	return v.renderRow(issue, "", "", "", width, selected, fields)
+	return v.renderRow(issue, "", "", "", width, selected, fields, false)
+}
+
+func (v Vocab) ListRowLive(issue bd.Issue, width int, selected bool, fields ListFields, live bool) string {
+	return v.renderRow(issue, "", "", "", width, selected, fields, live)
 }
 
 // TreeRow renders one dependency-tree row, including its branch connector,
@@ -383,7 +398,15 @@ func (v Vocab) TreeRowWith(row TreeRow, width int, selected bool, fields ListFie
 	if row.Deeper > 0 {
 		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
 	}
-	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected, fields)
+	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected, fields, false)
+}
+
+func (v Vocab) TreeRowLive(row TreeRow, width int, selected bool, fields ListFields, live bool) string {
+	deeper := ""
+	if row.Deeper > 0 {
+		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
+	}
+	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected, fields, live)
 }
 
 // treeMarker picks the expand/collapse glyph. A row carrying hidden deeper
@@ -401,7 +424,7 @@ func (v Vocab) treeMarker(row TreeRow) string {
 	return "▸ "
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool, fields ListFields) string {
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool, fields ListFields, live bool) string {
 	usable := width
 	if selected {
 		usable -= 2
@@ -481,7 +504,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	}
 	assignee := ""
 	if fields.Assignee {
-		assignee = assigneeChip(issue.Assignee)
+		assignee = assigneeChipLive(issue.Assignee, live)
 	}
 	core := func() string {
 		var parts []string

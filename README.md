@@ -79,6 +79,10 @@ The TUI is keyboard-driven:
 - `t` searches the selected bead's labels.
 - `y` opens a yank menu for the selected bead's ID, title, and URL (when present);
   `enter` copies through `clipboard-copy` or OSC52.
+- `a` attaches to a live Herdr session (`herdr session attach`) or tmux session
+  whose name matches the selected bead's assignee. Beads with a live match show
+  a `●` on the assignee pill. No match is a silent no-op; detach returns to the
+  board.
 
 ## Layout
 
