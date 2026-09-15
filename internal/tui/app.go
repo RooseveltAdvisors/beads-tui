@@ -117,6 +117,7 @@ type graphBackend interface {
 // Model is the bead board application state.
 type Model struct {
 	backend Backend
+	actor   string
 
 	view           bd.View
 	views          []bd.View
@@ -161,26 +162,26 @@ type Model struct {
 	layout            LayoutMode
 	visibility        ViewVisibility
 
-	help         bool
-	helpOffset   int
-	helpFilter   string
+	help             bool
+	helpOffset       int
+	helpFilter       string
 	helpFilterActive bool
-	options      bool
-	optionIndex  int
-	filtering    bool
-	searching    bool
-	searchBase   Filter
-	searchFocus  Focus
-	searchID     string
-	searchDOff   int
-	searchDetail *bd.Issue
-	searchDown   []bd.DepRecord
-	searchUp     []bd.DepRecord
-	searchDErr   string
-	yank         bool
-	yankIndex    int
-	yankErr      string
-	filterInput  textinput.Model
+	options          bool
+	optionIndex      int
+	filtering        bool
+	searching        bool
+	searchBase       Filter
+	searchFocus      Focus
+	searchID         string
+	searchDOff       int
+	searchDetail     *bd.Issue
+	searchDown       []bd.DepRecord
+	searchUp         []bd.DepRecord
+	searchDErr       string
+	yank             bool
+	yankIndex        int
+	yankErr          string
+	filterInput      textinput.Model
 	// filterSuggestIdx is the highlighted row in the / assist strip.
 	filterSuggestIdx int
 	quitting         bool
@@ -469,6 +470,7 @@ func New(backend Backend) Model {
 	commentInput.Width = 80
 	m := Model{
 		backend:  backend,
+		actor:    bd.ResolveActor(),
 		view:     bd.ViewReady,
 		views:    bd.DefaultViews(),
 		loading:  true,
