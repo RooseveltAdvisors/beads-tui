@@ -206,7 +206,7 @@ func (m *Model) applyCommentSubmit(msg commentSubmitMsg) tea.Cmd {
 	m.commentsErr = ""
 	m.commentsInputActive = false
 	m.commentsInput.SetValue("")
-	return m.beginCommentsLoad(msg.id)
+	return tea.Batch(m.beginCommentsLoad(msg.id), m.notifyAssigneeCmd(msg.id, msg.text))
 }
 
 func sortComments(comments []bd.Comment) []bd.Comment {

@@ -11,7 +11,11 @@ STATUS --json -n 0`, `bd list --ready --json -n 0` (default view; reduced
 fields - parent/description/labels arrive via the graph snapshot),
 `bd list --all --json -n 0` (graph snapshot), `bd show ID --json`, `bd dep
 list ID --json [--direction up]`, and `bd statuses --json`; the comments view
-uses `bd comments ID --json` and `bd comment ID --stdin`. Any change to bd's
+uses `bd comments ID --json` and `bd comment ID --stdin`. After a successful
+comment save, `PlanCommentNotify` in `internal/tui/notify.go` pings a live
+Herdr/tmux session matching the bead assignee (session discovery in
+`internal/tui/session.go`, same matcher as fm-iio7c) unless the comment author
+is that assignee. Any change to bd's
 flag surface or JSON field names must be mirrored there and in
 `internal/tui/app.go`'s `Backend`/`graphBackend` interfaces.
 
