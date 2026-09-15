@@ -209,6 +209,7 @@ type Model struct {
 	editorPath   string
 	editorID     string
 	editorBefore *bd.Issue
+	liveSessions []LiveSession
 
 	width  int
 	height int
@@ -508,7 +509,7 @@ func New(backend Backend) Model {
 
 // Init loads the board and the status vocabulary.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadBoardCmd(), m.loadStatusesCmd())
+	return tea.Batch(m.loadBoardCmd(), m.loadStatusesCmd(), loadSessionsCmd())
 }
 
 // Update drives the application.
@@ -633,6 +634,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.runExternalEditor(msg.path, msg.id, msg.before)
 	case editorDoneMsg:
 		return m, m.applyEditorDone(msg)
+	case sessionsMsg:
+		m.liveSessions = msg.sessions
+		return m, nil
+	case attachDoneMsg:
+		if msg.err != nil {
+			log.Printf("beads-tui: attach session failed: %v", msg.err)
+			m.statusFlash = "attach failed"
+		}
+		return m, loadSessionsCmd()
 	case yankMsg:
 		if msg.err != nil {
 			m.yankErr = msg.err.Error()
@@ -808,6 +818,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openCrudClose()
 	case "D":
 		return m, m.openCrudDelete()
+	case "a":
+		return m, m.attachSelectedSession()
 	case "c":
 		return m, m.openComments(false)
 	case "C":
@@ -1489,11 +1501,21 @@ func (m Model) buildDetail(width int) []string {
 	if m.detail != nil && m.detail.CommentCount > commentCount {
 		commentCount = m.detail.CommentCount
 	}
-	return buildDetailVisible(
+	lines := buildDetailVisible(
 		m.vocab, m.detail, m.down, m.up, chain, children, width, m.markdown,
 		m.comments, m.commentsLoading, m.commentsErr, commentCount, m.inlineCommentsMaxLines(),
 		m.visibility.Detail,
 	)
+	if m.detail != nil && MatchAssignee(m.detail.Assignee, m.liveSessions) != nil {
+		mark := styleDim.Render("Assignee: "+orDash(m.detail.Assignee)+"  "+liveSessionMark+" session")
+		for i, line := range lines {
+			if strings.Contains(stripANSI(line), "Assignee: "+orDash(m.detail.Assignee)) {
+				lines[i] = mark
+				break
+			}
+		}
+	}
+	return lines
 }
 
 // hierarchyFor derives the parent chain and direct children of d from the
@@ -2612,9 +2634,12 @@ func (m Model) renderListPane(w, h int) []string {
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
 			if m.treeMode && i < len(m.treeRows) {
-				lines = append(lines, m.vocab.TreeRowWith(m.treeRows[i], inner, i == m.selected, m.visibility.List))
+				iss := m.treeRows[i].Issue
+				live := MatchAssignee(iss.Assignee, m.liveSessions) != nil
+				lines = append(lines, m.vocab.TreeRowLive(m.treeRows[i], inner, i == m.selected, m.visibility.List, live))
 			} else {
-				lines = append(lines, m.vocab.ListRowWith(m.rows[i], inner, i == m.selected, m.visibility.List))
+				live := MatchAssignee(m.rows[i].Assignee, m.liveSessions) != nil
+				lines = append(lines, m.vocab.ListRowLive(m.rows[i], inner, i == m.selected, m.visibility.List, live))
 			}
 		}
 		if m.loading {
@@ -2736,7 +2761,7 @@ func (m Model) renderFooter(w int) string {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
 	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
-	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view c comments C add comment ? help q quit")
+	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view a attach c comments C add comment ? help q quit")
 	shortHints := styleDim.Render("c comments C add ? help q quit")
 	hints := defaultHints
 	var left string

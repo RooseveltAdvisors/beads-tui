@@ -75,6 +75,7 @@ never log bead titles, descriptions, or other issue content.
   prefetch (selected±1..3); all bd work happens after the debounce settles.
 - Status vocabulary loads live from `bd statuses --json`; on failure the built-in fallback in `internal/tui/render.go` (`NewVocab`) takes over.
 - Board sorting/filtering primitives and prompt syntax live in `internal/tui/filter.go`; the key dispatch and derived-row lifecycle live in `internal/tui/app.go`.
+- Assignee attach (`a`) matches the selected bead's assignee against running Herdr sessions (`herdr session list --json`) and tmux sessions (`tmux list-sessions`); matching and attach live in `internal/tui/session.go`. Herdr wins when both backends match. No match is a no-op.
 
 ## Maintaining this file
 

@@ -46,6 +46,7 @@ func (m Model) helpGroups() []helpGroup {
 				{"r", "reload board (keep view/sort/search)"},
 				{"R", "reset to ready + defaults"},
 				{"y", "yank menu (id · title · url)"},
+				{"a", "attach to assignee's live Herdr or tmux session"},
 			},
 		},
 		{
@@ -141,6 +142,7 @@ func (m Model) helpGroups() []helpGroup {
 				{m.vocab.Icon("closed") + " closed", "row status"},
 				{m.vocab.Icon("deferred") + " deferred", "row status"},
 				{m.vocab.Icon("hold") + " hold", "row status"},
+				{"●", "assignee has a live Herdr/tmux session"},
 				{"↻", "recurring"},
 				{"⚠", "overdue"},
 				{"⇣N", "blocked-by N"},
