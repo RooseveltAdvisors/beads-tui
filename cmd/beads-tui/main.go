@@ -128,7 +128,7 @@ func runList(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("list: unexpected argument %q (see 'beads-tui list --help')", fs.Arg(0))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	issues, err := bd.New().ListStatus(ctx, *status)
 	if err != nil {

@@ -24,7 +24,7 @@ var (
 // locked, waits retryDelay and tries again - up to callAttempts total -
 // before surfacing the busy error to the caller.
 const (
-	attemptTimeout = 8 * time.Second
+	attemptTimeout = 15 * time.Second
 	callAttempts   = 3
 	retryDelay     = 2 * time.Second
 )
