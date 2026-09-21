@@ -113,11 +113,13 @@ func runList(args []string) error {
 	status := fs.String("status", "open", "native bd status to list")
 	sortBy := fs.String("sort", "", "sort by due date")
 	overdue := fs.Bool("overdue", false, "show only overdue open tasks")
+	recurring := fs.Bool("recurring", false, "show only recurring tasks")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--status STATUS] [--sort due] [--overdue]\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: beads-tui list [--status STATUS] [--sort due] [--overdue] [--recurring]\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "Print a board as JSON (same data the TUI renders):\n")
 		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list                  # open status\n")
 		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --status closed  # closed status\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  beads-tui list --recurring      # recurring tasks\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -126,7 +128,7 @@ func runList(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("list: unexpected argument %q (see 'beads-tui list --help')", fs.Arg(0))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	issues, err := bd.New().ListStatus(ctx, *status)
 	if err != nil {
@@ -134,6 +136,9 @@ func runList(args []string) error {
 	}
 	if *overdue {
 		issues = tui.FilterIssues(issues, tui.ParseFilter("overdue"))
+	}
+	if *recurring {
+		issues = tui.FilterIssues(issues, tui.ParseFilter("recurring"))
 	}
 	if *sortBy != "" {
 		if *sortBy != "due" {

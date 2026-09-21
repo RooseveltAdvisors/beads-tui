@@ -125,6 +125,8 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 	var extra struct {
 		Parent        *string `json:"parent"`
 		RepeatPattern string  `json:"repeat_pattern"`
+		RepeatStart   string  `json:"repeat_start"`
+		RepeatEnd     string  `json:"repeat_end"`
 	}
 	if err := json.Unmarshal(data, &extra); err == nil {
 		if extra.Parent != nil {
@@ -132,6 +134,12 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 		}
 		if strings.TrimSpace(i.Repeat) == "" && strings.TrimSpace(extra.RepeatPattern) != "" {
 			i.Repeat = strings.TrimSpace(extra.RepeatPattern)
+		}
+		if strings.TrimSpace(i.RecurrenceStart) == "" && strings.TrimSpace(extra.RepeatStart) != "" {
+			i.RecurrenceStart = strings.TrimSpace(extra.RepeatStart)
+		}
+		if strings.TrimSpace(i.RecurrenceEnd) == "" && strings.TrimSpace(extra.RepeatEnd) != "" {
+			i.RecurrenceEnd = strings.TrimSpace(extra.RepeatEnd)
 		}
 	}
 	return nil

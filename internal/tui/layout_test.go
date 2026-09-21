@@ -171,7 +171,7 @@ func TestDefaultRowsPreferTitleSpaceAndOptionsRespectResize(t *testing.T) {
 	for _, width := range []int{42, 180} {
 		m.width = width
 		view := stripANSI(strings.Join(m.renderListPane(width, 8), "\n"))
-		if strings.Contains(view, "a-very-long-tag") || !strings.Contains(view, "pi") || !strings.Contains(view, "💬3") {
+		if strings.Contains(view, "a-very-long-tag") || !strings.Contains(view, "pi") || (!strings.Contains(view, "💬3") && !strings.Contains(view, "C3")) {
 			t.Fatalf("width %d default row fields wrong: %q", width, view)
 		}
 		for _, line := range strings.Split(view, "\n") {

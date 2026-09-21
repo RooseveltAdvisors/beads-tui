@@ -118,6 +118,47 @@ func TestRowsShowCanonicalAssigneeAndRecurringIcon(t *testing.T) {
 	}
 }
 
+func TestSecondmateRecurringTaskVisualQA(t *testing.T) {
+	vocab := NewVocab(nil)
+	issue := bd.Issue{
+		ID:              "fm-4k2ck",
+		Title:           "Ship two Agentic Engineering essays on jonroosevelt.com",
+		Status:          "open",
+		Priority:        0,
+		Assignee:        "secondmate",
+		Repeat:          "0 9 * * *",
+		RecurrenceStart: "2026-09-21T15:18:15Z",
+	}
+
+	// 1. Verify list row rendering
+	row := stripANSI(vocab.ListRow(issue, 120, false))
+	if !strings.Contains(row, recurringIcon) {
+		t.Fatalf("expected recurring icon %s in row: %q", recurringIcon, row)
+	}
+	if !strings.Contains(row, "@secondmate") {
+		t.Fatalf("expected @secondmate pill in row: %q", row)
+	}
+
+	// 2. Verify filter matching
+	recFilter := ParseFilter("recurring")
+	if !recFilter.Matches(issue) {
+		t.Fatalf("expected recurring filter to match recurring task")
+	}
+	nonRecFilter := ParseFilter("recurring:false")
+	if nonRecFilter.Matches(issue) {
+		t.Fatalf("expected recurring:false NOT to match recurring task")
+	}
+
+	// 3. Verify detail pane rendering
+	detail := stripANSI(strings.Join(BuildDetail(vocab, &issue, nil, nil, 100), "\n"))
+	if !strings.Contains(detail, "Repeat: 0 9 * * *") {
+		t.Fatalf("expected Repeat rule in detail: %q", detail)
+	}
+	if !strings.Contains(detail, "start 2026-09-21T15:18:15Z") {
+		t.Fatalf("expected start bound in detail: %q", detail)
+	}
+}
+
 func TestListRowShowsDueDate(t *testing.T) {
 	row := stripANSI(NewVocab(nil).ListRow(bd.Issue{ID: "due", Title: "Task", Status: "open", DueAt: "2099-01-02"}, 100, false))
 	if !strings.Contains(row, "2099-01-02") {
