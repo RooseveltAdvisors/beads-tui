@@ -49,26 +49,31 @@ The TUI is keyboard-driven:
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
 - The default board is an indented hierarchy tree: `enter`/`tab` toggles a
   subtree, `h` (or `←`) collapses it, `l` (or `→`) unfolds a folded node or
-  opens the detail pane, `*` expands every fold, and `v` toggles the flat list.
+  opens the detail pane, `*` expands every fold, and `T` toggles the flat list.
   Parents living in another status view (say, a closed epic with open
   children) are pulled in from the graph snapshot so chains render connected
   instead of orphaned
 - `L` always focuses the detail pane
 - `l` (or `→`) focuses the detail pane; `j`/`k` scroll it; `esc` clears an
   active search first, then returns from the detail pane when pressed again
+- `v`/`V` enters vim visual multi-select mode: navigate with `j`/`k`/`g`/`G` to
+  select a range of beads, then press `d`/`D` to batch delete (with confirmation)
+  or `esc` to cancel. Works on both the full board and filtered search results.
 - `1`-`9` switch views: `1` is ready (open, no active blockers - bd's
   claimable-work view, the default landing tab on large stores), `2`-`9` are
   the native and custom status tabs. `r` reloads the board keeping
   the current view/sort/search, `R` resets view/sort/search, `?` shows help, and
   `q` (or `ctrl+c`) quits
-- `V` cycles the pane layout: side-by-side, stacked (list above detail), or
+- `|` cycles the pane layout: side-by-side, stacked (list above detail), or
   auto; the choice persists across restarts
 - `o` opens persisted view options for task-row fields, detail sections, and
   detail-pane visibility; `r` in that screen restores the defaults. Labels are
   hidden from rows by default but remain available here and in task detail.
 - `s` cycles created, updated, alphabetical, dependencies (`⇣N` blocked-by),
   depends (`⇡N` blocks), and priority sorting; created is the default newest-first order
-- `/` opens the incremental search prompt with a live assist strip.
+- `/` opens the incremental search prompt with full-text search (FTS) across
+  titles, descriptions, IDs, notes, close reasons, labels, and comments,
+  accompanied by a live assist strip.
   Type freely or pick a completion: `tab` accepts the highlighted suggestion,
   `↑`/`↓` (or `ctrl-p`/`ctrl-n`) cycles, `enter` applies, `esc` cancels.
   Keywords: `overdue`, `recurring` / `recurring:false`, `status:open`,
@@ -90,7 +95,7 @@ Like gh-dash, beads-tui adapts the split to the terminal. On wide terminals
 (140 columns or more) the list and detail panes sit side by side and the list
 takes the majority (~60% of the width), so titles and descriptions stay
 readable. Below 140 columns the layout stacks: the full-width list on top
-(~60% of the height) with the detail pane below. `V` cycles
+(~60% of the height) with the detail pane below. `|` cycles
 side-by-side -> stacked -> auto manually, and the choice is saved with the
 rest of the session state.
 

@@ -191,8 +191,9 @@ func parseFilterInput(input string, search bool) Filter {
 	return Filter{Kind: FilterExpression, Query: strings.ToLower(input), expr: expr}
 }
 
-// Matches reports whether issue satisfies f. Text searches intentionally use
-// only title and description so metadata does not create surprising hits.
+// Matches reports whether issue satisfies f.
+// Full-text search (FilterSearch and FilterText) searches across title, description,
+// notes, comments, labels, and close reasons (and ID for FilterSearch).
 func (f Filter) Matches(issue bd.Issue) bool {
 	if !f.Active() {
 		return true
@@ -251,14 +252,40 @@ func (f Filter) Matches(issue bd.Issue) bool {
 		return expr != nil && expr.matches(issue)
 	case FilterSearch:
 		needle := strings.ToLower(f.Query)
-		return strings.Contains(strings.ToLower(issue.Title), needle) ||
-			strings.Contains(strings.ToLower(issue.Description), needle) ||
-			strings.Contains(strings.ToLower(issue.ID), needle)
+		return matchesFTS(issue, needle, true)
 	default:
 		needle := strings.ToLower(f.Query)
-		return strings.Contains(strings.ToLower(issue.Title), needle) ||
-			strings.Contains(strings.ToLower(issue.Description), needle)
+		return matchesFTS(issue, needle, false)
 	}
+}
+
+// matchesFTS performs full-text matching against an issue across title, description,
+// notes, comments, labels, and close reasons (plus ID if matchID is true).
+func matchesFTS(issue bd.Issue, needle string, matchID bool) bool {
+	if needle == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(issue.Title), needle) ||
+		strings.Contains(strings.ToLower(issue.Description), needle) ||
+		strings.Contains(strings.ToLower(issue.Notes), needle) ||
+		strings.Contains(strings.ToLower(issue.CloseReason), needle) {
+		return true
+	}
+	if matchID && strings.Contains(strings.ToLower(issue.ID), needle) {
+		return true
+	}
+	for _, label := range issue.Labels {
+		if strings.Contains(strings.ToLower(label), needle) {
+			return true
+		}
+	}
+	for _, c := range issue.Comments {
+		if strings.Contains(strings.ToLower(c.Text), needle) ||
+			strings.Contains(strings.ToLower(c.Author), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 type filterExpr struct {
