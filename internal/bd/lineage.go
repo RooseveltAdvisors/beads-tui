@@ -233,6 +233,25 @@ func (c *Client) DeleteIssue(ctx context.Context, id string) error {
 	return c.mutCall(ctx, "delete", id, "--force")
 }
 
+// DeleteIssues stamps lineage on each bead then batch deletes them.
+func (c *Client) DeleteIssues(ctx context.Context, ids []string) error {
+	ids = uniqueIDs(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		before, _ := c.Show(ctx, id)
+		title := ""
+		if before != nil {
+			title = before.Title
+		}
+		_ = c.AddComment(ctx, id, lineageLine("delete", fmt.Sprintf("title=%q", title), c.actor()))
+	}
+	args := append([]string{"delete"}, ids...)
+	args = append(args, "--force")
+	return c.mutCall(ctx, args...)
+}
+
 func (c *Client) mutCall(ctx context.Context, args ...string) error {
 	path, err := c.lookPath("bd")
 	if err != nil {

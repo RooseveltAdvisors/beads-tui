@@ -39,6 +39,8 @@ type fakeClient struct {
 	lastShowID  string
 	queuedLists [][]bd.Issue
 	batchCalls  int
+	deletedIDs  []string
+	failDelete  error
 }
 
 func (f *fakeClient) List(_ context.Context, view bd.View) ([]bd.Issue, error) {
@@ -158,6 +160,34 @@ func (f *fakeClient) AddComment(_ context.Context, id, text string) error {
 	f.commentsByID[id] = append(f.commentsByID[id], bd.Comment{
 		IssueID: id, Author: "tester", Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	})
+	return nil
+}
+
+func (f *fakeClient) DeleteIssue(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failDelete != nil {
+		return f.failDelete
+	}
+	f.deletedIDs = append(f.deletedIDs, id)
+	for v, list := range f.issues {
+		var kept []bd.Issue
+		for _, iss := range list {
+			if iss.ID != id {
+				kept = append(kept, iss)
+			}
+		}
+		f.issues[v] = kept
+	}
+	return nil
+}
+
+func (f *fakeClient) DeleteIssues(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if err := f.DeleteIssue(ctx, id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -391,9 +421,9 @@ func TestTreeExpandCollapseAndFlatToggle(t *testing.T) {
 	if !strings.Contains(plain, "└──") {
 		t.Errorf("tree view missing connector:\n%s", plain)
 	}
-	m = sendKey(t, m, "v")
+	m = sendKey(t, m, "T")
 	if m.treeMode || len(m.treeRows) != 0 || len(m.rows) != 2 {
-		t.Fatalf("v should switch to flat view: tree=%v treeRows=%d rows=%d", m.treeMode, len(m.treeRows), len(m.rows))
+		t.Fatalf("T should switch to flat view: tree=%v treeRows=%d rows=%d", m.treeMode, len(m.treeRows), len(m.rows))
 	}
 }
 

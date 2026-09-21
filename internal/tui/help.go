@@ -68,8 +68,8 @@ func (m Model) helpGroups() []helpGroup {
 				{"l  →", "unfold · or open detail"},
 				{"L", "focus detail pane"},
 				{"*", "expand all folds"},
-				{"v", "flat list ↔ tree"},
-				{"V", "layout: side · stacked · auto"},
+				{"T", "flat list ↔ tree"},
+				{"|", "layout: side · stacked · auto"},
 			},
 		},
 		{
@@ -117,12 +117,13 @@ func (m Model) helpGroups() []helpGroup {
 		{
 			Name: "crud",
 			Entries: []helpEntry{
+				{"v  V", "visual multi-select (d batch delete)"},
 				{"n", "new issue (title; due +7d)"},
 				{"e", "edit bead in $EDITOR / vim (save applies)"},
-				{"x", "close with reason"},
-				{"D", "delete forever (y / n)"},
+				{"x", "close with reason (in visual: delete)"},
+				{"d  D", "delete forever (y / n)"},
 				{"Enter", "commit field / create / close"},
-				{"Esc", "cancel CRUD"},
+				{"Esc", "cancel visual / CRUD"},
 			},
 		},
 		{

@@ -104,17 +104,17 @@ func TestSideBySideViewPutsPanesOnSharedRows(t *testing.T) {
 func TestLayoutToggleKeyCyclesAndPersists(t *testing.T) {
 	m := drive(t, nil)
 	m.layout = LayoutAuto
-	m = sendKey(t, m, "V")
+	m = sendKey(t, m, "|")
 	if m.layout != LayoutSide || !m.layoutSideBySide() {
-		t.Fatalf("V from auto = %v, want forced side", m.layout)
+		t.Fatalf("| from auto = %v, want forced side", m.layout)
 	}
-	m = sendKey(t, m, "V")
+	m = sendKey(t, m, "|")
 	if m.layout != LayoutStacked || m.layoutSideBySide() {
-		t.Fatalf("V from side = %v, want forced stacked", m.layout)
+		t.Fatalf("| from side = %v, want forced stacked", m.layout)
 	}
-	m = sendKey(t, m, "V")
+	m = sendKey(t, m, "|")
 	if m.layout != LayoutAuto {
-		t.Fatalf("V from stacked = %v, want auto", m.layout)
+		t.Fatalf("| from stacked = %v, want auto", m.layout)
 	}
 }
 
@@ -162,6 +162,7 @@ func TestHiddenDetailPaneUsesFullSpaceAndRestoresDefaults(t *testing.T) {
 }
 
 func TestDefaultRowsPreferTitleSpaceAndOptionsRespectResize(t *testing.T) {
+	t.Setenv("TERM", "xterm")
 	m := drive(t, &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
 		{
 			ID: "fm-density", Title: strings.Repeat("useful title ", 8), Status: "open", Priority: 1,
@@ -224,10 +225,10 @@ func TestDetailScrollOffsetStaysValidAcrossLayoutChange(t *testing.T) {
 		t.Fatalf("detail did not scroll: offset = %d", m.dOffset)
 	}
 	before := m.dOffset
-	m = sendKey(t, m, "V") // auto (wide, 160) -> side stays side? No: auto->side
-	m = sendKey(t, m, "V") // side -> stacked, with offset clamping
+	m = sendKey(t, m, "|") // auto (wide, 160) -> side stays side? No: auto->side
+	m = sendKey(t, m, "|") // side -> stacked, with offset clamping
 	if m.layout != LayoutStacked {
-		t.Fatalf("V toggle landed on %v, want stacked", m.layout)
+		t.Fatalf("| toggle landed on %v, want stacked", m.layout)
 	}
 	lines := len(m.buildDetail(m.detailWidth()))
 	_, maxOffset := m.detailContentBudget(lines)

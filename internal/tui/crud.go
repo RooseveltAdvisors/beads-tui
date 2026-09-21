@@ -98,9 +98,21 @@ func (m *Model) openCrudClose() tea.Cmd {
 }
 
 func (m *Model) openCrudDelete() tea.Cmd {
+	if m.visualMode {
+		ids := m.visualSelectedIDs()
+		if len(ids) == 0 {
+			return nil
+		}
+		m.crudDeleteIDs = ids
+		m.crudMode = crudDeleteConfirm
+		m.crudErr = ""
+		m.crudBusy = false
+		return nil
+	}
 	if m.selectedID() == "" {
 		return nil
 	}
+	m.crudDeleteIDs = []string{m.selectedID()}
 	m.crudMode = crudDeleteConfirm
 	m.crudErr = ""
 	m.crudBusy = false
@@ -124,6 +136,7 @@ func (m *Model) closeCrud() {
 	m.crudMode = crudNone
 	m.crudErr = ""
 	m.crudBusy = false
+	m.crudDeleteIDs = nil
 	m.crudInput.Blur()
 	m.crudInput.SetValue("")
 }
@@ -147,9 +160,21 @@ func (m Model) crudKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeCrud()
 			return m, nil
 		case "y", "Y":
-			id := m.selectedID()
+			ids := m.crudDeleteIDs
+			if len(ids) == 0 {
+				id := m.selectedID()
+				if id != "" {
+					ids = []string{id}
+				}
+			}
 			m.crudBusy = true
-			return m, m.crudDeleteCmd(id)
+			if len(ids) > 1 {
+				return m, m.crudBatchDeleteCmd(ids)
+			} else if len(ids) == 1 {
+				return m, m.crudDeleteCmd(ids[0])
+			}
+			m.closeCrud()
+			return m, nil
 		}
 		return m, nil
 	}
@@ -407,6 +432,39 @@ func (m Model) crudDeleteCmd(id string) tea.Cmd {
 	}
 }
 
+func (m Model) crudBatchDeleteCmd(ids []string) tea.Cmd {
+	b := m.backend
+	return func() tea.Msg {
+		type batchDeleter interface {
+			DeleteIssues(context.Context, []string) error
+		}
+		type singleDeleter interface {
+			DeleteIssue(context.Context, string) error
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), boardRetryTimeout)
+		defer cancel()
+
+		desc := fmt.Sprintf("%d issues", len(ids))
+		if bd, ok := b.(batchDeleter); ok {
+			err := bd.DeleteIssues(ctx, ids)
+			return crudResultMsg{kind: "batch delete", id: desc, err: err, reload: err == nil}
+		}
+
+		if sd, ok := b.(singleDeleter); ok {
+			var lastErr error
+			for _, id := range ids {
+				if err := sd.DeleteIssue(ctx, id); err != nil {
+					lastErr = err
+					break
+				}
+			}
+			return crudResultMsg{kind: "batch delete", id: desc, err: lastErr, reload: lastErr == nil}
+		}
+
+		return crudResultMsg{kind: "batch delete", id: desc, err: fmt.Errorf("backend cannot delete issues")}
+	}
+}
+
 func (m *Model) applyCrudResult(msg crudResultMsg) tea.Cmd {
 	m.crudBusy = false
 	if msg.err != nil {
@@ -421,6 +479,7 @@ func (m *Model) applyCrudResult(msg crudResultMsg) tea.Cmd {
 		}
 		return nil
 	}
+	m.visualMode = false
 	m.closeCrud()
 	m.statusFlash = fmt.Sprintf("%s ok %s", msg.kind, msg.id)
 	if msg.reload {
@@ -439,7 +498,7 @@ func (m Model) renderCrud() string {
 	b.WriteString(title)
 	b.WriteString("\n")
 	id := m.selectedID()
-	if id != "" {
+	if id != "" && len(m.crudDeleteIDs) <= 1 {
 		b.WriteString(styleDim.Render("bead " + id))
 		b.WriteString("\n")
 	}
@@ -458,7 +517,22 @@ func (m Model) renderCrud() string {
 	case crudDeleteConfirm:
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("DELETE forever?"))
 		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("  %s\n", id))
+		if len(m.crudDeleteIDs) > 1 {
+			b.WriteString(fmt.Sprintf("  %d beads selected:\n", len(m.crudDeleteIDs)))
+			for i, delID := range m.crudDeleteIDs {
+				if i >= 8 {
+					b.WriteString(fmt.Sprintf("  … and %d more\n", len(m.crudDeleteIDs)-8))
+					break
+				}
+				b.WriteString(fmt.Sprintf("  %s\n", delID))
+			}
+		} else {
+			delID := id
+			if len(m.crudDeleteIDs) == 1 {
+				delID = m.crudDeleteIDs[0]
+			}
+			b.WriteString(fmt.Sprintf("  %s\n", delID))
+		}
 		b.WriteString("  y confirm · n/esc cancel\n")
 	default:
 		if m.crudBusy {

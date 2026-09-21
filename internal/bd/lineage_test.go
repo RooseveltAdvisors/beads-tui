@@ -76,3 +76,33 @@ func TestClientActorOverridesEnv(t *testing.T) {
 		t.Fatalf("actor=%q", c.actor())
 	}
 }
+
+func TestDeleteIssuesBatch(t *testing.T) {
+	var runArgs []string
+	var commentInputs []string
+	c := &Client{
+		Actor: "wiseman",
+		lookPath: func(string) (string, error) { return "bd", nil },
+		run: func(_ context.Context, _ string, args ...string) (string, string, error) {
+			runArgs = append([]string(nil), args...)
+			return "", "", nil
+		},
+		runInput: func(_ context.Context, _ string, input string, args ...string) (string, string, error) {
+			commentInputs = append(commentInputs, input)
+			return "", "", nil
+		},
+		waitOverride: 1,
+	}
+	err := c.DeleteIssues(context.Background(), []string{"bd-1", "bd-2"})
+	if err != nil {
+		t.Fatalf("DeleteIssues failed: %v", err)
+	}
+	if len(commentInputs) != 2 {
+		t.Fatalf("expected 2 lineage comments, got %d", len(commentInputs))
+	}
+	joined := strings.Join(runArgs, " ")
+	if !strings.Contains(joined, "delete bd-1 bd-2 --force") {
+		t.Fatalf("unexpected delete args: %q", joined)
+	}
+}
+

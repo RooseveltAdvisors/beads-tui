@@ -241,7 +241,7 @@ func TestDeepChainReachableThroughFlatView(t *testing.T) {
 	if len(m.rows) != maxTreeDepth {
 		t.Fatalf("tree rows = %d, want the depth cap %d", len(m.rows), maxTreeDepth)
 	}
-	m = sendKey(t, m, "v")
+	m = sendKey(t, m, "T")
 	if len(m.rows) != 8 {
 		t.Fatalf("flat rows = %d, want all 8 levels", len(m.rows))
 	}

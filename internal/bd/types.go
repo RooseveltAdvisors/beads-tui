@@ -97,10 +97,12 @@ type Issue struct {
 	CreatedAt       string    `json:"created_at"`
 	CreatedBy       string    `json:"created_by"`
 	UpdatedAt       string    `json:"updated_at"`
+	CloseReason     string    `json:"close_reason"`
 	DependencyCount int       `json:"dependency_count"`
 	DependentCount  int       `json:"dependent_count"`
 	CommentCount    int       `json:"comment_count"`
 	Dependencies    []DepEdge `json:"dependencies"`
+	Comments        []Comment `json:"comments"`
 }
 
 // DepEdge is one inline dependency record embedded in `bd list/show --json`

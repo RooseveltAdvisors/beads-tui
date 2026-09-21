@@ -211,6 +211,11 @@ type Model struct {
 	editorBefore *bd.Issue
 	liveSessions []LiveSession
 
+	// Visual mode (multi-select batch delete)
+	visualMode    bool
+	visualAnchor  int
+	crudDeleteIDs []string
+
 	width  int
 	height int
 }
@@ -815,7 +820,15 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		return m, m.openCrudMenu()
 	case "x":
+		if m.visualMode {
+			return m, m.openCrudDelete()
+		}
 		return m, m.openCrudClose()
+	case "d":
+		if m.visualMode {
+			return m, m.openCrudDelete()
+		}
+		return m, nil
 	case "D":
 		return m, m.openCrudDelete()
 	case "a":
@@ -835,6 +848,10 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "esc":
+		if m.visualMode {
+			m.visualMode = false
+			return m, nil
+		}
 		if m.filter.Active() {
 			m.filter = Filter{}
 			m.saveState()
@@ -849,7 +866,15 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sortMode = m.sortMode.Next()
 		m.saveState()
 		return m, m.rebuildRows(m.selectedID())
-	case "V":
+	case "v", "V":
+		if m.focus == FocusList && len(m.rows) > 0 {
+			m.visualMode = !m.visualMode
+			if m.visualMode {
+				m.visualAnchor = m.selected
+			}
+			return m, nil
+		}
+	case "|":
 		switch m.layout {
 		case LayoutSide:
 			m.layout = LayoutStacked
@@ -1012,6 +1037,45 @@ func (m Model) selectedID() string {
 		return m.rows[m.selected].ID
 	}
 	return ""
+}
+
+func (m Model) visualRange() (start, end int) {
+	if !m.visualMode || len(m.rows) == 0 {
+		return m.selected, m.selected
+	}
+	a := m.visualAnchor
+	b := m.selected
+	if a > b {
+		return b, a
+	}
+	return a, b
+}
+
+func (m Model) visualSelectedRows() []bd.Issue {
+	if len(m.rows) == 0 {
+		return nil
+	}
+	if !m.visualMode {
+		if m.selected >= 0 && m.selected < len(m.rows) {
+			return []bd.Issue{m.rows[m.selected]}
+		}
+		return nil
+	}
+	start, end := m.visualRange()
+	start = max(0, min(start, len(m.rows)-1))
+	end = max(0, min(end, len(m.rows)-1))
+	return append([]bd.Issue(nil), m.rows[start:end+1]...)
+}
+
+func (m Model) visualSelectedIDs() []string {
+	rows := m.visualSelectedRows()
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.ID != "" {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
 }
 
 func (m Model) yankItems() []yankItem {
@@ -1361,7 +1425,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selected = n - 1
-	case "v":
+	case "T":
 		m.treeMode = !m.treeMode
 		return m, m.rebuildRows(m.rows[m.selected].ID)
 	case "enter", "tab":
@@ -2633,13 +2697,18 @@ func (m Model) renderListPane(w, h int) []string {
 		}
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
+			rowSelected := (i == m.selected)
+			if m.visualMode {
+				start, end := m.visualRange()
+				rowSelected = (i >= start && i <= end)
+			}
 			if m.treeMode && i < len(m.treeRows) {
 				iss := m.treeRows[i].Issue
 				live := MatchAssignee(iss.Assignee, m.liveSessions) != nil
-				lines = append(lines, m.vocab.TreeRowLive(m.treeRows[i], inner, i == m.selected, m.visibility.List, live))
+				lines = append(lines, m.vocab.TreeRowLive(m.treeRows[i], inner, rowSelected, m.visibility.List, live))
 			} else {
 				live := MatchAssignee(m.rows[i].Assignee, m.liveSessions) != nil
-				lines = append(lines, m.vocab.ListRowLive(m.rows[i], inner, i == m.selected, m.visibility.List, live))
+				lines = append(lines, m.vocab.ListRowLive(m.rows[i], inner, rowSelected, m.visibility.List, live))
 			}
 		}
 		if m.loading {
@@ -2649,9 +2718,14 @@ func (m Model) renderListPane(w, h int) []string {
 			lines = append(lines, styleDim.Render(truncate(m.reloadNotice, inner)))
 		}
 	}
-	title := styleDim.Render(m.view.Label())
+	label := m.view.Label()
+	if m.visualMode {
+		count := len(m.visualSelectedRows())
+		label = fmt.Sprintf("%s · VISUAL (%d)", m.view.Label(), count)
+	}
+	title := styleDim.Render(label)
 	if m.focus == FocusList {
-		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render(m.view.Label())
+		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render(label)
 	}
 	return pane(title, lines, w, h)
 }
@@ -2775,8 +2849,10 @@ func (m Model) renderFooter(w int) string {
 	case m.reloadNotice != "":
 		left = styleDim.Render(m.reloadNotice)
 		hints = styleDim.Render("r reload now · q quit")
-	case m.loading:
-		left = status + " · " + styleDim.Render("loading…")
+	case m.visualMode:
+		count := len(m.visualSelectedRows())
+		left = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Render(fmt.Sprintf("-- VISUAL (%d selected) --", count))
+		hints = styleDim.Render("j·k select · d/D delete · esc cancel · ? help")
 	case m.commentsOpen:
 		left = status
 		hints = styleDim.Render("j·k scroll · a add · r reload · esc/q back · ? help")
