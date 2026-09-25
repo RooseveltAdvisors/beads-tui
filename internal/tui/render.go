@@ -375,10 +375,6 @@ func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 	return v.renderRow(issue, "", "", "", width, fields, false, selectedDecor(selected))
 }
 
-func (v Vocab) ListRowWith(issue bd.Issue, width int, selected bool, fields ListFields) string {
-	return v.renderRow(issue, "", "", "", width, fields, false, selectedDecor(selected))
-}
-
 // ListRowLiveDecor renders one live board row with full HUD decoration.
 func (v Vocab) ListRowLiveDecor(issue bd.Issue, width int, fields ListFields, live bool, d RowDecor) string {
 	return v.renderRow(issue, "", "", "", width, fields, live, d)

@@ -121,4 +121,53 @@ func TestDetailGotoEndStaysPinnedWhileDetailLoads(t *testing.T) {
 	if m.dFollowTail {
 		t.Fatal("scrolling must drop the tail pin")
 	}
+	// The first scroll starts from the position the pane showed: one line
+	// above the tail, not a jump to the top.
+	w := m.detailWidth() + 2 // the detail pane's outer width in the split
+	all := m.buildDetail(m.detailWidth())
+	_, maxOffset := m.detailContentBudget(len(all))
+	if maxOffset < 2 {
+		t.Fatalf("test fixture needs a scrollable detail, maxOffset = %d", maxOffset)
+	}
+	if m.dOffset != maxOffset-1 {
+		t.Fatalf("first scroll after a pinned G starts at offset %d, want %d", m.dOffset, maxOffset-1)
+	}
+	got := m.renderDetailPane(w, 10)
+	if len(got) < 3 {
+		t.Fatalf("detail pane rendered %d lines", len(got))
+	}
+	first := strings.TrimSpace(stripANSI(strings.Trim(got[1], "│")))
+	if want := strings.TrimSpace(stripANSI(all[maxOffset-1])); first != want {
+		t.Fatalf("scrolled pane starts at %q, want the line just above the tail %q", first, want)
+	}
+}
+
+// A batched ESC+<rune> must stay inert inside the destructive delete gate:
+// bubbletea consumed the ESC as the modifier, so the chord may carry the
+// user's cancel intent and must never confirm or cancel a delete.
+func TestDeleteConfirmIgnoresChordedKey(t *testing.T) {
+	f := twoRowBoard()
+	m := drive(t, f)
+	m = sendKey(t, m, "v")
+	m = sendKey(t, m, "j")
+	m = sendKey(t, m, "d")
+	if m.crudMode != crudDeleteConfirm {
+		t.Fatalf("crudMode = %v, want crudDeleteConfirm", m.crudMode)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}, Alt: true})
+	m = runCmd(t, updated.(Model), cmd)
+	if m.crudMode != crudDeleteConfirm {
+		t.Fatalf("ESC-then-y acted inside the delete gate: crudMode = %v", m.crudMode)
+	}
+	if len(f.deletedIDs) != 0 {
+		t.Fatalf("ESC-then-y submitted a delete of %v", f.deletedIDs)
+	}
+	// A plain, unmodified y still confirms the delete.
+	m = step(t, m, "y")
+	if len(f.deletedIDs) != 2 {
+		t.Fatalf("plain y deleted %v, want both selected beads", f.deletedIDs)
+	}
+	if m.crudMode != crudNone {
+		t.Fatalf("crudMode after confirm = %v, want crudNone", m.crudMode)
+	}
 }

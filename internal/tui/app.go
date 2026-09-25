@@ -693,17 +693,19 @@ func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// runesGoToTextInput reports whether the current mode forwards rune keys to
-// a bubbles textinput, which must receive its alt-bound word operations
-// (alt+f/alt+b/alt+d) untouched.
-func (m Model) runesGoToTextInput() bool {
+// runesPreserveAlt reports whether the current mode forwards rune keys with
+// the Alt flag intact: the bubbles textinputs (their word operations are
+// alt-bound) and the delete-confirmation gate, where an ESC-chorded rune
+// must never act - bubbletea consumed the ESC as the modifier, so the chord
+// cannot be trusted to confirm or cancel a delete.
+func (m Model) runesPreserveAlt() bool {
 	if m.filtering {
 		return true
 	}
 	if m.commentsOpen && m.commentsInputActive {
 		return true
 	}
-	return m.crudActive() && m.crudMode != crudMenu && m.crudMode != crudDeleteConfirm
+	return m.crudActive() && m.crudMode != crudMenu
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -711,9 +713,9 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// ESC landing in the same read as a rune arrives as alt+<rune>. No mode
-	// binds Alt, so the rune must do its plain work everywhere except the
-	// bubbles textinputs, whose word operations are bound to alt chords.
-	if msg.Type == tea.KeyRunes && !m.runesGoToTextInput() {
+	// binds Alt, so the rune does its plain work except where an alt chord
+	// must be preserved (runesPreserveAlt).
+	if msg.Type == tea.KeyRunes && !m.runesPreserveAlt() {
 		msg.Alt = false
 	}
 	if m.yank {
@@ -1544,6 +1546,11 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
 	if msg.String() != "G" {
+		if m.dFollowTail {
+			// Materialize the pin first: the next delta must apply to the
+			// position the pane is showing.
+			m.dOffset = maxOffset
+		}
 		// Any explicit scroll drops the tail pin; only G re-arms it.
 		m.dFollowTail = false
 	}
