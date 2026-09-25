@@ -247,6 +247,9 @@ func TestMultiSelectMarkersAreCyanAndFocusIsMagenta(t *testing.T) {
 	if !strings.Contains(both, colorSeq(hudCyanHex, false)) || !strings.Contains(both, colorSeq(hudMagentaHex, false)) {
 		t.Fatalf("overlapping row lost a color signal: %q", both)
 	}
+	if bgs := assertFullyPainted(t, both); bgs[len(bgs)-1] != focusTintSeqGolden {
+		t.Fatalf("overlapping row tint = %q, want the focus tint %q", bgs[len(bgs)-1], focusTintSeqGolden)
+	}
 
 	// Visual mode marks unselected rows with the empty checkbox, never the bar.
 	unmarked := v.ListRowLiveDecor(issue, 60, defaultListFields(), false, RowDecor{Checks: true})
@@ -364,7 +367,7 @@ func TestFocusHighlightSpansRowsAcrossBoardModes(t *testing.T) {
 			t.Fatalf("%s: empty focused row line: %q", tc.name, rowLine)
 		}
 		bgs := assertFullyPainted(t, inner)
-		if tc.name != "visual multi-select" && bgs[len(bgs)-1] != focusTintSeqGolden {
+		if bgs[len(bgs)-1] != focusTintSeqGolden {
 			t.Fatalf("%s: focused row does not carry the magenta tint to the last cell: %q", tc.name, bgs[len(bgs)-1])
 		}
 		if displayWidth(inner) != m.width-2 {

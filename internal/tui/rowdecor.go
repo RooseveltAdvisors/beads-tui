@@ -93,7 +93,7 @@ func (d RowDecor) tintFractions() (mag, cyan float64) {
 	if d.Ghost > 0 {
 		mag += hudFocusTint * clamp01(d.Ghost)
 	}
-	if d.Marked {
+	if d.Marked && !d.Focused {
 		cyan += hudMarkTint
 	}
 	return mag, cyan
