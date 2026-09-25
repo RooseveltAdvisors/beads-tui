@@ -1687,7 +1687,7 @@ func (m Model) buildDetail(width int) []string {
 		m.visibility.Detail,
 	)
 	if m.detail != nil && MatchAssignee(m.detail.Assignee, m.liveSessions) != nil {
-		mark := styleDim.Render("Assignee: "+orDash(m.detail.Assignee)+"  "+liveSessionMark+" session")
+		mark := styleDim.Render("Assignee: " + orDash(m.detail.Assignee) + "  " + liveSessionMark + " session")
 		for i, line := range lines {
 			if strings.Contains(stripANSI(line), "Assignee: "+orDash(m.detail.Assignee)) {
 				lines[i] = mark

@@ -28,7 +28,8 @@ Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bead
 `go test` alone never proves this TUI loads. `scripts/verify.sh` (skill:
 `/verify`) builds the binary, drives the real interactive TUI in a throwaway
 tmux session against a real `.beads` workspace, and fails on SIGKILL, an empty
-Ready board, or a missing workspace that renders blank instead of a loud error.
+Ready board, a focused row missing its `▎` HUD marker (and, on truecolor, its
+magenta row tint), or a missing workspace that renders blank instead of a loud error.
 Defaults to `/opt/ra/firstmate/.beads`; override with `BEADS_VERIFY_BEADS_DIR`
 to point at any real embedded-Dolt `.beads` fixture. The gate TUI runs with a
 temporary `BEADS_TUI_CONFIG_DIR` and expects the newest open root bead (the
