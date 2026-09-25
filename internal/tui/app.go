@@ -146,6 +146,11 @@ type Model struct {
 	selected int
 	focus    Focus
 	dOffset  int
+	// dFollowTail pins the detail viewport to its tail after G: the "go to
+	// end" intent sticks while this bead's content lands or grows, so a G
+	// pressed during a slow detail load is not lost when the lines arrive.
+	dFollowTail bool
+	dTailID     string
 
 	// Cursor smear: the trail/wipe animation state plus whether this
 	// terminal renders it (TrueColor only; see rowdecor.go/cursoranim.go).
@@ -558,18 +563,28 @@ func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Terminals and tmux can deliver several runes in one read (fast
 		// typing, key repeat, paste); handle each rune so a burst like
 		// "jjjj" moves four rows instead of being silently dropped.
-		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
-			var last tea.Cmd
-			for _, r := range msg.Runes {
-				updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt})
-				nm, ok := updated.(Model)
-				if !ok {
-					return m, cmd
+		if msg.Type == tea.KeyRunes {
+			// ESC landing in the same read as the next rune arrives as
+			// alt+<rune>. The TUI defines no Alt bindings, so the rune must
+			// still do its plain work instead of being swallowed.
+			msg.Alt = false
+			if len(msg.Runes) > 1 {
+				var cmds []tea.Cmd
+				for _, r := range msg.Runes {
+					updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					nm, ok := updated.(Model)
+					if !ok {
+						return m, tea.Batch(append(cmds, cmd)...)
+					}
+					m = nm
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
-				m = nm
-				last = cmd
+				// Every command the burst produced must survive; earlier
+				// versions returned only the last and dropped the rest.
+				return m, tea.Batch(cmds...)
 			}
-			return m, last
 		}
 		return m.updateKey(msg)
 	case boardMsg:
@@ -884,6 +899,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == FocusDetail {
 			m.focus = FocusList
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 		return m, nil
 	case "s":
@@ -1462,6 +1478,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.visibility.DetailPane {
 			m.focus = FocusDetail
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 	case "h", "left":
 		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && row.Expanded {
@@ -1475,11 +1492,13 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.visibility.DetailPane {
 			m.focus = FocusDetail
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 	case "L":
 		if m.visibility.DetailPane {
 			m.focus = FocusDetail
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 	case "*":
 		return m, m.expandAll()
@@ -1496,6 +1515,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m = m.clampSelection()
 	if m.selected != before {
+		m.dFollowTail = false
 		if m.filter.Kind == FilterSearch {
 			m.expandAncestors(m.rows[m.selected].ID)
 		}
@@ -1508,6 +1528,10 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	lines := len(m.buildDetail(m.detailWidth()))
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
+	if msg.String() != "G" {
+		// Any explicit scroll drops the tail pin; only G re-arms it.
+		m.dFollowTail = false
+	}
 	switch msg.String() {
 	case "j", "down":
 		m.dOffset++
@@ -1521,6 +1545,8 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.dOffset = maxOffset
+		m.dFollowTail = true
+		m.dTailID = m.selectedID()
 	case " ", "pgdown", "ctrl+f":
 		m.dOffset += page
 	case "b", "pgup", "ctrl+b":
@@ -2506,8 +2532,10 @@ func (m *Model) toggleViewOption(index int) {
 	if !m.visibility.DetailPane {
 		m.focus = FocusList
 		m.dOffset = 0
+		m.dFollowTail = false
 	} else if index >= 9 {
 		m.dOffset = 0
+		m.dFollowTail = false
 	}
 }
 
@@ -2827,7 +2855,9 @@ func (m Model) renderDetailPane(w, h int) []string {
 		all := m.buildDetail(inner)
 		offset := m.dOffset
 		contentVis, maxOffset := m.detailContentBudget(len(all))
-		if offset > maxOffset {
+		if m.dFollowTail && m.detail.ID == m.dTailID {
+			offset = maxOffset
+		} else if offset > maxOffset {
 			offset = maxOffset
 		}
 		shown := 0

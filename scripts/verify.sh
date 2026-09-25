@@ -237,9 +237,10 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
   esac
   sleep 1
 done
+# Always keep the last screen: a failure here is otherwise invisible.
+printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
 [ "$comment_badge_visible" -eq 1 ] || die 'comment badge did not appear on the board row after posting'
 [ "$inline_comment_visible" -eq 1 ] || die 'submitted comment did not appear in inline detail without opening c view'
-printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
 printf '✓ comment badge appeared on the board row (%s)\n' "$comment_id"
 printf '✓ inline detail refreshed without opening c view (%s)\n' "$comment_id"
 stop_tui
