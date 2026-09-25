@@ -114,8 +114,6 @@ var (
 	styleSection       = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true)
 	styleCommentAuthor = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
 	styleCommentBadge  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	styleSelected      = lipgloss.NewStyle().
-				Background(lipgloss.Color("238"))
 	// Chip colors stay outside the priority/status ramps so a pill never
 	// reads as P0 or as an open-status glyph.
 	chipAssigneeFG = "213" // pink
@@ -374,15 +372,25 @@ func (v Vocab) StatusPillIssue(issue bd.Issue) string {
 func (v Vocab) ListRow(issue bd.Issue, width int, selected bool) string {
 	fields := defaultListFields()
 	fields.Labels = true // compatibility for callers that explicitly render a row
-	return v.ListRowWith(issue, width, selected, fields)
+	return v.renderRow(issue, "", "", "", width, fields, false, selectedDecor(selected))
 }
 
 func (v Vocab) ListRowWith(issue bd.Issue, width int, selected bool, fields ListFields) string {
-	return v.renderRow(issue, "", "", "", width, selected, fields, false)
+	return v.renderRow(issue, "", "", "", width, fields, false, selectedDecor(selected))
 }
 
 func (v Vocab) ListRowLive(issue bd.Issue, width int, selected bool, fields ListFields, live bool) string {
-	return v.renderRow(issue, "", "", "", width, selected, fields, live)
+	return v.renderRow(issue, "", "", "", width, fields, live, selectedDecor(selected))
+}
+
+// ListRowLiveDecor renders one live board row with full HUD decoration.
+func (v Vocab) ListRowLiveDecor(issue bd.Issue, width int, fields ListFields, live bool, d RowDecor) string {
+	return v.renderRow(issue, "", "", "", width, fields, live, d)
+}
+
+// selectedDecor is the compatibility decoration for boolean selection.
+func selectedDecor(selected bool) RowDecor {
+	return RowDecor{Focused: selected}
 }
 
 // TreeRow renders one dependency-tree row, including its branch connector,
@@ -394,19 +402,25 @@ func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
 }
 
 func (v Vocab) TreeRowWith(row TreeRow, width int, selected bool, fields ListFields) string {
-	deeper := ""
-	if row.Deeper > 0 {
-		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
-	}
-	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected, fields, false)
+	return v.treeRowDecor(row, width, fields, false, selectedDecor(selected))
 }
 
 func (v Vocab) TreeRowLive(row TreeRow, width int, selected bool, fields ListFields, live bool) string {
+	return v.treeRowDecor(row, width, fields, live, selectedDecor(selected))
+}
+
+// TreeRowLiveDecor renders one live dependency-tree row with full HUD
+// decoration.
+func (v Vocab) TreeRowLiveDecor(row TreeRow, width int, fields ListFields, live bool, d RowDecor) string {
+	return v.treeRowDecor(row, width, fields, live, d)
+}
+
+func (v Vocab) treeRowDecor(row TreeRow, width int, fields ListFields, live bool, d RowDecor) string {
 	deeper := ""
 	if row.Deeper > 0 {
 		deeper = styleDim.Render("+" + itoa(row.Deeper) + " deeper")
 	}
-	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, selected, fields, live)
+	return v.renderRow(row.Issue, row.Prefix, v.treeMarker(row), deeper, width, fields, live, d)
 }
 
 // treeMarker picks the expand/collapse glyph. A row carrying hidden deeper
@@ -424,11 +438,8 @@ func (v Vocab) treeMarker(row TreeRow) string {
 	return "▸ "
 }
 
-func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, selected bool, fields ListFields, live bool) string {
-	usable := width
-	if selected {
-		usable -= 2
-	}
+func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, fields ListFields, live bool, d RowDecor) string {
+	usable := width - d.slotWidth()
 	if usable < 1 {
 		usable = 1
 	}
@@ -569,10 +580,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		if compact := compactRowMetadata(metadataIssue, countBudget); compact != "" {
 			line += " " + styleDim.Render(compact)
 		}
-		if selected {
-			return styleSelected.Render("▸ " + line)
-		}
-		return line
+		return decorateRow(line, width, d)
 	}
 	contentBudget := usable
 	if counts != "" {
@@ -580,10 +588,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	}
 	if contentBudget <= 0 {
 		line := styleDim.Render(strings.Repeat(" ", max(0, usable-countWidth)) + truncate(counts, usable))
-		if selected {
-			return styleSelected.Render("▸ " + line)
-		}
-		return line
+		return decorateRow(line, width, d)
 	}
 
 	line := prefix + body.String()
@@ -598,10 +603,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		// Chips already carry their own color; do not re-dim them.
 		line = padRight(line, contentBudget) + " " + counts
 	}
-	if selected {
-		return styleSelected.Render("▸ " + line)
-	}
-	return line
+	return decorateRow(line, width, d)
 }
 
 func dueDate(value string) (time.Time, bool) {

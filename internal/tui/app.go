@@ -147,6 +147,11 @@ type Model struct {
 	focus    Focus
 	dOffset  int
 
+	// Cursor smear: the trail/wipe animation state plus whether this
+	// terminal renders it (TrueColor only; see rowdecor.go/cursoranim.go).
+	cursorAnim cursorAnim
+	smear      bool
+
 	detail            *bd.Issue
 	down              []bd.DepRecord
 	up                []bd.DepRecord
@@ -495,6 +500,8 @@ func New(backend Backend) Model {
 		detailDebounce: detailDebounceDelay,
 		commentsInput:  commentInput,
 		visibility:     defaultViewVisibility(),
+		smear:          smearEnabled(),
+		cursorAnim:     cursorAnim{wipe: 1},
 	}
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
@@ -2697,18 +2704,14 @@ func (m Model) renderListPane(w, h int) []string {
 		}
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
-			rowSelected := (i == m.selected)
-			if m.visualMode {
-				start, end := m.visualRange()
-				rowSelected = (i >= start && i <= end)
-			}
+			decor := m.rowDecor(i)
 			if m.treeMode && i < len(m.treeRows) {
 				iss := m.treeRows[i].Issue
 				live := MatchAssignee(iss.Assignee, m.liveSessions) != nil
-				lines = append(lines, m.vocab.TreeRowLive(m.treeRows[i], inner, rowSelected, m.visibility.List, live))
+				lines = append(lines, m.vocab.TreeRowLiveDecor(m.treeRows[i], inner, m.visibility.List, live, decor))
 			} else {
 				live := MatchAssignee(m.rows[i].Assignee, m.liveSessions) != nil
-				lines = append(lines, m.vocab.ListRowLive(m.rows[i], inner, rowSelected, m.visibility.List, live))
+				lines = append(lines, m.vocab.ListRowLiveDecor(m.rows[i], inner, m.visibility.List, live, decor))
 			}
 		}
 		if m.loading {
@@ -2735,6 +2738,18 @@ func (m Model) emptyBoardText() string {
 	default:
 		return "No " + m.view.Label() + " issues."
 	}
+}
+
+// rowDecor resolves the HUD chrome for visible row i: the magenta focus
+// highlight on the cursor row (identifiable across tree, flat, and filtered
+// views alike) and the cyan multi-select checkbox state in visual mode.
+func (m Model) rowDecor(i int) RowDecor {
+	d := RowDecor{Focused: i == m.selected, Checks: m.visualMode}
+	if m.visualMode {
+		start, end := m.visualRange()
+		d.Marked = i >= start && i <= end
+	}
+	return d
 }
 
 // scrollTop centers the selection in the visible window.
