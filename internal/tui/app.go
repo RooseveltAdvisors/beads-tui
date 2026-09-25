@@ -2516,7 +2516,7 @@ func (m Model) renderViewOptions() string {
 	for i, label := range viewOptionLabels {
 		cursor := "  "
 		if i == m.optionIndex {
-			cursor = "▸ "
+			cursor = colorize(focusBar, hudMagentaHex) + " "
 		}
 		mark := "[ ] "
 		if m.viewOptionEnabled(i) {
@@ -2541,7 +2541,7 @@ func (m Model) renderYank() string {
 	for i, item := range items {
 		prefix := "  "
 		if i == m.yankIndex {
-			prefix = "▸ "
+			prefix = colorize(focusBar, hudMagentaHex) + " "
 		}
 		lines = append(lines, prefix+item.label+": "+item.value)
 	}

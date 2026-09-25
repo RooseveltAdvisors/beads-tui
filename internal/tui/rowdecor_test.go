@@ -142,6 +142,21 @@ func TestListRowHighlightSurvivesStyledSpans(t *testing.T) {
 	}
 	row := v.ListRowLiveDecor(issue, 80, defaultListFields(), false, RowDecor{Focused: true})
 	bgs := assertFullyPainted(t, row)
+	// Every cell is either the focus tint or a chip's own background: the
+	// historic bug left bare-terminal cells after each chip reset.
+	chipCells := 0
+	for i, bg := range bgs {
+		switch {
+		case bg == focusTintSeqGolden:
+		case strings.HasPrefix(bg, "48;5;"):
+			chipCells++
+		default:
+			t.Fatalf("cell %d background = %q, want the focus tint or a chip background", i, bg)
+		}
+	}
+	if chipCells == 0 {
+		t.Fatal("row rendered no chips; the regression needs styled spans")
+	}
 	// The trailing padding (after the last chip's reset) must keep the tint:
 	// that is the part of the row a bare outer style always lost.
 	if bgs[len(bgs)-1] != focusTintSeqGolden {

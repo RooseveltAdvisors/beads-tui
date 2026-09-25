@@ -271,3 +271,28 @@ func TestCursorSmearEnabledOnTrueColorOnly(t *testing.T) {
 		t.Fatal("no-color terminals should degrade to the static highlight")
 	}
 }
+
+func TestCursorSmearDoesNotAnimateFirstPaint(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{ID: "fm-a", Title: "Alpha", Status: "open"},
+		{ID: "fm-b", Title: "Beta", Status: "open"},
+	}}}
+	m := New(f)
+	updated, cmd := m.Update(boardMsg{view: m.view, generation: m.boardGen, issues: f.issues[bd.ViewOpen]})
+	m = updated.(Model)
+	if !m.smear {
+		t.Fatal("smear should be enabled on TrueColor")
+	}
+	// The first selection after a load is not cursor movement: it settles
+	// at the full highlight and schedules no frame ticks.
+	if m.cursorAnim.active {
+		t.Fatal("first paint started a smear")
+	}
+	if hasCursorFrame(gatherMsgs(cmd), m.cursorAnim.seq) {
+		t.Fatal("first paint scheduled frame ticks")
+	}
+	if d := m.rowDecor(0); d.Smearing || !near(d.Wipe, 1) {
+		t.Fatalf("first paint decor = %+v, want a settled highlight", d)
+	}
+}

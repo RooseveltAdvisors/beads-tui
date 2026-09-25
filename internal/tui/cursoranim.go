@@ -83,7 +83,9 @@ func (m *Model) syncCursorAnim() tea.Cmd {
 	if from != "" {
 		m.cursorAnim.fromID = from
 	}
-	if !m.smear {
+	// Only real cursor movement smears: the first paint after a load
+	// settles at the full highlight instead of animating in.
+	if !m.smear || from == "" {
 		return nil
 	}
 	m.cursorAnim.seq++
