@@ -248,3 +248,79 @@ func TestStaleTailPinDoesNotJumpToShowDetailTail(t *testing.T) {
 		t.Fatalf("first scroll after a stale pin starts at offset %d, want 0 (no jump to fm-b's tail at %d)", m.dOffset, maxOffset-1)
 	}
 }
+
+// G pressed before the detail lands must keep its goto-end intent through
+// keys typed while the load is in flight: when the content arrives, the
+// pane opens at the tail, not the top.
+func TestGotoEndIntentSurvivesKeysWhileDetailLoads(t *testing.T) {
+	m := drive(t, twoRowBoard())
+	m.width, m.height = 160, 12
+	m.detail, m.down, m.up = nil, nil, nil
+	m.comments = []bd.Comment{{ID: "c1", Author: "Ada", Text: "late comment lands last", CreatedAt: "2026-09-25T10:00:00Z"}}
+	m.detailPendingID = "fm-a" // bd busy: the focused bead's fetch is in flight
+	m = sendKey(t, m, "l")
+	m = sendKey(t, m, "G")
+	if !m.dFollowTail || m.dTailID != "fm-a" {
+		t.Fatalf("pin = follow:%v tail:%q, want armed on fm-a", m.dFollowTail, m.dTailID)
+	}
+	m = sendKey(t, m, "k")
+	m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	if !m.dFollowTail {
+		t.Fatal("keys pressed while the detail loads must not drop G's intent")
+	}
+	m = applyMsg(t, m, detailMsg{
+		id:         "fm-a",
+		generation: m.detailGen,
+		issue:      &bd.Issue{ID: "fm-a", Title: "Alpha", Status: "open", CommentCount: 1},
+	})
+	plain := stripANSI(strings.Join(m.renderDetailPane(m.width, 10), "\n"))
+	if !strings.Contains(plain, "late comment lands last") {
+		t.Fatalf("goto-end intent was lost while the detail loaded:\n%s", plain)
+	}
+}
+
+// A pin for a bead that never becomes the shown detail must never win:
+// another bead's detail renders from its top, and the first scroll key
+// clears the stale pin without jumping to that bead's tail.
+func TestInFlightPinForOtherBeadNeverWins(t *testing.T) {
+	m := drive(t, twoRowBoard())
+	m.width, m.height = 160, 12
+	m.detail, m.down, m.up = nil, nil, nil
+	m.comments = []bd.Comment{{ID: "c1", Author: "Ada", Text: "other bead tail", CreatedAt: "2026-09-25T10:00:00Z"}}
+	m.detailPendingID = "fm-a"
+	m = sendKey(t, m, "l")
+	m = sendKey(t, m, "G")
+	if !m.dFollowTail || m.dTailID != "fm-a" {
+		t.Fatalf("pin = follow:%v tail:%q, want armed on fm-a", m.dFollowTail, m.dTailID)
+	}
+	// Another bead's detail becomes the shown one while A is in flight.
+	m.selected = 1
+	m = applyMsg(t, m, detailMsg{
+		id:         "fm-b",
+		generation: m.detailGen,
+		issue:      &bd.Issue{ID: "fm-b", Title: "Beta", Status: "open", CommentCount: 1},
+	})
+	if m.detail == nil || m.detail.ID != "fm-b" {
+		t.Fatalf("shown detail = %v, want fm-b", m.detail)
+	}
+	w := m.detailWidth() + 2
+	all := m.buildDetail(m.detailWidth())
+	_, maxOffset := m.detailContentBudget(len(all))
+	if maxOffset < 2 {
+		t.Fatalf("test fixture needs a scrollable detail, maxOffset = %d", maxOffset)
+	}
+	got := m.renderDetailPane(w, 10)
+	if len(got) < 3 {
+		t.Fatalf("detail pane rendered %d lines", len(got))
+	}
+	if first, want := strings.TrimSpace(stripANSI(strings.Trim(got[1], "│"))), strings.TrimSpace(stripANSI(all[0])); first != want {
+		t.Fatalf("stale pin renders %q, want the top line %q", first, want)
+	}
+	m = sendKey(t, m, "k")
+	if m.dFollowTail {
+		t.Fatal("the stale pin must clear on the first scroll key")
+	}
+	if m.dOffset != 0 {
+		t.Fatalf("first scroll after a stale pin starts at offset %d, want 0 (no jump to fm-b's tail at %d)", m.dOffset, maxOffset-1)
+	}
+}

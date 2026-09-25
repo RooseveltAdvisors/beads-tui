@@ -149,6 +149,10 @@ type Model struct {
 	// dFollowTail pins the detail viewport to its tail after G: the "go to
 	// end" intent sticks while this bead's content lands or grows, so a G
 	// pressed during a slow detail load is not lost when the lines arrive.
+	// An explicit scroll key materializes the pin into dOffset and drops
+	// it; keys pressed while the bead is still loading keep it; a pin for
+	// a bead that is neither shown nor loading never wins and clears on
+	// the next scroll key.
 	dFollowTail bool
 	dTailID     string
 
@@ -1556,20 +1560,45 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// detailScrollKeys are exactly the keys bound in detailKey's scroll switch
+// (G excluded: it re-arms the pin). Their arrival settles the goto-end pin
+// before the key applies its delta; an unbound key never touches the pin,
+// matching the contract that any explicit scroll - not any key - drops it.
+var detailScrollKeys = map[string]bool{
+	"j": true, "down": true, "k": true, "up": true, "g": true,
+	"b": true, "pgup": true, " ": true, "pgdown": true,
+	"ctrl+f": true, "ctrl+b": true, "ctrl+d": true, "ctrl+u": true,
+	"h": true, "H": true, "left": true, "l": true, "L": true, "right": true,
+}
+
+// settleTailPin applies the goto-end pin contract when an explicit scroll
+// key arrives: a live pin materializes into the offset the pane shows
+// before the key's delta, an in-flight pin survives so G's intent reaches
+// the arriving content, and a stale pin clears without adopting anything.
+func (m *Model) settleTailPin(maxOffset int) {
+	if !m.dFollowTail {
+		return
+	}
+	switch {
+	case m.detail != nil && m.detail.ID == m.dTailID:
+		m.dOffset = maxOffset
+		m.dFollowTail = false
+	case m.detail == nil && m.detailPendingID == m.dTailID:
+		// The pinned bead is still loading; the pin outlives this key.
+	default:
+		m.dFollowTail = false
+	}
+}
+
 func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	lines := len(m.buildDetail(m.detailWidth()))
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
-	if msg.String() != "G" {
-		if m.dFollowTail && m.detail != nil && m.detail.ID == m.dTailID {
-			// Materialize the pin first: the next delta must apply to the
-			// position the pane is showing.
-			m.dOffset = maxOffset
-		}
-		// Any explicit scroll drops the tail pin; only G re-arms it.
-		m.dFollowTail = false
+	key := msg.String()
+	if detailScrollKeys[key] {
+		m.settleTailPin(maxOffset)
 	}
-	switch msg.String() {
+	switch key {
 	case "j", "down":
 		m.dOffset++
 	case "k", "up":
