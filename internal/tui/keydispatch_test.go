@@ -58,6 +58,27 @@ func TestRuneBurstKeepsEveryCommand(t *testing.T) {
 	}
 }
 
+// The navigation fall-through never applies to the input modes: an alt chord
+// inside a text input must reach the embedded bubbles input, whose keymap
+// binds the rune-bound word operations (alt+b = WordBackward).
+func TestAltChordReachesFilterInput(t *testing.T) {
+	m := drive(t, twoRowBoard())
+	m = sendKey(t, m, "/")
+	if !m.filtering {
+		t.Fatal("/ did not open the filter prompt")
+	}
+	m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ab cd")})
+	if got := m.filterInput.Value(); got != "ab cd" {
+		t.Fatalf("filter input = %q, want %q", got, "ab cd")
+	}
+	// alt+b moves the cursor one word back; a stripped Alt would insert "b".
+	m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true})
+	m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	if got := m.filterInput.Value(); got != "ab Xcd" {
+		t.Fatalf("filter input = %q, want %q (word back, then insert)", got, "ab Xcd")
+	}
+}
+
 // G is "go to end": when the detail content lands after the keypress (slow
 // detail load), the viewport must be waiting at the tail instead of silently
 // snapping back to the top.

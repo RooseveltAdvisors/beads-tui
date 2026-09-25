@@ -379,10 +379,6 @@ func (v Vocab) ListRowWith(issue bd.Issue, width int, selected bool, fields List
 	return v.renderRow(issue, "", "", "", width, fields, false, selectedDecor(selected))
 }
 
-func (v Vocab) ListRowLive(issue bd.Issue, width int, selected bool, fields ListFields, live bool) string {
-	return v.renderRow(issue, "", "", "", width, fields, live, selectedDecor(selected))
-}
-
 // ListRowLiveDecor renders one live board row with full HUD decoration.
 func (v Vocab) ListRowLiveDecor(issue bd.Issue, width int, fields ListFields, live bool, d RowDecor) string {
 	return v.renderRow(issue, "", "", "", width, fields, live, d)
@@ -403,10 +399,6 @@ func (v Vocab) TreeRow(row TreeRow, width int, selected bool) string {
 
 func (v Vocab) TreeRowWith(row TreeRow, width int, selected bool, fields ListFields) string {
 	return v.treeRowDecor(row, width, fields, false, selectedDecor(selected))
-}
-
-func (v Vocab) TreeRowLive(row TreeRow, width int, selected bool, fields ListFields, live bool) string {
-	return v.treeRowDecor(row, width, fields, live, selectedDecor(selected))
 }
 
 // TreeRowLiveDecor renders one live dependency-tree row with full HUD

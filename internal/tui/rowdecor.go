@@ -136,7 +136,7 @@ func paintRowBackground(row string, d RowDecor) string {
 	if mag <= 0 && cyan <= 0 {
 		return row
 	}
-	tint := rowTintSeq(mag, cyan)
+	tint := rowTintSeq(d.Focused, mag, cyan)
 	if tint == "" {
 		return row // no-colour terminal: glyph-only decoration
 	}
@@ -153,7 +153,7 @@ func paintRowBackground(row string, d RowDecor) string {
 		}
 		out := applyRowBackground(core, tint)
 		if beam != "" {
-			out += applyRowBackground(beam, rowTintSeq(0, hudBeamTint))
+			out += applyRowBackground(beam, rowTintSeq(false, 0, hudBeamTint))
 		}
 		return out + tail
 	}
@@ -161,12 +161,14 @@ func paintRowBackground(row string, d RowDecor) string {
 }
 
 // rowTintSeq picks the row-tint background sequence for the active colour
-// tier. "" means the tier paints no background at all.
-func rowTintSeq(magFrac, cyanFrac float64) string {
+// tier. "" means the tier paints no background at all. The 16-colour tier
+// cannot blend, so a focused row always takes the focus background there -
+// the multi-select tint must never win over focus, whatever the fractions.
+func rowTintSeq(focused bool, magFrac, cyanFrac float64) string {
 	switch hudProfile() {
 	case termenv.ANSI:
-		// 16 colours cannot blend; approximate the same two hues flat.
-		if cyanFrac > magFrac {
+		// 16 colours cannot blend; approximate the two hues flat.
+		if !focused && cyanFrac > magFrac {
 			return colorSeq(hudAnsiMarkBg, true)
 		}
 		return colorSeq(hudAnsiFocusBg, true)

@@ -292,6 +292,34 @@ func TestStaticColorTiersGetFullRowHighlight(t *testing.T) {
 	}
 }
 
+// On the 16-colour tier focus wins outright: a focused row inside visual
+// multi-select must carry the focus background, never the marked-row one.
+func TestANSITierFocusedRowKeepsFocusBackground(t *testing.T) {
+	withColorProfile(t, termenv.ANSI)
+	v := NewVocab(nil)
+	issue := bd.Issue{ID: "fm-ansi", Title: "Tier row", Status: "open"}
+	background := func(d RowDecor) string {
+		t.Helper()
+		row := v.ListRowLiveDecor(issue, 40, defaultListFields(), false, d)
+		bgs := assertFullyPainted(t, row)
+		for i, bg := range bgs {
+			if bg != bgs[0] {
+				t.Fatalf("decor %+v: cell %d background = %q, want uniform %q", d, i, bg, bgs[0])
+			}
+		}
+		return bgs[0]
+	}
+	focused := background(RowDecor{Focused: true})
+	marked := background(RowDecor{Checks: true, Marked: true})
+	both := background(RowDecor{Focused: true, Checks: true, Marked: true})
+	if focused == marked {
+		t.Fatalf("focus and multi-select backgrounds must differ on the 16-colour tier: %q", focused)
+	}
+	if both != focused {
+		t.Fatalf("focused multi-select row background = %q, want the focus background %q", both, focused)
+	}
+}
+
 func TestFocusHighlightSpansRowsAcrossBoardModes(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {

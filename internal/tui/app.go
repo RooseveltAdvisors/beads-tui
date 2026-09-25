@@ -562,29 +562,25 @@ func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Terminals and tmux can deliver several runes in one read (fast
 		// typing, key repeat, paste); handle each rune so a burst like
-		// "jjjj" moves four rows instead of being silently dropped.
-		if msg.Type == tea.KeyRunes {
-			// ESC landing in the same read as the next rune arrives as
-			// alt+<rune>. The TUI defines no Alt bindings, so the rune must
-			// still do its plain work instead of being swallowed.
-			msg.Alt = false
-			if len(msg.Runes) > 1 {
-				var cmds []tea.Cmd
-				for _, r := range msg.Runes {
-					updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-					nm, ok := updated.(Model)
-					if !ok {
-						return m, tea.Batch(append(cmds, cmd)...)
-					}
-					m = nm
-					if cmd != nil {
-						cmds = append(cmds, cmd)
-					}
+		// "jjjj" moves four rows instead of being silently dropped. A read
+		// that batches ESC with the runes arrives as alt+<rune>, so each
+		// forwarded rune keeps its Alt flag.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
+			var cmds []tea.Cmd
+			for _, r := range msg.Runes {
+				updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt})
+				nm, ok := updated.(Model)
+				if !ok {
+					return m, tea.Batch(append(cmds, cmd)...)
 				}
-				// Every command the burst produced must survive; earlier
-				// versions returned only the last and dropped the rest.
-				return m, tea.Batch(cmds...)
+				m = nm
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			}
+			// Every command the burst produced must survive; earlier
+			// versions returned only the last and dropped the rest.
+			return m, tea.Batch(cmds...)
 		}
 		return m.updateKey(msg)
 	case boardMsg:
@@ -835,6 +831,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	// ESC landing in the same read as a rune arrives as alt+<rune>. Every
+	// input mode above returned with its own bindings intact, and the
+	// navigation keymap defines no Alt bindings, so the rune must still do
+	// its plain work instead of being swallowed.
+	msg.Alt = false
 	key := msg.String()
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		return m.switchView(m.viewAt(int(key[0] - '1')))
