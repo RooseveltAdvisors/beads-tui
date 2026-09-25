@@ -693,29 +693,44 @@ func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// runesPreserveAlt reports whether the current mode forwards rune keys with
-// the Alt flag intact: the bubbles textinputs (their word operations are
-// alt-bound) and the delete-confirmation gate, where an ESC-chorded rune
-// must never act - bubbletea consumed the ESC as the modifier, so the chord
-// cannot be trusted to confirm or cancel a delete.
-func (m Model) runesPreserveAlt() bool {
+// altCoercedKeys are the bindings an ESC+key batch may resolve to their
+// plain meaning. Terminals and tmux deliver ESC together with the next key
+// in one tty read, so the chord usually carries just a navigation or focus
+// key - but a batched ESC may be the user's cancel intent, so only these
+// navigation/focus bindings are reinterpreted; destructive and
+// confirmation-shaped runes keep their chord and stay inert in dispatch.
+var altCoercedKeys = map[string]bool{
+	"j": true, "k": true, "h": true, "l": true, "g": true, "G": true,
+	"L": true, "T": true, "*": true, "/": true, "?": true, "q": true,
+	"1": true, "2": true, "3": true, "4": true, "5": true,
+	"6": true, "7": true, "8": true, "9": true,
+	"up": true, "down": true, "left": true, "right": true,
+	" ": true, "enter": true, "tab": true,
+	"ctrl+d": true, "ctrl+u": true,
+}
+
+// runesGoToTextInput reports whether the current mode forwards rune keys to
+// a bubbles textinput, which must receive its alt-bound word operations
+// (alt+f/alt+b/alt+d) untouched.
+func (m Model) runesGoToTextInput() bool {
 	if m.filtering {
 		return true
 	}
 	if m.commentsOpen && m.commentsInputActive {
 		return true
 	}
-	return m.crudActive() && m.crudMode != crudMenu
+	return m.crudActive() && m.crudMode != crudMenu && m.crudMode != crudDeleteConfirm
 }
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
 		return m, nil
 	}
-	// ESC landing in the same read as a rune arrives as alt+<rune>. No mode
-	// binds Alt, so the rune does its plain work except where an alt chord
-	// must be preserved (runesPreserveAlt).
-	if msg.Type == tea.KeyRunes && !m.runesPreserveAlt() {
+	// ESC landing in the same read as a key arrives as alt+<key>. Only the
+	// allowlisted navigation/focus bindings resolve to their plain key so a
+	// batched ESC never swallows them; every other chord stays inert so it
+	// can never reach a destructive action (see altCoercedKeys).
+	if msg.Alt && !m.runesGoToTextInput() && altCoercedKeys[strings.TrimPrefix(msg.String(), "alt+")] {
 		msg.Alt = false
 	}
 	if m.yank {
@@ -1546,7 +1561,7 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
 	if msg.String() != "G" {
-		if m.dFollowTail {
+		if m.dFollowTail && m.detail != nil && m.detail.ID == m.dTailID {
 			// Materialize the pin first: the next delta must apply to the
 			// position the pane is showing.
 			m.dOffset = maxOffset

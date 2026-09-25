@@ -171,3 +171,80 @@ func TestDeleteConfirmIgnoresChordedKey(t *testing.T) {
 		t.Fatalf("crudMode after confirm = %v, want crudNone", m.crudMode)
 	}
 }
+
+// ESC-batched destructive runes keep their chord and stay inert: they must
+// never arm the delete gate from list or visual dispatch, and never confirm
+// it once armed.
+func TestChordedDeleteKeysNeverArmOrConfirm(t *testing.T) {
+	f := twoRowBoard()
+	m := drive(t, f)
+	for _, r := range []rune{'D', 'd'} {
+		m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true})
+		if m.crudMode != crudNone {
+			t.Fatalf("chorded %q armed the delete gate from the list: crudMode = %v", r, m.crudMode)
+		}
+	}
+	m = sendKey(t, m, "v")
+	for _, r := range []rune{'d', 'D', 'x'} {
+		m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true})
+		if m.crudMode != crudNone {
+			t.Fatalf("chorded %q armed the delete gate in visual mode: crudMode = %v", r, m.crudMode)
+		}
+	}
+	if len(f.deletedIDs) != 0 {
+		t.Fatalf("chorded keys deleted %v", f.deletedIDs)
+	}
+	m = sendKey(t, m, "esc")
+	m = sendKey(t, m, "D")
+	if m.crudMode != crudDeleteConfirm {
+		t.Fatalf("fixture: crudMode = %v, want crudDeleteConfirm", m.crudMode)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}, Alt: true})
+	m = runCmd(t, updated.(Model), cmd)
+	if m.crudMode != crudDeleteConfirm {
+		t.Fatalf("chorded Y acted in the delete gate: crudMode = %v", m.crudMode)
+	}
+	if len(f.deletedIDs) != 0 {
+		t.Fatalf("chorded Y deleted %v", f.deletedIDs)
+	}
+}
+
+// A pin whose bead is no longer the shown detail must never win: the first
+// scroll key keeps the position the pane shows instead of jumping to the
+// new detail's tail.
+func TestStaleTailPinDoesNotJumpToShowDetailTail(t *testing.T) {
+	m := drive(t, twoRowBoard())
+	m.width, m.height = 160, 12
+	m = sendKey(t, m, "l")
+	m = sendKey(t, m, "G")
+	if !m.dFollowTail || m.dTailID != "fm-a" {
+		t.Fatalf("pin = follow:%v tail:%q, want armed on fm-a", m.dFollowTail, m.dTailID)
+	}
+	// View/reload paths can install another bead's detail without clearing
+	// the pin; the pane then shows the new bead's top, not a tail.
+	m.comments = []bd.Comment{{ID: "c1", Author: "Ada", Text: "tail of the other bead", CreatedAt: "2026-09-25T10:00:00Z"}}
+	m.selected = 1
+	m = applyMsg(t, m, detailMsg{
+		id:         "fm-b",
+		generation: m.detailGen,
+		issue:      &bd.Issue{ID: "fm-b", Title: "Beta", Status: "open", CommentCount: 1},
+	})
+	if m.detail == nil || m.detail.ID != "fm-b" {
+		t.Fatalf("shown detail = %v, want fm-b", m.detail)
+	}
+	if !m.dFollowTail {
+		t.Fatal("fixture needs the pin to survive the detail switch")
+	}
+	all := m.buildDetail(m.detailWidth())
+	_, maxOffset := m.detailContentBudget(len(all))
+	if maxOffset < 2 {
+		t.Fatalf("test fixture needs a scrollable detail, maxOffset = %d", maxOffset)
+	}
+	m = sendKey(t, m, "k")
+	if m.dFollowTail {
+		t.Fatal("the stale pin must clear on the first scroll key")
+	}
+	if m.dOffset != 0 {
+		t.Fatalf("first scroll after a stale pin starts at offset %d, want 0 (no jump to fm-b's tail at %d)", m.dOffset, maxOffset-1)
+	}
+}
