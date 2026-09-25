@@ -526,6 +526,21 @@ func (m Model) Init() tea.Cmd {
 
 // Update drives the application.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.updateCore(msg)
+	model, ok := updated.(Model)
+	if !ok {
+		return updated, cmd
+	}
+	// Cursor movement starts/restarts the smear; its frame tick is chained
+	// alongside whatever the message produced and stops when it settles.
+	if animCmd := model.syncCursorAnim(); animCmd != nil {
+		cmd = tea.Batch(cmd, animCmd)
+	}
+	return model, cmd
+}
+
+// updateCore handles one message.
+func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -571,6 +586,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startDetailLoad()
+	case cursorFrameMsg:
+		return m.cursorFrame(msg)
 	case prefetchMsg:
 		for _, hit := range msg.hits {
 			m.detailCache[hit.key] = hit.detail
@@ -2743,13 +2760,35 @@ func (m Model) emptyBoardText() string {
 // rowDecor resolves the HUD chrome for visible row i: the magenta focus
 // highlight on the cursor row (identifiable across tree, flat, and filtered
 // views alike) and the cyan multi-select checkbox state in visual mode.
+// While the cursor smears, the row it left trails a fading ghost and the row
+// it entered wipes its highlight in from the left.
 func (m Model) rowDecor(i int) RowDecor {
 	d := RowDecor{Focused: i == m.selected, Checks: m.visualMode}
 	if m.visualMode {
 		start, end := m.visualRange()
 		d.Marked = i >= start && i <= end
 	}
+	switch id := m.rowIDAt(i); id {
+	case "":
+	case m.cursorAnim.toID:
+		d.Smearing = m.cursorAnim.active
+		d.Wipe = m.cursorAnim.wipe
+		d.Pulse = m.cursorAnim.pulse
+	case m.cursorAnim.fromID:
+		d.Ghost = m.cursorAnim.ghost
+	}
 	return d
+}
+
+// rowIDAt returns the bead id of visible row i across tree and flat rows.
+func (m Model) rowIDAt(i int) string {
+	if m.treeMode && i >= 0 && i < len(m.treeRows) {
+		return m.treeRows[i].Issue.ID
+	}
+	if i >= 0 && i < len(m.rows) {
+		return m.rows[i].ID
+	}
+	return ""
 }
 
 // scrollTop centers the selection in the visible window.

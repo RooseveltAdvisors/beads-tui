@@ -77,7 +77,9 @@ func (m *Model) syncCursorAnim() tea.Cmd {
 		return nil
 	}
 	from := m.cursorAnim.toID
+	seq := m.cursorAnim.seq
 	m.cursorAnim = cursorAnim{toID: id, wipe: 1}
+	m.cursorAnim.seq = seq // frame chains must stay unique across moves
 	if from != "" {
 		m.cursorAnim.fromID = from
 	}
