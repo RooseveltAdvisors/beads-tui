@@ -153,7 +153,7 @@ type Model struct {
 	dTailID     string
 
 	// Cursor smear: the trail/wipe animation state plus whether this
-	// terminal renders it (TrueColor only; see rowdecor.go/cursoranim.go).
+	// terminal renders it (256-colour and TrueColor; see rowdecor.go/cursoranim.go).
 	cursorAnim cursorAnim
 	smear      bool
 
@@ -693,9 +693,28 @@ func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// runesGoToTextInput reports whether the current mode forwards rune keys to
+// a bubbles textinput, which must receive its alt-bound word operations
+// (alt+f/alt+b/alt+d) untouched.
+func (m Model) runesGoToTextInput() bool {
+	if m.filtering {
+		return true
+	}
+	if m.commentsOpen && m.commentsInputActive {
+		return true
+	}
+	return m.crudActive() && m.crudMode != crudMenu && m.crudMode != crudDeleteConfirm
+}
+
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
 		return m, nil
+	}
+	// ESC landing in the same read as a rune arrives as alt+<rune>. No mode
+	// binds Alt, so the rune must do its plain work everywhere except the
+	// bubbles textinputs, whose word operations are bound to alt chords.
+	if msg.Type == tea.KeyRunes && !m.runesGoToTextInput() {
+		msg.Alt = false
 	}
 	if m.yank {
 		switch msg.String() {
@@ -831,11 +850,6 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-	// ESC landing in the same read as a rune arrives as alt+<rune>. Every
-	// input mode above returned with its own bindings intact, and the
-	// navigation keymap defines no Alt bindings, so the rune must still do
-	// its plain work instead of being swallowed.
-	msg.Alt = false
 	key := msg.String()
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		return m.switchView(m.viewAt(int(key[0] - '1')))

@@ -36,6 +36,17 @@ func TestEscRuneSequenceDoesNotSwallowTheRune(t *testing.T) {
 	}
 }
 
+// Every binding-free mode resolves an ESC-batched rune to its plain rune,
+// not only the board navigation path.
+func TestEscRuneSequenceReachesGraphMode(t *testing.T) {
+	m := drive(t, twoRowBoard())
+	m.graph = true
+	m = applyMsg(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}, Alt: true})
+	if m.graph {
+		t.Fatal("ESC-then-G lost the rune: the graph stayed open")
+	}
+}
+
 func TestRuneBurstKeepsEveryCommand(t *testing.T) {
 	m := drive(t, twoRowBoard())
 	// "jr" arrives in one read: j moves the cursor (detail debounce) and r

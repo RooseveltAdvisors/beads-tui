@@ -18,10 +18,10 @@ import (
 // magenta, and every degraded colour tier keeps a static, drift-free row.
 
 // Golden tint sequences under the TrueColor tier (see hudFocusTint/hudMarkTint
-// mixed over #0d1116 with #f94dff / #38d9ff).
+// mixed over #0d1116 with #f94dff / #04d1f9).
 const (
 	focusTintSeqGolden = "48;2;60;29;69"
-	markTintSeqGolden  = "48;2;22;61;73"
+	markTintSeqGolden  = "48;2;11;59;72"
 )
 
 func withColorProfile(t *testing.T, p termenv.Profile) {

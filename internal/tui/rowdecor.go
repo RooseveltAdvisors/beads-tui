@@ -23,7 +23,8 @@ import (
 // Colour tiers (resolved per render from the lipgloss profile):
 //
 //	TrueColor : exact hex tints and the animated smear.
-//	ANSI256   : the same tints quantized to the 256-colour cube, static.
+//	ANSI256   : the same tints quantized to the 256-colour cube; the smear
+//	            animates with its fades quantized to the cube.
 //	ANSI (16) : flat magenta/cyan background approximations, static.
 //	Ascii     : no escape sequences at all (NO_COLOR, dumb terminals); the
 //	            bar and checkbox glyphs still mark the row.
@@ -35,7 +36,7 @@ import (
 const (
 	hudBaseHex    = "#0d1116" // base the tints are mixed on
 	hudMagentaHex = "#f94dff" // primary accent: focus
-	hudCyanHex    = "#38d9ff" // secondary accent: multi-select, beam edge
+	hudCyanHex    = "#04d1f9" // secondary accent: multi-select, beam edge
 
 	hudFocusTint = 0.20 // focused-row tint: 20% magenta over the base
 	hudPulseTint = 0.15 // arrival pulse peak, decays with the wipe
@@ -77,6 +78,13 @@ func (d RowDecor) slotWidth() int {
 	return 2 // bar + gutter
 }
 
+// usable is a row's content budget: whatever width is left after the fixed
+// marker slot, floored at one cell. Both row renderers derive their content
+// width from this one rule so columns stay aligned.
+func (d RowDecor) usable(width int) int {
+	return max(1, width-d.slotWidth())
+}
+
 // tintFractions resolves the magenta and cyan tint strength for a row.
 func (d RowDecor) tintFractions() (mag, cyan float64) {
 	if d.Focused {
@@ -116,10 +124,7 @@ func (d RowDecor) marker() string {
 // spans the full row width. The result is always exactly width cells wide,
 // decorated or not, so rows stay aligned with the pane and the counts column.
 func decorateRow(content string, width int, d RowDecor) string {
-	usable := width - d.slotWidth()
-	if usable < 1 {
-		usable = 1
-	}
+	usable := d.usable(width)
 	row := d.marker() + padRight(truncatePhys(content, usable), usable)
 	if displayWidth(row) > width {
 		row = truncatePhys(row, width)
@@ -184,11 +189,17 @@ func hudProfile() termenv.Profile {
 	return lipgloss.ColorProfile()
 }
 
-// smearEnabled reports whether this terminal renders the cursor smear. Only
-// TrueColor interpolates fades smoothly; every other tier degrades to a
-// static full-row highlight.
+// smearEnabled reports whether this terminal renders the cursor smear. Any
+// terminal with at least 256 colours animates the same motion (the fades
+// quantize to the colour cube); 8/16-colour and no-colour terminals degrade
+// to a static full-row highlight.
 func smearEnabled() bool {
-	return hudProfile() == termenv.TrueColor
+	switch hudProfile() {
+	case termenv.TrueColor, termenv.ANSI256:
+		return true
+	default:
+		return false
+	}
 }
 
 // colorSeq resolves one palette hex (or 256-colour code) to an SGR sequence

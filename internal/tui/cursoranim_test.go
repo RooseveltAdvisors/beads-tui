@@ -20,14 +20,21 @@ import (
 // smearModel drives a three-row board with the smear enabled on TrueColor.
 func smearModel(t *testing.T) Model {
 	t.Helper()
-	withColorProfile(t, termenv.TrueColor)
+	return smearModelAt(t, termenv.TrueColor)
+}
+
+// smearModelAt drives a three-row board on the given colour tier with the
+// smear flag resolved exactly as New() resolves it.
+func smearModelAt(t *testing.T, profile termenv.Profile) Model {
+	t.Helper()
+	withColorProfile(t, profile)
 	f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
 		{ID: "fm-a", Title: "Alpha", Status: "open"},
 		{ID: "fm-b", Title: "Beta", Status: "open"},
 		{ID: "fm-c", Title: "Gamma", Status: "open"},
 	}}}
 	m := drive(t, f)
-	m.smear = true
+	m.smear = smearEnabled()
 	return m
 }
 
@@ -214,7 +221,7 @@ func TestCursorSmearWipesHighlightFromLeft(t *testing.T) {
 	if bgs[len(bgs)-1] != "" {
 		t.Fatalf("tail of the row tinted before the wipe arrived: %q", bgs[len(bgs)-1])
 	}
-	beamSeq := "48;2;37;127;150" // hudBeamTint cyan edge glow
+	beamSeq := "48;2;8;123;147" // hudBeamTint cyan edge glow
 	for i := k - 2; i < k; i++ {
 		if bgs[i] != beamSeq {
 			t.Fatalf("beam edge cell %d background = %q, want %q (coverage %d)", i, bgs[i], beamSeq, k)
@@ -231,7 +238,7 @@ func TestCursorSmearWipesHighlightFromLeft(t *testing.T) {
 }
 
 func TestCursorSmearStaticTiersSettleImmediately(t *testing.T) {
-	for _, profile := range []termenv.Profile{termenv.ANSI256, termenv.ANSI} {
+	for _, profile := range []termenv.Profile{termenv.ANSI, termenv.Ascii} {
 		withColorProfile(t, profile)
 		f := &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
 			{ID: "fm-a", Title: "Alpha", Status: "open"},
@@ -257,18 +264,37 @@ func TestCursorSmearStaticTiersSettleImmediately(t *testing.T) {
 	}
 }
 
-func TestCursorSmearEnabledOnTrueColorOnly(t *testing.T) {
+func TestCursorSmearEnabledOnTrueColorAndANSI256(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	if m := New(nil); !m.smear {
 		t.Fatal("TrueColor terminals should render the cursor smear")
 	}
 	withColorProfile(t, termenv.ANSI256)
+	if m := New(nil); !m.smear {
+		t.Fatal("ANSI256 terminals should render the cursor smear")
+	}
+	withColorProfile(t, termenv.ANSI)
 	if m := New(nil); m.smear {
-		t.Fatal("ANSI256 terminals should degrade to the static highlight")
+		t.Fatal("16-colour terminals should degrade to the static highlight")
 	}
 	withColorProfile(t, termenv.Ascii)
 	if m := New(nil); m.smear {
 		t.Fatal("no-color terminals should degrade to the static highlight")
+	}
+}
+
+func TestCursorSmearAnimatesOnANSI256(t *testing.T) {
+	m := smearModelAt(t, termenv.ANSI256)
+	if !m.smear {
+		t.Fatal("ANSI256 terminals should render the cursor smear")
+	}
+	updated, cmd := m.Update(teaKeyMsg("j"))
+	m2 := updated.(Model)
+	if !m2.cursorAnim.active {
+		t.Fatal("cursor move did not start the smear on ANSI256")
+	}
+	if !hasCursorFrame(gatherMsgs(cmd), m2.cursorAnim.seq) {
+		t.Fatal("cursor move did not schedule a smear frame tick on ANSI256")
 	}
 }
 

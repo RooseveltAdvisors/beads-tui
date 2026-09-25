@@ -431,10 +431,7 @@ func (v Vocab) treeMarker(row TreeRow) string {
 }
 
 func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, width int, fields ListFields, live bool, d RowDecor) string {
-	usable := width - d.slotWidth()
-	if usable < 1 {
-		usable = 1
-	}
+	usable := d.usable(width)
 	icon := ""
 	if fields.Status {
 		icon = v.Icon(issue.Status)
