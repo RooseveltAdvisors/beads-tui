@@ -228,6 +228,7 @@ func newTestModel(f *fakeClient) Model {
 	m := New(f)
 	m.width, m.height = 160, 40
 	m.detailDebounce = 0 // fire debounce ticks immediately in tests
+	m.smear = false      // smear frames are time-driven; tests feed them explicitly
 	return m
 }
 
@@ -247,6 +248,11 @@ func runCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
 		for _, c := range batch {
 			m = runCmd(t, m, c)
 		}
+		return m
+	}
+	if _, ok := msg.(cursorFrameMsg); ok {
+		// Smear frames are driven explicitly by cursor animation tests so
+		// wall-clock time can never make the suite flaky.
 		return m
 	}
 	updated, next := m.Update(msg)

@@ -105,7 +105,7 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 		}
 		return vocab.statusStyle(issue.Status).Render(id + " · " + name)
 	}
-	lines := []string{"Focused: " + label(focus), "", "2-hop dependency neighborhood"}
+	lines := []string{colorize(focusBar, hudMagentaHex) + " Focused: " + label(focus), "", "2-hop dependency neighborhood"}
 	for _, edge := range adj[focus] {
 		if distance[edge.to] > 1 {
 			continue

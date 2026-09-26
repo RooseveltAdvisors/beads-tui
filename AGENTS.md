@@ -28,7 +28,8 @@ Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bead
 `go test` alone never proves this TUI loads. `scripts/verify.sh` (skill:
 `/verify`) builds the binary, drives the real interactive TUI in a throwaway
 tmux session against a real `.beads` workspace, and fails on SIGKILL, an empty
-Ready board, or a missing workspace that renders blank instead of a loud error.
+Ready board, a focused row missing its `▎` HUD marker (and, on truecolor, its
+magenta row tint), or a missing workspace that renders blank instead of a loud error.
 Defaults to `/opt/ra/firstmate/.beads`; override with `BEADS_VERIFY_BEADS_DIR`
 to point at any real embedded-Dolt `.beads` fixture. The gate TUI runs with a
 temporary `BEADS_TUI_CONFIG_DIR` and expects the newest open root bead (the
@@ -76,6 +77,7 @@ never log bead titles, descriptions, or other issue content.
 - Status vocabulary loads live from `bd statuses --json`; on failure the built-in fallback in `internal/tui/render.go` (`NewVocab`) takes over.
 - Board sorting/filtering primitives and prompt syntax live in `internal/tui/filter.go`; the key dispatch and derived-row lifecycle live in `internal/tui/app.go`.
 - Assignee attach (`a`) matches the selected bead's assignee against running Herdr sessions (`herdr session list --json`) and tmux sessions (`tmux list-sessions`); matching and attach live in `internal/tui/session.go`. Herdr wins when both backends match. No match is a no-op.
+- Board-row chrome (focus bar, full-row tint, multi-select checkbox, cursor smear) lives in `internal/tui/rowdecor.go` and `internal/tui/cursoranim.go`. Rows are `[marker slot][content]` at a constant slot width and highlights are painted cell-wise: a background style wrapped around the finished line dies at the first inner SGR reset (chips/icons emit their own). The smear animates on 256-colour and TrueColor terminals and its frame ticks run only while it is active; unit tests feed `cursorFrameMsg` explicitly so no test waits on wall-clock frames.
 
 ## Maintaining this file
 

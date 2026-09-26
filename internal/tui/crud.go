@@ -509,7 +509,7 @@ func (m Model) renderCrud() string {
 			prefix := "  "
 			line := fmt.Sprintf("%d %s", i+1, it.label)
 			if i == m.crudMenuIdx {
-				prefix = "▸ "
+				prefix = colorize(focusBar, hudMagentaHex) + " "
 				line = styleBold.Render(line)
 			}
 			b.WriteString(prefix + line + "\n")

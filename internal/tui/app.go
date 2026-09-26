@@ -146,6 +146,20 @@ type Model struct {
 	selected int
 	focus    Focus
 	dOffset  int
+	// dFollowTail pins the detail viewport to its tail after G: the "go to
+	// end" intent sticks while this bead's content lands or grows, so a G
+	// pressed during a slow detail load is not lost when the lines arrive.
+	// An explicit scroll key materializes the pin into dOffset and drops
+	// it; keys pressed while the bead is still loading keep it; a pin for
+	// a bead that is neither shown nor loading never wins and clears on
+	// the next scroll key.
+	dFollowTail bool
+	dTailID     string
+
+	// Cursor smear: the trail/wipe animation state plus whether this
+	// terminal renders it (256-colour and TrueColor; see rowdecor.go/cursoranim.go).
+	cursorAnim cursorAnim
+	smear      bool
 
 	detail            *bd.Issue
 	down              []bd.DepRecord
@@ -495,6 +509,8 @@ func New(backend Backend) Model {
 		detailDebounce: detailDebounceDelay,
 		commentsInput:  commentInput,
 		visibility:     defaultViewVisibility(),
+		smear:          smearEnabled(),
+		cursorAnim:     cursorAnim{wipe: 1},
 	}
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
@@ -519,6 +535,21 @@ func (m Model) Init() tea.Cmd {
 
 // Update drives the application.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.updateCore(msg)
+	model, ok := updated.(Model)
+	if !ok {
+		return updated, cmd
+	}
+	// Cursor movement starts/restarts the smear; its frame tick is chained
+	// alongside whatever the message produced and stops when it settles.
+	if animCmd := model.syncCursorAnim(); animCmd != nil {
+		cmd = tea.Batch(cmd, animCmd)
+	}
+	return model, cmd
+}
+
+// updateCore handles one message.
+func (m Model) updateCore(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -535,19 +566,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Terminals and tmux can deliver several runes in one read (fast
 		// typing, key repeat, paste); handle each rune so a burst like
-		// "jjjj" moves four rows instead of being silently dropped.
+		// "jjjj" moves four rows instead of being silently dropped. A read
+		// that batches ESC with the runes arrives as alt+<rune>, so each
+		// forwarded rune keeps its Alt flag.
 		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
-			var last tea.Cmd
+			var cmds []tea.Cmd
 			for _, r := range msg.Runes {
 				updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt})
 				nm, ok := updated.(Model)
 				if !ok {
-					return m, cmd
+					return m, tea.Batch(append(cmds, cmd)...)
 				}
 				m = nm
-				last = cmd
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			}
-			return m, last
+			// Every command the burst produced must survive; earlier
+			// versions returned only the last and dropped the rest.
+			return m, tea.Batch(cmds...)
 		}
 		return m.updateKey(msg)
 	case boardMsg:
@@ -564,6 +601,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startDetailLoad()
+	case cursorFrameMsg:
+		return m.cursorFrame(msg)
 	case prefetchMsg:
 		for _, hit := range msg.hits {
 			m.detailCache[hit.key] = hit.detail
@@ -658,9 +697,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// altCoercedKeys are the bindings an ESC+key batch may resolve to their
+// plain meaning. Terminals and tmux deliver ESC together with the next key
+// in one tty read, so the chord usually carries just a navigation or focus
+// key - but a batched ESC may be the user's cancel intent, so only these
+// navigation/focus bindings are reinterpreted; destructive and
+// confirmation-shaped runes keep their chord and stay inert in dispatch.
+var altCoercedKeys = map[string]bool{
+	"j": true, "k": true, "h": true, "l": true, "g": true, "G": true,
+	"L": true, "T": true, "*": true, "/": true, "?": true, "q": true,
+	"1": true, "2": true, "3": true, "4": true, "5": true,
+	"6": true, "7": true, "8": true, "9": true,
+	"up": true, "down": true, "left": true, "right": true,
+	" ": true, "enter": true, "tab": true,
+	"ctrl+d": true, "ctrl+u": true,
+}
+
+// runesGoToTextInput reports whether the current mode forwards rune keys to
+// a bubbles textinput, which must receive its alt-bound word operations
+// (alt+f/alt+b/alt+d) untouched.
+func (m Model) runesGoToTextInput() bool {
+	if m.filtering {
+		return true
+	}
+	if m.commentsOpen && m.commentsInputActive {
+		return true
+	}
+	return m.crudActive() && m.crudMode != crudMenu && m.crudMode != crudDeleteConfirm
+}
+
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
 		return m, nil
+	}
+	// ESC landing in the same read as a key arrives as alt+<key>. Only the
+	// allowlisted navigation/focus bindings resolve to their plain key so a
+	// batched ESC never swallows them; every other chord stays inert so it
+	// can never reach a destructive action (see altCoercedKeys).
+	if msg.Alt && !m.runesGoToTextInput() && altCoercedKeys[strings.TrimPrefix(msg.String(), "alt+")] {
+		msg.Alt = false
 	}
 	if m.yank {
 		switch msg.String() {
@@ -860,6 +935,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == FocusDetail {
 			m.focus = FocusList
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 		return m, nil
 	case "s":
@@ -1438,6 +1514,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.visibility.DetailPane {
 			m.focus = FocusDetail
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 	case "h", "left":
 		if row, ok := m.selectedTreeRow(); ok && row.HasChildren && row.Expanded {
@@ -1451,11 +1528,13 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.visibility.DetailPane {
 			m.focus = FocusDetail
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 	case "L":
 		if m.visibility.DetailPane {
 			m.focus = FocusDetail
 			m.dOffset = 0
+			m.dFollowTail = false
 		}
 	case "*":
 		return m, m.expandAll()
@@ -1472,6 +1551,7 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m = m.clampSelection()
 	if m.selected != before {
+		m.dFollowTail = false
 		if m.filter.Kind == FilterSearch {
 			m.expandAncestors(m.rows[m.selected].ID)
 		}
@@ -1480,11 +1560,45 @@ func (m Model) listKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// detailScrollKeys are exactly the keys bound in detailKey's scroll switch
+// (G excluded: it re-arms the pin). Their arrival settles the goto-end pin
+// before the key applies its delta; an unbound key never touches the pin,
+// matching the contract that any explicit scroll - not any key - drops it.
+var detailScrollKeys = map[string]bool{
+	"j": true, "down": true, "k": true, "up": true, "g": true,
+	"b": true, "pgup": true, " ": true, "pgdown": true,
+	"ctrl+f": true, "ctrl+b": true, "ctrl+d": true, "ctrl+u": true,
+	"h": true, "H": true, "left": true, "l": true, "L": true, "right": true,
+}
+
+// settleTailPin applies the goto-end pin contract when an explicit scroll
+// key arrives: a live pin materializes into the offset the pane shows
+// before the key's delta, an in-flight pin survives so G's intent reaches
+// the arriving content, and a stale pin clears without adopting anything.
+func (m *Model) settleTailPin(maxOffset int) {
+	if !m.dFollowTail {
+		return
+	}
+	switch {
+	case m.detail != nil && m.detail.ID == m.dTailID:
+		m.dOffset = maxOffset
+		m.dFollowTail = false
+	case m.detail == nil && m.detailPendingID == m.dTailID:
+		// The pinned bead is still loading; the pin outlives this key.
+	default:
+		m.dFollowTail = false
+	}
+}
+
 func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	lines := len(m.buildDetail(m.detailWidth()))
 	_, maxOffset := m.detailContentBudget(lines)
 	page := m.pageStep()
-	switch msg.String() {
+	key := msg.String()
+	if detailScrollKeys[key] {
+		m.settleTailPin(maxOffset)
+	}
+	switch key {
 	case "j", "down":
 		m.dOffset++
 	case "k", "up":
@@ -1497,6 +1611,8 @@ func (m Model) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.dOffset = maxOffset
+		m.dFollowTail = true
+		m.dTailID = m.selectedID()
 	case " ", "pgdown", "ctrl+f":
 		m.dOffset += page
 	case "b", "pgup", "ctrl+b":
@@ -1571,7 +1687,7 @@ func (m Model) buildDetail(width int) []string {
 		m.visibility.Detail,
 	)
 	if m.detail != nil && MatchAssignee(m.detail.Assignee, m.liveSessions) != nil {
-		mark := styleDim.Render("Assignee: "+orDash(m.detail.Assignee)+"  "+liveSessionMark+" session")
+		mark := styleDim.Render("Assignee: " + orDash(m.detail.Assignee) + "  " + liveSessionMark + " session")
 		for i, line := range lines {
 			if strings.Contains(stripANSI(line), "Assignee: "+orDash(m.detail.Assignee)) {
 				lines[i] = mark
@@ -2482,8 +2598,10 @@ func (m *Model) toggleViewOption(index int) {
 	if !m.visibility.DetailPane {
 		m.focus = FocusList
 		m.dOffset = 0
+		m.dFollowTail = false
 	} else if index >= 9 {
 		m.dOffset = 0
+		m.dFollowTail = false
 	}
 }
 
@@ -2492,7 +2610,7 @@ func (m Model) renderViewOptions() string {
 	for i, label := range viewOptionLabels {
 		cursor := "  "
 		if i == m.optionIndex {
-			cursor = "▸ "
+			cursor = colorize(focusBar, hudMagentaHex) + " "
 		}
 		mark := "[ ] "
 		if m.viewOptionEnabled(i) {
@@ -2517,7 +2635,7 @@ func (m Model) renderYank() string {
 	for i, item := range items {
 		prefix := "  "
 		if i == m.yankIndex {
-			prefix = "▸ "
+			prefix = colorize(focusBar, hudMagentaHex) + " "
 		}
 		lines = append(lines, prefix+item.label+": "+item.value)
 	}
@@ -2697,18 +2815,14 @@ func (m Model) renderListPane(w, h int) []string {
 		}
 		top := m.scrollTop(vis)
 		for i := top; i < top+vis; i++ {
-			rowSelected := (i == m.selected)
-			if m.visualMode {
-				start, end := m.visualRange()
-				rowSelected = (i >= start && i <= end)
-			}
+			decor := m.rowDecor(i)
 			if m.treeMode && i < len(m.treeRows) {
 				iss := m.treeRows[i].Issue
 				live := MatchAssignee(iss.Assignee, m.liveSessions) != nil
-				lines = append(lines, m.vocab.TreeRowLive(m.treeRows[i], inner, rowSelected, m.visibility.List, live))
+				lines = append(lines, m.vocab.TreeRowLiveDecor(m.treeRows[i], inner, m.visibility.List, live, decor))
 			} else {
 				live := MatchAssignee(m.rows[i].Assignee, m.liveSessions) != nil
-				lines = append(lines, m.vocab.ListRowLive(m.rows[i], inner, rowSelected, m.visibility.List, live))
+				lines = append(lines, m.vocab.ListRowLiveDecor(m.rows[i], inner, m.visibility.List, live, decor))
 			}
 		}
 		if m.loading {
@@ -2735,6 +2849,40 @@ func (m Model) emptyBoardText() string {
 	default:
 		return "No " + m.view.Label() + " issues."
 	}
+}
+
+// rowDecor resolves the HUD chrome for visible row i: the magenta focus
+// highlight on the cursor row (identifiable across tree, flat, and filtered
+// views alike) and the cyan multi-select checkbox state in visual mode.
+// While the cursor smears, the row it left trails a fading ghost and the row
+// it entered wipes its highlight in from the left.
+func (m Model) rowDecor(i int) RowDecor {
+	d := RowDecor{Focused: i == m.selected, Checks: m.visualMode}
+	if m.visualMode {
+		start, end := m.visualRange()
+		d.Marked = i >= start && i <= end
+	}
+	switch id := m.rowIDAt(i); id {
+	case "":
+	case m.cursorAnim.toID:
+		d.Smearing = m.cursorAnim.active
+		d.Wipe = m.cursorAnim.wipe
+		d.Pulse = m.cursorAnim.pulse
+	case m.cursorAnim.fromID:
+		d.Ghost = m.cursorAnim.ghost
+	}
+	return d
+}
+
+// rowIDAt returns the bead id of visible row i across tree and flat rows.
+func (m Model) rowIDAt(i int) string {
+	if m.treeMode && i >= 0 && i < len(m.treeRows) {
+		return m.treeRows[i].Issue.ID
+	}
+	if i >= 0 && i < len(m.rows) {
+		return m.rows[i].ID
+	}
+	return ""
 }
 
 // scrollTop centers the selection in the visible window.
@@ -2773,7 +2921,9 @@ func (m Model) renderDetailPane(w, h int) []string {
 		all := m.buildDetail(inner)
 		offset := m.dOffset
 		contentVis, maxOffset := m.detailContentBudget(len(all))
-		if offset > maxOffset {
+		if m.dFollowTail && m.detail.ID == m.dTailID {
+			offset = maxOffset
+		} else if offset > maxOffset {
 			offset = maxOffset
 		}
 		shown := 0

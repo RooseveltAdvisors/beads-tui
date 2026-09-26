@@ -126,6 +126,13 @@ done
 pane="$(capture)"
 printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
 [ "$loaded" -eq 1 ] || die "board did not render ready beads within ${WAIT_SECONDS}s"
+# The focused row must carry the HUD affordance: the magenta left bar in its
+# fixed column, and on truecolor terminals the full-row magenta tint.
+printf '%s\n' "$pane" | grep -qF '▎' || die "focused-row marker ▎ missing from the rendered board"
+if tmux capture-pane -e -p -t "$TARGET" 2>/dev/null | grep -qF '48;2;'; then
+  tmux capture-pane -e -p -t "$TARGET" | grep -qF '48;2;60;29;69' || die 'focused row did not carry the full-row magenta HUD tint'
+fi
+printf '✓ focused row shows the ▎ affordance with its HUD tint\n'
 first_id="$(printf '%s\n' "$pane" | grep -oE '[a-z0-9][a-z0-9-]{3,}' | sort -u | comm -12 - "$TMP_DIR/ready_ids.txt" | head -1)"
 printf '✓ real board loaded (%s ready rows; visible ready bead %s)\n' "$ready_count" "$first_id"
 stop_tui
@@ -230,9 +237,10 @@ for _ in $(seq 1 "$WAIT_SECONDS"); do
   esac
   sleep 1
 done
+# Always keep the last screen: a failure here is otherwise invisible.
+printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
 [ "$comment_badge_visible" -eq 1 ] || die 'comment badge did not appear on the board row after posting'
 [ "$inline_comment_visible" -eq 1 ] || die 'submitted comment did not appear in inline detail without opening c view'
-printf '%s\n' "$pane" >>"$EVIDENCE_DIR/beads-tui-verify.txt"
 printf '✓ comment badge appeared on the board row (%s)\n' "$comment_id"
 printf '✓ inline detail refreshed without opening c view (%s)\n' "$comment_id"
 stop_tui
