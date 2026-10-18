@@ -1692,3 +1692,42 @@ func TestInlineCommentsRenderCountsOrderTruncationAndWrapping(t *testing.T) {
 		t.Fatalf("inline comment text did not wrap to pane width:\n%s", plain)
 	}
 }
+
+func TestEscQuitsAtTopLevelBoard(t *testing.T) {
+	m := drive(t, &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{ID: "a", Title: "Alpha", Status: "open"},
+	}}})
+	m.focus = FocusList
+	m.filter = Filter{}
+	m.visualMode = false
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm := updated.(Model)
+	if !nm.quitting {
+		t.Fatal("esc at top level should quit")
+	}
+	if cmd == nil {
+		t.Fatal("esc quit must return tea.Quit cmd")
+	}
+}
+
+func TestEscDismissesBeforeQuit(t *testing.T) {
+	m := drive(t, &fakeClient{issues: map[bd.View][]bd.Issue{bd.ViewOpen: {
+		{ID: "a", Title: "Alpha", Status: "open"},
+	}}})
+	m.focus = FocusDetail
+	m.filter = Filter{}
+	m.visualMode = false
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm := updated.(Model)
+	if nm.quitting || nm.focus != FocusList {
+		t.Fatalf("esc from detail should return to list, not quit: quitting=%v focus=%v", nm.quitting, nm.focus)
+	}
+	if cmd != nil {
+		// may be nil
+	}
+	updated, cmd = nm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm = updated.(Model)
+	if !nm.quitting {
+		t.Fatal("second esc at top level should quit")
+	}
+}
