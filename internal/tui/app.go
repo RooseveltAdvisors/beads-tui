@@ -2838,7 +2838,9 @@ func (m Model) renderGraph() string {
 }
 
 func (m Model) vocabViewLabel() string {
-	return styleDim.Render(m.view.Label() + " board" + m.databaseLabel())
+	// Keep the view name dim; the active database is a high-signal pill so it
+	// is readable without opening the ctrl+o picker.
+	return styleDim.Render(m.view.Label()+" board") + m.databaseHeaderChrome()
 }
 
 func (m Model) renderTabs() string {
@@ -3063,6 +3065,10 @@ func (m Model) renderFooter(w int) string {
 		scroll = m.selected * 100 / (len(m.rows) - 1)
 	}
 	status := footerStatus(w, m.view.Label(), m.sortMode.String(), m.filter.String(), selected, len(m.rows), scroll, m.graphEdges)
+	if hint := m.databaseFooterHint(); hint != "" {
+		// Path sits ahead of the key hints so the active store is always on-screen.
+		status = styleDim.Render(hint) + styleDim.Render("  ") + status
+	}
 	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view a attach c comments C add comment ? help q quit")
 	shortHints := styleDim.Render("c comments C add ? help q quit")
 	hints := defaultHints
