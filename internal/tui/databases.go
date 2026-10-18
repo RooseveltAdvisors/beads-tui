@@ -261,8 +261,12 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.databaseSwitching = ""
 		if msg.err != nil {
 			log.Printf("database switch failed (path=%s): %v", msg.path, msg.err)
-			m.databaseError = "Could not switch to " + (dbindex.Entry{Path: msg.path}).Name() + ": " + msg.err.Error()
-			m.statusFlash = m.databaseError
+			failure := "Could not switch to " + (dbindex.Entry{Path: msg.path}).Name() + ": " + msg.err.Error()
+			if m.databasePicker {
+				m.databaseError = failure
+			} else {
+				m.boardErr = failure
+			}
 			// The original model/backend/rows/name are still intact.
 			return m, nil, true
 		}

@@ -3032,9 +3032,6 @@ func (m Model) renderDetailPane(w, h int) []string {
 
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
-	if m.databaseError != "" {
-		return truncatePhys(styleError.Render(m.databaseError), w)
-	}
 	if w < 48 {
 		if m.commentsOpen && m.commentsErr != "" {
 			return truncatePhys(styleError.Render("✗ "+m.commentsErr), w)

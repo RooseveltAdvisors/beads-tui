@@ -108,12 +108,33 @@ func TestDatabaseFailedSwitchRetainsPreviousBoardAndClient(t *testing.T) {
 		t.Fatal("switch error not visible")
 	}
 	m = sendKey(t, m, "esc")
-	if !strings.Contains(stripANSI(m.View()), "alpha") || m.statusFlash == "" {
-		t.Fatal("previous board or visible notice missing")
+	if !strings.Contains(stripANSI(m.View()), "Alpha row") {
+		t.Fatal("previous board missing after picker closed")
 	}
-	m.statusFlash = ""
 	if strings.Contains(stripANSI(m.View()), "Could not switch to beta") {
 		t.Fatal("switch error stuck in footer after picker closed")
+	}
+}
+func TestAutomaticFirstSwitchFailureStaysVisibleWithoutPinningFooter(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	target := filepath.Join(t.TempDir(), "locked", ".beads")
+	failing := &fakeClient{failList: errors.New("store busy or locked")}
+	m := newModel(&unavailableDatabase{}, "no-database")
+	m.database = ""
+	m.multiDatabase = true
+	m.loading = false
+	m.boardErr = errNoDatabase.Error()
+	m.width, m.height = 120, 30
+	m.databaseFactory = func(string) Backend { return failing }
+	m = switchTestDatabase(t, m, target)
+	if m.database != "" || m.databasePicker {
+		t.Fatalf("failed automatic switch changed state: db=%q picker=%v", m.database, m.databasePicker)
+	}
+	if !strings.Contains(stripANSI(m.View()), "Could not switch to locked") {
+		t.Fatal("automatic switch failure not visible on the no-database board")
+	}
+	if footer := stripANSI(m.renderFooter(m.width)); strings.Contains(footer, "Could not switch") || !strings.Contains(footer, "retry") {
+		t.Fatalf("switch failure replaced the footer: %q", footer)
 	}
 }
 func TestLegacyPreferencesSeedDatabaseWithoutOwnState(t *testing.T) {
