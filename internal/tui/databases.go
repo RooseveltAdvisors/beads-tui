@@ -154,6 +154,9 @@ func (m Model) databaseHeaderChrome() string {
 	if !m.multiDatabase {
 		return ""
 	}
+	if m.globalMode {
+		return styleDim.Render(m.databaseLabel())
+	}
 	if m.database == "" {
 		return " " + chip("no database", chipOverdueFG, chipOverdueBG)
 	}

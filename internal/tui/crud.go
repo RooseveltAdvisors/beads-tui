@@ -481,7 +481,7 @@ func (m *Model) applyCrudResult(msg crudResultMsg) tea.Cmd {
 	}
 	m.visualMode = false
 	m.closeCrud()
-	m.statusFlash = fmt.Sprintf("%s ok %s", msg.kind, msg.id)
+	m.statusFlash = fmt.Sprintf("%s ok %s", msg.kind, bd.LocalID(msg.id))
 	if msg.reload {
 		return m.startBoardLoad()
 	}
@@ -499,7 +499,7 @@ func (m Model) renderCrud() string {
 	b.WriteString("\n")
 	id := m.selectedID()
 	if id != "" && len(m.crudDeleteIDs) <= 1 {
-		b.WriteString(styleDim.Render("bead " + id))
+		b.WriteString(styleDim.Render("bead " + crudDisplayID(id)))
 		b.WriteString("\n")
 	}
 	switch m.crudMode {
@@ -524,14 +524,14 @@ func (m Model) renderCrud() string {
 					b.WriteString(fmt.Sprintf("  … and %d more\n", len(m.crudDeleteIDs)-8))
 					break
 				}
-				b.WriteString(fmt.Sprintf("  %s\n", delID))
+				b.WriteString(fmt.Sprintf("  %s\n", crudDisplayID(delID)))
 			}
 		} else {
 			delID := id
 			if len(m.crudDeleteIDs) == 1 {
 				delID = m.crudDeleteIDs[0]
 			}
-			b.WriteString(fmt.Sprintf("  %s\n", delID))
+			b.WriteString(fmt.Sprintf("  %s\n", crudDisplayID(delID)))
 		}
 		b.WriteString("  y confirm · n/esc cancel\n")
 	default:
@@ -556,4 +556,12 @@ func (m Model) renderCrud() string {
 		lines++
 	}
 	return b.String()
+}
+
+func crudDisplayID(key string) string {
+	path, id, ok := strings.Cut(key, "\x1f")
+	if !ok {
+		return key
+	}
+	return id + "  · " + path
 }

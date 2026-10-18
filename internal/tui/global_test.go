@@ -268,3 +268,23 @@ func TestGlobalDiscoveryUsesExistingExclusions(t *testing.T) {
 		t.Fatalf("excluded database indexed globally: %v", aggregate.paths)
 	}
 }
+
+func TestGlobalDeleteConfirmShowsReadableIDsWithWorkspace(t *testing.T) {
+	m, a, b, _, _ := globalTestModel(t)
+	single := sendKey(t, m, "D")
+	view := stripANSI(single.renderCrud())
+	if strings.Contains(view, "\x1f") || !strings.Contains(view, "same-id  · "+single.rows[0].SourcePath) {
+		t.Fatalf("single delete confirm: %q", view)
+	}
+	multi := sendKey(t, m, "v")
+	multi = sendKey(t, multi, "j")
+	multi = sendKey(t, multi, "d")
+	view = stripANSI(multi.renderCrud())
+	if strings.Contains(view, "\x1f") || !strings.Contains(view, "same-id  · "+a) || !strings.Contains(view, "same-id  · "+b) {
+		t.Fatalf("multi delete confirm: %q", view)
+	}
+	multi.applyCrudResult(crudResultMsg{kind: "delete", id: globalID(a, "same-id")})
+	if multi.statusFlash != "delete ok same-id" {
+		t.Fatalf("flash = %q", multi.statusFlash)
+	}
+}

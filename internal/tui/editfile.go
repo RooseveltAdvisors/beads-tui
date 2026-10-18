@@ -6,15 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-var editorIssueID = regexp.MustCompile(`^[a-zA-Z0-9_:\-]+$`)
 
 // External $EDITOR edit (vim-native). e opens a text form of the bead;
 // save+quit applies; quit without write cancels.
@@ -227,15 +224,11 @@ func (m *Model) openEditorEdit() tea.Cmd {
 		if err != nil {
 			return editorDoneMsg{id: id, err: err}
 		}
-		localID := bd.LocalID(id)
-		if !editorIssueID.MatchString(localID) {
-			return editorDoneMsg{id: id, err: fmt.Errorf("invalid issue ID for editor")}
-		}
 		dir, err := os.MkdirTemp("", "beads-tui-edit-*")
 		if err != nil {
 			return editorDoneMsg{id: id, err: err}
 		}
-		path := filepath.Join(dir, localID+".bead.txt")
+		path := filepath.Join(dir, "bead.txt")
 		body := beadEditDocument(iss)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			return editorDoneMsg{id: id, err: err}
