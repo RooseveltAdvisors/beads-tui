@@ -12,6 +12,7 @@ import (
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/RooseveltAdvisors/beads-tui/internal/dbindex"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/muesli/termenv"
 )
 
 func databaseTestModel(t *testing.T) (Model, string, string, *fakeClient, *fakeClient) {
@@ -292,5 +293,34 @@ func TestNoDatabaseBackendRejectsReloadAndCommentWrites(t *testing.T) {
 	}
 	if err := backend.AddComment(context.Background(), "same-id", "text"); err == nil {
 		t.Fatal("no-database write accepted")
+	}
+}
+
+
+func TestDatabasePickerUsesHUDColors(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	m, a, b, _, _ := databaseTestModel(t)
+	n := 12
+	m.databaseCache = dbindex.Cache{Scanned: time.Now(), Entries: []dbindex.Entry{
+		{Path: a, Count: &n, Prefix: "fm"},
+		{Path: b, Prefix: "ws"},
+	}}
+	m.database = a
+	m.databasePicker = true
+	m.databaseIndex = 0
+	m.width, m.height = 100, 30
+	view := m.View()
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "alpha") || !strings.Contains(plain, "active") {
+		t.Fatalf("picker missing name/active: %q", plain)
+	}
+	if !strings.Contains(view, colorSeq(hudMagentaHex, false)) {
+		t.Fatal("selected row missing magenta focus bar")
+	}
+	if !strings.Contains(view, "48;2;") {
+		t.Fatal("selected row missing truecolor background tint")
+	}
+	if !strings.Contains(plain, "12 issues") || !strings.Contains(plain, "prefix fm") {
+		t.Fatalf("meta chips missing from plain text: %q", plain)
 	}
 }

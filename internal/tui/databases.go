@@ -12,6 +12,7 @@ import (
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/RooseveltAdvisors/beads-tui/internal/dbindex"
+	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -413,46 +414,84 @@ func (m Model) renderDatabases() string {
 	if err != nil {
 		log.Printf("database picker home: %v", err)
 	}
-	lines := []string{"j/k select · Enter switch · R rescan · esc close", ""}
+	// Help keys use the same cyan section language as the board header so the
+	// picker does not read as a monochrome dump next to a candy board.
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	sep := styleDim.Render(" · ")
+	lines := []string{
+		key.Render("j/k") + styleDim.Render(" select") + sep +
+			key.Render("Enter") + styleDim.Render(" switch") + sep +
+			key.Render("R") + styleDim.Render(" rescan") + sep +
+			key.Render("esc") + styleDim.Render(" close"),
+		"",
+	}
 	if m.databaseScanning {
-		lines = append(lines, "Scanning local workspaces…")
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Render("⟳ Scanning local workspaces…"))
 	}
 	if m.databaseSwitching != "" {
-		lines = append(lines, "Opening "+m.databaseSwitching+"…")
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("▸ Opening ")+styleBold.Render(m.databaseSwitching)+lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Render("…"))
 	}
 	if m.databaseError != "" {
 		lines = append(lines, styleError.Render(m.databaseError))
 	}
 	entries := m.databaseCache.Entries
 	if len(entries) == 0 {
-		lines = append(lines, "No Beads databases found. R rescans local workspaces.")
+		lines = append(lines, styleDim.Render("No Beads databases found. ")+key.Render("R")+styleDim.Render(" rescans local workspaces."))
 	}
+	inner := max(1, m.width-4)
 	// Each entry uses two lines; keep the selected entry in the viewport.
 	visible := max(1, (m.height-len(lines)-3)/2)
 	start := max(0, m.databaseIndex-visible+1)
 	for i := start; i < len(entries) && i < start+visible; i++ {
 		e := entries[i]
-		mark := "  "
-		if i == m.databaseIndex {
-			mark = "▎ "
+		selected := i == m.databaseIndex
+		name := e.Name()
+		if name == "" {
+			name = filepath.Base(filepath.Dir(e.Path))
 		}
-		active := ""
+		// Workspace pill: teal family, distinct from assignee pink on the board.
+		namePill := chip(name, "159", "23")
+		var meta []string
 		if e.Path == m.database {
-			active = " · active"
+			meta = append(meta, chip("active", chipLiveFG, chipLiveBG))
 		}
 		if e.Path == m.explicitDatabase {
-			active += " · BEADS_DIR"
+			meta = append(meta, chip("BEADS_DIR", chipFilterOnFG, chipFilterOnBG))
 		}
 		count := "?"
 		if e.Count != nil {
 			count = fmt.Sprint(*e.Count)
 		}
+		meta = append(meta, chip(count+" issues", chipLabelFG, chipLabelBG))
+		if e.Prefix != "" {
+			meta = append(meta, chip("prefix "+e.Prefix, chipDueFG, chipDueBG))
+		} else {
+			meta = append(meta, styleDim.Render("prefix -"))
+		}
 		touched := "unknown"
 		if !e.Touched.IsZero() {
 			touched = e.Touched.Local().Format("Jan 02 15:04")
 		}
-		lines = append(lines, fmt.Sprintf("%s%s%s · %s issues · prefix %s · %s", mark, e.Name(), active, count, orDash(e.Prefix), touched), "  "+e.DisplayPath(home))
+		meta = append(meta, styleDim.Render(touched))
+
+		bar := "  "
+		if selected {
+			bar = colorize(focusBar, hudMagentaHex) + " "
+		}
+		row := bar + namePill
+		if len(meta) > 0 {
+			row += " " + strings.Join(meta, " ")
+		}
+		pathLine := "  " + styleDim.Render(e.DisplayPath(home))
+		if selected {
+			// Same magenta-tint beam as board focus so the picker cursor
+			// matches the rest of beads-tui instead of a monochrome bar.
+			d := RowDecor{Focused: true, Wipe: 1}
+			row = paintRowBackground(padRight(truncatePhys(row, inner), inner), d)
+			pathLine = paintRowBackground(padRight(truncatePhys(pathLine, inner), inner), d)
+		}
+		lines = append(lines, row, pathLine)
 	}
-	title := "Databases" + m.databaseLabel()
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("cyan")).Render("Databases") + m.databaseLabel()
 	return strings.Join(pane(title, lines, max(20, m.width), max(6, m.height)), "\n")
 }
