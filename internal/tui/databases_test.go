@@ -111,6 +111,46 @@ func TestDatabaseFailedSwitchRetainsPreviousBoardAndClient(t *testing.T) {
 	if !strings.Contains(stripANSI(m.View()), "alpha") || m.statusFlash == "" {
 		t.Fatal("previous board or visible notice missing")
 	}
+	m.statusFlash = ""
+	if strings.Contains(stripANSI(m.View()), "Could not switch to beta") {
+		t.Fatal("switch error stuck in footer after picker closed")
+	}
+}
+func TestLegacyPreferencesSeedDatabaseWithoutOwnState(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	legacy := New(&fakeClient{})
+	legacy.view = bd.ViewOpen
+	legacy.sortMode = SortAlphabetical
+	legacy.filter = Filter{Kind: FilterLabel, Query: "infra"}
+	legacy.layout = LayoutStacked
+	legacy.visibility.DetailPane = false
+	legacy.saveState()
+	path := filepath.Join(t.TempDir(), "default", ".beads")
+	m := newModel(&fakeClient{}, path)
+	if m.view != bd.ViewOpen || m.sortMode != SortAlphabetical || m.filter.Query != "infra" || m.layout != LayoutStacked || m.visibility.DetailPane {
+		t.Fatalf("legacy preferences reset: view=%s sort=%v filter=%+v layout=%v", m.view, m.sortMode, m.filter, m.layout)
+	}
+	m.multiDatabase = true
+	m.sortMode = SortPriority
+	m.saveState()
+	if again := newModel(&fakeClient{}, path); again.sortMode != SortPriority {
+		t.Fatalf("per-database state overwritten by legacy seed: %v", again.sortMode)
+	}
+}
+func TestAbsentStateYieldsDefaultsForDatabase(t *testing.T) {
+	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
+	root := t.TempDir()
+	first := filepath.Join(root, "first", ".beads")
+	m := newModel(&fakeClient{}, first)
+	if m.sortMode != SortCreated || m.view != bd.ViewReady || m.layout != LayoutAuto || m.filter != (Filter{}) {
+		t.Fatalf("absent state not defaults: sort=%v view=%s", m.sortMode, m.view)
+	}
+	m.multiDatabase = true
+	m.saveState()
+	second := newModel(&fakeClient{}, filepath.Join(root, "second", ".beads"))
+	if second.sortMode != SortCreated || second.view != bd.ViewReady || second.layout != LayoutAuto {
+		t.Fatalf("fresh multi-database state not defaults: sort=%v view=%s", second.sortMode, second.view)
+	}
 }
 func TestPickerKeyboardCachedOpenAndNoDatabaseView(t *testing.T) {
 	m, a, _, _, _ := databaseTestModel(t)

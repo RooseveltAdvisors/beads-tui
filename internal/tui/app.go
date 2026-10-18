@@ -471,7 +471,10 @@ func (m Model) saveState() {
 		Snapshot:   cloneBoardSnapshot(m.lastSnapshot),
 	}
 	if m.multiDatabase {
-		root, _ := loadState()
+		root, ok := loadState()
+		if !ok {
+			root = savedState{SortMode: SortCreated}
+		}
 		if root.Databases == nil {
 			root.Databases = map[string]savedState{}
 		}

@@ -78,7 +78,8 @@ func databaseSavedState(root savedState, path string) savedState {
 	if state, ok := root.Databases[path]; ok {
 		return normalizeState(state)
 	}
-	return normalizeState(savedState{SortMode: SortCreated})
+	root.ActiveDatabase, root.Databases, root.Snapshot = "", nil, nil
+	return normalizeState(root)
 }
 
 // NewMultiDatabase is the interactive entry point. CLI list/show retain bd's
@@ -377,6 +378,7 @@ func (m Model) databaseKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "q", "ctrl+o":
 		m.databasePicker = false
 		m.databaseSwitching = ""
+		m.databaseError = ""
 		return m, nil
 	}
 	if m.databaseSwitching != "" {

@@ -106,8 +106,9 @@ offers discovered stores; an empty index shows a rescan instruction.
 The index expires after 15 minutes and lives beside `state.json`, under
 `BEADS_TUI_CONFIG_DIR` or the platform's `beads-tui` config directory.
 Counts and prefixes load in the background; `?` means metadata is not yet
-available. Board snapshots, filters, sort, layout, and expanded rows are saved
-per database. A failed switch keeps the previous board and displays an error.
+available. Board snapshots, view, filters, sort, layout, view options, and
+expanded rows are saved per database; a database with no saved state yet starts
+from the preferences saved before multi-database support. A failed switch keeps the previous board and displays an error.
 Close a comment thread or editor before switching databases.
 
 For a Herdr popup, use `command = "beads-tui"` without a `BEADS_DIR` pin.
