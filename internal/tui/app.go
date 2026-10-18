@@ -1803,6 +1803,12 @@ func (m Model) hierarchyFor(d *bd.Issue) (chain, children []bd.Issue) {
 }
 
 func (m *Model) startBoardLoad() tea.Cmd {
+	if m.multiDatabase && m.database == "" {
+		if len(m.databaseCache.Entries) == 0 {
+			return nil
+		}
+		return m.beginDatabaseSwitch(m.databaseCache.Entries[0].Path)
+	}
 	m.boardGen++
 	m.loading = true
 	m.reloadAttempts = 0

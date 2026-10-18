@@ -136,6 +136,28 @@ func TestAutomaticFirstSwitchFailureStaysVisibleWithoutPinningFooter(t *testing.
 	if footer := stripANSI(m.renderFooter(m.width)); strings.Contains(footer, "Could not switch") || !strings.Contains(footer, "retry") {
 		t.Fatalf("switch failure replaced the footer: %q", footer)
 	}
+	m.databaseCache = dbindex.Cache{Scanned: time.Now(), Entries: []dbindex.Entry{{Path: target}}}
+	m = step(t, m, "r")
+	if m.database != "" || !strings.Contains(stripANSI(m.View()), "Could not switch to locked") || strings.Contains(stripANSI(m.View()), "No Beads databases found") {
+		t.Fatalf("retry lost the real switch failure: db=%q", m.database)
+	}
+	failing.failList = nil
+	failing.issues = map[bd.View][]bd.Issue{bd.ViewReady: {{ID: "locked-1", Title: "Recovered row", Status: "open"}}}
+	m = step(t, m, "r")
+	if m.database != target || !strings.Contains(stripANSI(m.View()), "Recovered row") {
+		t.Fatalf("retry did not recover the candidate database: db=%q", m.database)
+	}
+}
+func TestNoDatabaseReloadWithoutCandidatesKeepsMessage(t *testing.T) {
+	m := newModel(&unavailableDatabase{}, "no-database")
+	m.database = ""
+	m.multiDatabase = true
+	m.loading = false
+	m.boardErr = errNoDatabase.Error()
+	m = step(t, m, "r")
+	if m.loading || m.boardErr != errNoDatabase.Error() {
+		t.Fatalf("reload without candidates changed board: loading=%v err=%q", m.loading, m.boardErr)
+	}
 }
 func TestLegacyPreferencesSeedDatabaseWithoutOwnState(t *testing.T) {
 	t.Setenv("BEADS_TUI_CONFIG_DIR", t.TempDir())
