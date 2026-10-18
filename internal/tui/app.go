@@ -3063,9 +3063,6 @@ func (m Model) renderDetailPane(w, h int) []string {
 
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
-	if w < 48 && m.globalNotice() != "" {
-		return truncatePhys(styleDim.Render(m.globalNotice()), w)
-	}
 	if w < 48 {
 		if m.commentsOpen && m.commentsErr != "" {
 			return truncatePhys(styleError.Render("✗ "+m.commentsErr), w)
@@ -3080,7 +3077,12 @@ func (m Model) renderFooter(w int) string {
 		} else if len(m.rows) > 1 {
 			percent = m.selected * 100 / (len(m.rows) - 1)
 		}
-		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  query:%s  %d%%", m.view.Label(), query, percent)), w)
+		// Keep sort visible even while global load/skip notices are active.
+		line := fmt.Sprintf("%s sort:%s query:%s %d%%", m.view.Label(), m.sortMode.String(), query, percent)
+		if notice := m.globalNotice(); notice != "" {
+			line = notice + " · " + line
+		}
+		return truncatePhys(styleDim.Render(line), w)
 	}
 	selected := bd.LocalID(m.selectedID())
 	if selected == "" {
@@ -3095,13 +3097,15 @@ func (m Model) renderFooter(w int) string {
 		// Path sits ahead of the key hints so the active store is always on-screen.
 		status = styleDim.Render(hint) + styleDim.Render("  ") + status
 	}
+	if notice := m.globalNotice(); notice != "" {
+		// Notice is additive - never replace sort/view status in global mode.
+		status = styleDim.Render(notice) + styleDim.Render("  ") + status
+	}
 	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view a attach c comments C add comment ? help q/esc quit")
 	shortHints := styleDim.Render("c comments C add ? help q/esc quit")
 	hints := defaultHints
 	var left string
 	switch {
-	case m.globalNotice() != "":
-		left = styleDim.Render(m.globalNotice())
 	case m.commentsOpen && m.commentsErr != "":
 		left = styleError.Render("✗ " + truncate(m.commentsErr, max(1, w/2)))
 		hints = styleDim.Render("r retry · a add · esc cancel/back · q back · ? help")
