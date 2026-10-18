@@ -108,7 +108,7 @@ func (m Model) notifyAssigneeCmd(id, text string) tea.Cmd {
 		assignee = iss.Assignee
 	}
 	return func() tea.Msg {
-		plan := PlanCommentNotify(author, assignee, id, text, liveSessionsFn())
+		plan := PlanCommentNotify(author, assignee, bd.LocalID(id), text, liveSessionsFn())
 		deliverCommentNotify(plan)
 		return nil
 	}

@@ -80,6 +80,7 @@ func (m Model) helpGroups() []helpGroup {
 			Name: "sort / filter",
 			Entries: []helpEntry{
 				{"ctrl+o", "switch database (Enter opens · R rescans · esc closes)"},
+				{"ctrl+e", "toggle global board (search all workspaces)"},
 				{"s", "sort: created · updated · alpha · deps · depends · priority"},
 				{"t", "filter to selected bead's labels"},
 				{"o", "view options (row/detail fields)"},

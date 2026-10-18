@@ -6,6 +6,7 @@ package tui
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/muesli/termenv"
 )
 
 // The semantic palette is defined once, here. Each family owns disjoint ANSI
@@ -146,6 +148,22 @@ func chip(text, fg, bg string) string {
 		Foreground(lipgloss.Color(fg)).
 		Background(lipgloss.Color(bg)).
 		Render(text)
+}
+
+func workspaceChip(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	fg := "159"
+	if lipgloss.ColorProfile() == termenv.TrueColor {
+		fg = hudCyanHex
+	}
+	if colorSeq(fg, false) == "" {
+		return name
+	}
+	// Match the HUD's exact RGB values without float color conversion drift.
+	return colorSeq(fg, false) + colorSeq("23", true) + name + resetSeq
 }
 
 func assigneeChip(name string) string {
@@ -510,6 +528,9 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 		if fields.Priority {
 			parts = append(parts, formatPriority(issue.Priority))
 		}
+		if issue.SourcePath != "" {
+			parts = append(parts, workspaceChip(filepath.Base(filepath.Dir(issue.SourcePath))))
+		}
 		if assignee != "" {
 			parts = append(parts, assignee)
 		}
@@ -539,7 +560,7 @@ func (v Vocab) renderRow(issue bd.Issue, treePrefix, marker, suffix string, widt
 	var body strings.Builder
 	if fields.ID && issue.ID != "" {
 		body.WriteString(" ")
-		body.WriteString(styleDim.Render(issue.ID))
+		body.WriteString(styleDim.Render(bd.LocalID(issue.ID)))
 	}
 	if issue.Title != "" {
 		body.WriteString(" ")
@@ -921,11 +942,16 @@ func buildDetailVisible(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, ch
 	}
 	var lines []string
 	lines = append(lines, v.StatusPillIssue(*d))
+	if d.SourcePath != "" {
+		for _, line := range wrapText("Workspace: "+d.SourcePath, max(1, width)) {
+			lines = append(lines, styleDim.Render(line))
+		}
+	}
 	if d.Title != "" {
 		lines = append(lines, styleBold.Render(d.Title))
 	}
 	if fields.Metadata {
-		meta := "ID " + d.ID + "  ·  " + formatPriority(d.Priority)
+		meta := "ID " + bd.LocalID(d.ID) + "  ·  " + formatPriority(d.Priority)
 		if d.IssueType != "" {
 			meta += "  ·  " + d.IssueType
 		}
@@ -983,7 +1009,7 @@ func buildDetailVisible(v Vocab, d *bd.Issue, down, up []bd.DepRecord, chain, ch
 	if fields.Relations && len(chain) > 0 {
 		parts := make([]string, 0, len(chain))
 		for _, ancestor := range chain {
-			parts = append(parts, ancestor.ID)
+			parts = append(parts, bd.LocalID(ancestor.ID))
 		}
 		lines = append(lines, styleDim.Render(truncate("Path: "+strings.Join(parts, " › "), width)))
 	}
@@ -1060,7 +1086,7 @@ func depLine(v Vocab, dep bd.DepRecord, width int, prefix string) string {
 	b.WriteString(prefix)
 	b.WriteString(v.Icon(dep.Status))
 	b.WriteString(" ")
-	b.WriteString(dep.ID)
+	b.WriteString(bd.LocalID(dep.ID))
 	if dep.Title != "" {
 		b.WriteString(" ")
 		b.WriteString(dep.Title)

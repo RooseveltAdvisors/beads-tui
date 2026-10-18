@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,5 +38,26 @@ func TestBeadEditRoundTrip(t *testing.T) {
 	fields = diffBeadFields(iss, p)
 	if fields["title"] != "Hello2" {
 		t.Fatalf("%v", fields)
+	}
+}
+
+func TestEditorOpensDottedChildBeadWithFixedTempName(t *testing.T) {
+	child := bd.Issue{ID: "fm-abc.1", Title: "Child", Status: "open"}
+	f := &fakeClient{
+		issues:    map[bd.View][]bd.Issue{bd.ViewOpen: {child}},
+		issueByID: map[string]*bd.Issue{"fm-abc.1": &child},
+	}
+	m := drive(t, f)
+	msg, ok := m.openEditorEdit()().(editorReadyMsg)
+	if !ok {
+		t.Fatalf("editor did not open for dotted child bead")
+	}
+	defer os.RemoveAll(filepath.Dir(msg.path))
+	if filepath.Base(msg.path) != "bead.txt" || msg.id != "fm-abc.1" || f.lastShowID != "fm-abc.1" {
+		t.Fatalf("path=%q id=%q show=%q", msg.path, msg.id, f.lastShowID)
+	}
+	body, err := os.ReadFile(msg.path)
+	if err != nil || !strings.Contains(string(body), "id: fm-abc.1\n") {
+		t.Fatalf("edit document: %q %v", body, err)
 	}
 }

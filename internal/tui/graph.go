@@ -103,7 +103,7 @@ func graphLines(rows, all []bd.Issue, deps map[string][]bd.DepRecord, focus stri
 		if name == "" {
 			name = "(untitled)"
 		}
-		return vocab.statusStyle(issue.Status).Render(id + " · " + name)
+		return vocab.statusStyle(issue.Status).Render(bd.LocalID(id) + " · " + name)
 	}
 	lines := []string{colorize(focusBar, hudMagentaHex) + " Focused: " + label(focus), "", "2-hop dependency neighborhood"}
 	for _, edge := range adj[focus] {

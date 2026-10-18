@@ -271,7 +271,7 @@ func matchesFTS(issue bd.Issue, needle string, matchID bool) bool {
 		strings.Contains(strings.ToLower(issue.CloseReason), needle) {
 		return true
 	}
-	if matchID && strings.Contains(strings.ToLower(issue.ID), needle) {
+	if matchID && strings.Contains(strings.ToLower(bd.LocalID(issue.ID)), needle) {
 		return true
 	}
 	for _, label := range issue.Labels {

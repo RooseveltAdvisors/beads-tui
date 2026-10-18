@@ -344,6 +344,7 @@ type yankMsg struct {
 }
 
 type savedState struct {
+	GlobalMode     bool                  `json:"global_mode,omitempty"`
 	ActiveDatabase string                `json:"active_database,omitempty"`
 	Databases      map[string]savedState `json:"databases,omitempty"`
 	View           bd.View               `json:"view"`
@@ -449,7 +450,8 @@ func persistenceEnabled(backend Backend) bool {
 	}
 	_, configured := os.LookupEnv("BEADS_TUI_CONFIG_DIR")
 	_, production := backend.(*bd.Client)
-	return configured || production
+	_, aggregate := backend.(*aggregateBackend)
+	return configured || production || aggregate
 }
 
 func (m Model) saveState() {
@@ -478,7 +480,10 @@ func (m Model) saveState() {
 		if root.Databases == nil {
 			root.Databases = map[string]savedState{}
 		}
-		if m.database != "" {
+		root.GlobalMode = m.globalMode
+		if m.globalMode {
+			root.Databases[globalStateKey] = state
+		} else if m.database != "" {
 			root.Databases[m.database] = state
 			root.ActiveDatabase = m.database
 		}
@@ -566,9 +571,12 @@ func (m Model) Init() tea.Cmd {
 	if m.multiDatabase {
 		// Start discovery after the first renderer frame, never in New/Init.
 		scan = tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return databaseScanStartMsg{} })
-		if m.database == "" {
+		if m.database == "" && !m.globalMode {
 			return tea.Batch(scan, loadSessionsCmd())
 		}
+	}
+	if m.globalMode {
+		return m.scopeDatabaseCmd(tea.Batch(m.loadBoardCmd(), loadSessionsCmd(), scan))
 	}
 	return m.scopeDatabaseCmd(tea.Batch(m.loadBoardCmd(), m.loadStatusesCmd(), loadSessionsCmd(), scan))
 }
@@ -782,10 +790,17 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.databasePicker {
 		return m.databaseKey(msg)
 	}
-	if msg.String() == "ctrl+o" && m.multiDatabase {
+	if (msg.String() == "ctrl+o" || msg.String() == "ctrl+e") && m.multiDatabase {
 		if m.crudActive() || m.commentsOpen || m.filtering || m.editorID != "" {
 			m.statusFlash = "close the current editor or thread before switching databases"
 			return m, nil
+		}
+		if msg.String() == "ctrl+e" {
+			if m.globalMode {
+				return m, m.beginDatabaseSwitch(m.database)
+			}
+			cmd := m.enterGlobal()
+			return m, cmd
 		}
 		m.databasePicker = true
 		m.databaseIndex = 0
@@ -1226,7 +1241,7 @@ func (m Model) yankItems() []yankItem {
 		return nil
 	}
 	issue := m.rows[m.selected]
-	items := []yankItem{{label: "ID", value: issue.ID}, {label: "Title", value: issue.Title}}
+	items := []yankItem{{label: "ID", value: bd.LocalID(issue.ID)}, {label: "Title", value: issue.Title}}
 	if strings.TrimSpace(issue.URL) != "" {
 		items = append(items, yankItem{label: "URL", value: issue.URL})
 	}
@@ -1808,7 +1823,7 @@ func (m Model) hierarchyFor(d *bd.Issue) (chain, children []bd.Issue) {
 }
 
 func (m *Model) startBoardLoad() tea.Cmd {
-	if m.multiDatabase && m.database == "" {
+	if m.multiDatabase && m.database == "" && !m.globalMode {
 		if len(m.databaseCache.Entries) == 0 {
 			return nil
 		}
@@ -1829,6 +1844,9 @@ func (m *Model) startBoardLoad() tea.Cmd {
 }
 
 func (m Model) loadBoardCmd() tea.Cmd {
+	if m.globalMode {
+		return func() tea.Msg { return globalLoadMsg{view: m.view, generation: m.boardGen} }
+	}
 	view := m.view
 	generation := m.boardGen
 	backend := m.backend
@@ -3045,6 +3063,9 @@ func (m Model) renderDetailPane(w, h int) []string {
 
 // renderFooter paints the hint/status bar.
 func (m Model) renderFooter(w int) string {
+	if w < 48 && m.globalNotice() != "" {
+		return truncatePhys(styleDim.Render(m.globalNotice()), w)
+	}
 	if w < 48 {
 		if m.commentsOpen && m.commentsErr != "" {
 			return truncatePhys(styleError.Render("✗ "+m.commentsErr), w)
@@ -3061,7 +3082,7 @@ func (m Model) renderFooter(w int) string {
 		}
 		return truncatePhys(styleDim.Render(fmt.Sprintf("%s  query:%s  %d%%", m.view.Label(), query, percent)), w)
 	}
-	selected := m.selectedID()
+	selected := bd.LocalID(m.selectedID())
 	if selected == "" {
 		selected = "-"
 	}
@@ -3079,6 +3100,8 @@ func (m Model) renderFooter(w int) string {
 	hints := defaultHints
 	var left string
 	switch {
+	case m.globalNotice() != "":
+		left = styleDim.Render(m.globalNotice())
 	case m.commentsOpen && m.commentsErr != "":
 		left = styleError.Render("✗ " + truncate(m.commentsErr, max(1, w/2)))
 		hints = styleDim.Render("r retry · a add · esc cancel/back · q back · ? help")

@@ -238,7 +238,10 @@ func (m Model) commentIssue() *bd.Issue {
 
 func (m Model) commentsThreadLines(width int) []string {
 	issue := m.commentIssue()
-	lines := []string{styleBold.Render(orDash(issue.Title)), styleDim.Render("ID " + issue.ID), ""}
+	lines := []string{styleBold.Render(orDash(issue.Title)), styleDim.Render("ID " + bd.LocalID(issue.ID)), ""}
+	if issue.SourcePath != "" {
+		lines = append(lines, styleDim.Render("Workspace: "+issue.SourcePath), "")
+	}
 	switch {
 	case m.commentsLoading && len(m.comments) == 0:
 		lines = append(lines, styleDim.Render("Loading comments…"))
