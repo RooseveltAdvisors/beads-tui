@@ -79,6 +79,7 @@ func (m Model) helpGroups() []helpGroup {
 		{
 			Name: "sort / filter",
 			Entries: []helpEntry{
+				{"ctrl+o", "switch database (Enter opens · R rescans · esc closes)"},
 				{"s", "sort: created · updated · alpha · deps · depends · priority"},
 				{"t", "filter to selected bead's labels"},
 				{"o", "view options (row/detail fields)"},
@@ -205,7 +206,7 @@ func (m Model) helpLines(width int) []string {
 	groups := filterHelpGroups(m.helpGroups(), m.helpFilter)
 	inner := max(1, width-2)
 
-	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("183")).Bold(true) // mauve-ish
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("183")).Bold(true)  // mauve-ish
 	headStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Bold(true) // accent
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))

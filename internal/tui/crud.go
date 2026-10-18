@@ -494,7 +494,7 @@ func (m Model) renderCrud() string {
 		w = 80
 	}
 	var b strings.Builder
-	title := styleBold.Render("beads-tui CRUD")
+	title := styleBold.Render("beads-tui CRUD" + m.databaseLabel())
 	b.WriteString(title)
 	b.WriteString("\n")
 	id := m.selectedID()

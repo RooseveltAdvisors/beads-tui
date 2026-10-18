@@ -1,9 +1,8 @@
 // Package bd wraps the `bd` CLI (Beads) with typed access to the bead graph
 // and its comment thread.
 //
-// The graph lives wherever the ambient `bd` configuration resolves it
-// (BEADS_DIR, an active worktree, or a created workspace); beads-tui never
-// hardcodes a store path.
+// CLI clients inherit ambient bd configuration; directory clients bind each
+// subprocess to the database selected by the interactive switcher.
 package bd
 
 import (
@@ -74,22 +73,22 @@ func (v View) TabLabel() string {
 // fields (including description, parent, and the issue's inline dependency
 // edges); `bd show ID --json` returns the same shape for one bead.
 type Issue struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	Notes           string    `json:"notes"`
-	Status          string    `json:"status"`
-	Priority        int       `json:"priority"`
-	IssueType       string    `json:"issue_type"`
-	ParentID        string    `json:"parent_id"`
-	Assignee        string    `json:"assignee"`
-	Owner           string    `json:"owner"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Notes       string `json:"notes"`
+	Status      string `json:"status"`
+	Priority    int    `json:"priority"`
+	IssueType   string `json:"issue_type"`
+	ParentID    string `json:"parent_id"`
+	Assignee    string `json:"assignee"`
+	Owner       string `json:"owner"`
 	// Repeat holds the recurrence rule. bd JSON may emit either `repeat` or
 	// `repeat_pattern`; UnmarshalJSON accepts both.
-	Repeat          string `json:"repeat"`
-	RecurrenceStart string `json:"recurrence_start"`
-	RecurrenceEnd   string `json:"recurrence_end"`
-	RecurrenceTZ    string `json:"recurrence_tz"`
+	Repeat          string    `json:"repeat"`
+	RecurrenceStart string    `json:"recurrence_start"`
+	RecurrenceEnd   string    `json:"recurrence_end"`
+	RecurrenceTZ    string    `json:"recurrence_tz"`
 	URL             string    `json:"url"`
 	Labels          []string  `json:"labels"`
 	DeferUntil      string    `json:"defer_until"`

@@ -118,6 +118,7 @@ type graphBackend interface {
 type Model struct {
 	backend Backend
 	actor   string
+	databaseState
 
 	view           bd.View
 	views          []bd.View
@@ -343,13 +344,15 @@ type yankMsg struct {
 }
 
 type savedState struct {
-	View       bd.View         `json:"view"`
-	SortMode   SortMode        `json:"sort_mode"`
-	Filter     Filter          `json:"filter"`
-	Expanded   map[string]bool `json:"expanded,omitempty"`
-	Layout     LayoutMode      `json:"layout,omitempty"`
-	Visibility *ViewVisibility `json:"visibility,omitempty"`
-	Snapshot   *boardSnapshot  `json:"board_snapshot,omitempty"`
+	ActiveDatabase string                `json:"active_database,omitempty"`
+	Databases      map[string]savedState `json:"databases,omitempty"`
+	View           bd.View               `json:"view"`
+	SortMode       SortMode              `json:"sort_mode"`
+	Filter         Filter                `json:"filter"`
+	Expanded       map[string]bool       `json:"expanded,omitempty"`
+	Layout         LayoutMode            `json:"layout,omitempty"`
+	Visibility     *ViewVisibility       `json:"visibility,omitempty"`
+	Snapshot       *boardSnapshot        `json:"board_snapshot,omitempty"`
 }
 
 // ViewVisibility owns the independently persisted board and detail choices.
@@ -392,6 +395,10 @@ func loadState() (savedState, bool) {
 		log.Printf("beads-tui: parse state: %v", err)
 		return savedState{}, false
 	}
+	return normalizeState(state), true
+}
+
+func normalizeState(state savedState) savedState {
 	state.View = normalizeStateView(state.View)
 	if state.View == "" {
 		state.View = bd.ViewReady
@@ -425,7 +432,7 @@ func loadState() (savedState, bool) {
 		defaults := defaultViewVisibility()
 		state.Visibility = &defaults
 	}
-	return state, true
+	return state
 }
 
 func normalizeStateView(view bd.View) bd.View {
@@ -454,7 +461,7 @@ func (m Model) saveState() {
 		log.Printf("beads-tui: locate state: %v", err)
 		return
 	}
-	data, err := json.MarshalIndent(savedState{
+	state := savedState{
 		View:       m.view,
 		SortMode:   m.sortMode,
 		Filter:     m.filter,
@@ -462,7 +469,24 @@ func (m Model) saveState() {
 		Layout:     m.layout,
 		Visibility: &m.visibility,
 		Snapshot:   cloneBoardSnapshot(m.lastSnapshot),
-	}, "", "  ")
+	}
+	if m.multiDatabase {
+		root, ok := loadState()
+		if !ok {
+			root = savedState{SortMode: SortCreated}
+		}
+		if root.Databases == nil {
+			root.Databases = map[string]savedState{}
+		}
+		if m.database != "" {
+			root.Databases[m.database] = state
+			root.ActiveDatabase = m.database
+		}
+		// Legacy unscoped snapshots must never be restored under a new name.
+		root.Snapshot = nil
+		state = root
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		log.Printf("beads-tui: encode state: %v", err)
 		return
@@ -478,6 +502,10 @@ func (m Model) saveState() {
 
 // New builds the board model backed by the given read-only data source.
 func New(backend Backend) Model {
+	return newModel(backend, "")
+}
+
+func newModel(backend Backend, database string) Model {
 	input := textinput.New()
 	input.Prompt = "/ "
 	input.Placeholder = "overdue · recurring · status: · tab completes"
@@ -489,12 +517,13 @@ func New(backend Backend) Model {
 	commentInput.CharLimit = 4000
 	commentInput.Width = 80
 	m := Model{
-		backend:  backend,
-		actor:    bd.ResolveActor(),
-		view:     bd.ViewReady,
-		views:    bd.DefaultViews(),
-		loading:  true,
-		boardGen: 1,
+		backend:       backend,
+		databaseState: databaseState{database: database, multiDatabase: database != ""},
+		actor:         bd.ResolveActor(),
+		view:          bd.ViewReady,
+		views:         bd.DefaultViews(),
+		loading:       true,
+		boardGen:      1,
 		// Created is newest-first by default; s cycles through the remaining modes.
 		sortMode:       SortCreated,
 		focus:          FocusList,
@@ -514,6 +543,9 @@ func New(backend Backend) Model {
 	}
 	if persistenceEnabled(backend) {
 		if state, ok := loadState(); ok {
+			if database != "" {
+				state = databaseSavedState(state, database)
+			}
 			m.view, m.sortMode, m.filter = state.View, state.SortMode, state.Filter
 			m.expanded = state.Expanded
 			m.layout = state.Layout
@@ -530,11 +562,28 @@ func New(backend Backend) Model {
 
 // Init loads the board and the status vocabulary.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadBoardCmd(), m.loadStatusesCmd(), loadSessionsCmd())
+	var scan tea.Cmd
+	if m.multiDatabase {
+		// Start discovery after the first renderer frame, never in New/Init.
+		scan = tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return databaseScanStartMsg{} })
+		if m.database == "" {
+			return tea.Batch(scan, loadSessionsCmd())
+		}
+	}
+	return m.scopeDatabaseCmd(tea.Batch(m.loadBoardCmd(), m.loadStatusesCmd(), loadSessionsCmd(), scan))
 }
 
 // Update drives the application.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if scoped, ok := msg.(databaseScopedMsg); ok {
+		if scoped.epoch != m.databaseEpoch {
+			return m, nil
+		}
+		msg = scoped.msg
+	}
+	if updated, cmd, handled := m.updateDatabase(msg); handled {
+		return updated, updated.scopeDatabaseCmd(cmd)
+	}
 	updated, cmd := m.updateCore(msg)
 	model, ok := updated.(Model)
 	if !ok {
@@ -545,7 +594,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if animCmd := model.syncCursorAnim(); animCmd != nil {
 		cmd = tea.Batch(cmd, animCmd)
 	}
-	return model, cmd
+	return model, model.scopeDatabaseCmd(cmd)
 }
 
 // updateCore handles one message.
@@ -728,6 +777,19 @@ func (m Model) runesGoToTextInput() bool {
 
 func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.quitting {
+		return m, nil
+	}
+	if m.databasePicker {
+		return m.databaseKey(msg)
+	}
+	if msg.String() == "ctrl+o" && m.multiDatabase {
+		if m.crudActive() || m.commentsOpen || m.filtering || m.editorID != "" {
+			m.statusFlash = "close the current editor or thread before switching databases"
+			return m, nil
+		}
+		m.databasePicker = true
+		m.databaseIndex = 0
+		m.sortDatabases()
 		return m, nil
 	}
 	// ESC landing in the same read as a key arrives as alt+<key>. Only the
@@ -1741,6 +1803,12 @@ func (m Model) hierarchyFor(d *bd.Issue) (chain, children []bd.Issue) {
 }
 
 func (m *Model) startBoardLoad() tea.Cmd {
+	if m.multiDatabase && m.database == "" {
+		if len(m.databaseCache.Entries) == 0 {
+			return nil
+		}
+		return m.beginDatabaseSwitch(m.databaseCache.Entries[0].Path)
+	}
 	m.boardGen++
 	m.loading = true
 	m.reloadAttempts = 0
@@ -2456,6 +2524,9 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	if m.databasePicker {
+		return m.renderDatabases()
+	}
 	if m.yank {
 		return m.renderYank()
 	}
@@ -2703,6 +2774,13 @@ func (m Model) renderFilterPrompt(w int) string {
 // renderHeader paints the title bar: view name and tabs.
 func (m Model) renderHeader(w int) string {
 	left := styleBold.Render("beads-tui") + "  " + styleDim.Render("·") + "  " + m.vocabViewLabel()
+	if m.multiDatabase {
+		// The database identity outranks tabs when the terminal is narrow.
+		if displayWidth(left) >= w {
+			return truncatePhys(left, w)
+		}
+		return fitLine(left, truncatePhys(m.renderTabs(), max(0, w-displayWidth(left)-1)), w)
+	}
 	return fitLine(left, m.renderTabs(), w)
 }
 
@@ -2760,7 +2838,7 @@ func (m Model) renderGraph() string {
 }
 
 func (m Model) vocabViewLabel() string {
-	return styleDim.Render(m.view.Label() + " board")
+	return styleDim.Render(m.view.Label() + " board" + m.databaseLabel())
 }
 
 func (m Model) renderTabs() string {

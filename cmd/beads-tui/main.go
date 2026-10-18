@@ -84,7 +84,7 @@ func runTUI() error {
 	client := bd.New()
 	// Actor identity for tui-lineage stamps: agents set BEADS_ACTOR; humans use git/USER.
 	client.SetActor(bd.ResolveActor())
-	p := tea.NewProgram(logfile.Guard(tui.New(client)), tea.WithAltScreen())
+	p := tea.NewProgram(logfile.Guard(tui.NewMultiDatabase(client)), tea.WithAltScreen())
 	_, runErr := p.Run()
 	if runErr != nil {
 		// Bubbletea recovers panics itself and reports ErrProgramPanic; the
@@ -204,7 +204,7 @@ ctrl-u/ctrl-d move half a page. Enter/Tab toggle parent subtrees or Enter opens
 leaf detail; h/left collapses, l/right focuses detail, v toggles tree/flat,
 1-9 switch native-status views, s sorts, t searches by labels, y opens a yank
 menu, / searches id/title/description or composable structured fields, o opens
-persisted row/detail/pane visibility options,
+persisted row/detail/pane visibility options, ctrl-o switches local databases,
 R resets view/sort/search, ? shows help, and q quits.
 `, strings.TrimSpace(version))
 }

@@ -30,8 +30,9 @@ make test       # unit tests (parsing + view-model)
 
 ## Usage
 
-Run it from anywhere `bd` would find the store - an active beads workspace
-with `./.beads`, or anywhere with `BEADS_DIR` set:
+The interactive board restores the last selected database. A clean launch
+defaults to `/opt/ra/firstmate/.beads`; an explicit `BEADS_DIR` always wins.
+The `list` and `show` commands retain `bd`'s ambient workspace discovery.
 
 ```sh
 beads-tui                   # interactive board (ready work by default)
@@ -47,6 +48,10 @@ The TUI is keyboard-driven:
   When the focused bead has dependency edges, `G` instead opens its two-hop
   ASCII dependency graph; cycles are called out in the graph header.
 - `ctrl-u`/`ctrl-d` move by half a page in the board and detail pane
+- `ctrl-o` opens the database picker immediately from its local index.
+  `j`/`k` select, `enter` switches, `R` rescans, and `esc` closes.
+  Each entry shows its project name, home-relative path, issue count, prefix,
+  and last-touched time. The active database stays visible in the board title.
 - The default board is an indented hierarchy tree: `enter`/`tab` toggles a
   subtree, `h` (or `←`) collapses it, `l` (or `→`) unfolds a folded node or
   opens the detail pane, `*` expands every fold, and `T` toggles the flat list.
@@ -88,6 +93,25 @@ The TUI is keyboard-driven:
   whose name matches the selected bead's assignee. Beads with a live match show
   a `●` on the assignee pill. No match is a silent no-op; detach returns to the
   board.
+
+## Local databases
+
+Discovery runs after the first frame, scanning five directory levels below
+`$HOME`, `/opt/ra`, `/srv`, and `/arcs`. It excludes `.treehouse`,
+`.no-mistakes`, `actions-runner*`, `vendor`, `node_modules`, `.cache`, and
+`.git`, and deduplicates canonical paths. An explicit `BEADS_DIR` remains
+pinned even outside these roots. If the default database is absent, the picker
+offers discovered stores; an empty index shows a rescan instruction.
+
+The index expires after 15 minutes and lives beside `state.json`, under
+`BEADS_TUI_CONFIG_DIR` or the platform's `beads-tui` config directory.
+Counts and prefixes load in the background; `?` means metadata is not yet
+available. Board snapshots, view, filters, sort, layout, view options, and
+expanded rows are saved per database; a database with no saved state yet starts
+from the preferences saved before multi-database support. A failed switch keeps the previous board and displays an error.
+Close a comment thread or editor before switching databases.
+
+For a Herdr popup, use `command = "beads-tui"` without a `BEADS_DIR` pin.
 
 ## Layout
 

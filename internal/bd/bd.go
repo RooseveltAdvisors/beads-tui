@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -50,6 +51,31 @@ const depsBatchWorkers = 8
 // would for the user.
 func New() *Client {
 	return &Client{lookPath: DefaultLookPath, run: DefaultRun, runInput: DefaultRunInput}
+}
+
+// ForDirectory returns an independent client. The target travels with each
+// subprocess, never through process-wide environment changes or mutable state.
+func (c *Client) ForDirectory(dir string) *Client {
+	copy := *c
+	copy.run = func(ctx context.Context, path string, args ...string) (string, string, error) {
+		return runInDirectory(ctx, path, "", dir, args...)
+	}
+	copy.runInput = func(ctx context.Context, path, input string, args ...string) (string, string, error) {
+		return runInDirectory(ctx, path, input, dir, args...)
+	}
+	return &copy
+}
+
+// Prefix reads the configured issue prefix; IDs may contain additional hyphens
+// and cannot reliably supply it.
+func (c *Client) Prefix(ctx context.Context) (string, error) {
+	var config struct {
+		Value string `json:"value"`
+	}
+	if err := c.jsonCall(ctx, &config, "config", "get", "issue_prefix", "--json"); err != nil {
+		return "", err
+	}
+	return config.Value, nil
 }
 
 // List returns the current board for the given view.
@@ -348,7 +374,20 @@ func runCommand(ctx context.Context, path string, args ...string) (string, strin
 }
 
 func runCommandInput(ctx context.Context, path, input string, args ...string) (string, string, error) {
+	return runInDirectory(ctx, path, input, "", args...)
+}
+
+func runInDirectory(ctx context.Context, path, input, dir string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
+	if dir != "" {
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "BEADS_DIR=") {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		cmd.Env = append(cmd.Env, "BEADS_DIR="+dir)
+		cmd.Dir = dir
+	}
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
