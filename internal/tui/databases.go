@@ -12,24 +12,29 @@ import (
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/RooseveltAdvisors/beads-tui/internal/dbindex"
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type databaseState struct {
-	multiDatabase          bool
-	database               string
-	explicitDatabase       string
-	databaseEpoch          uint64
-	databaseFactory        func(string) Backend
-	databaseCache          dbindex.Cache
-	databasePicker         bool
-	databaseIndex          int
-	databaseScanning       bool
-	databaseSwitching      string
-	databaseError          string
-	databaseScanGeneration uint64
-	databaseMetadataCancel context.CancelFunc
+	globalMode                            bool
+	aggregate                             *aggregateBackend
+	globalCancel                          context.CancelFunc
+	globalContext                         context.Context
+	globalDone, globalTotal, globalFailed int
+	multiDatabase                         bool
+	database                              string
+	explicitDatabase                      string
+	databaseEpoch                         uint64
+	databaseFactory                       func(string) Backend
+	databaseCache                         dbindex.Cache
+	databasePicker                        bool
+	databaseIndex                         int
+	databaseScanning                      bool
+	databaseSwitching                     string
+	databaseError                         string
+	databaseScanGeneration                uint64
+	databaseMetadataCancel                context.CancelFunc
 }
 type databaseScopedMsg struct {
 	epoch uint64
@@ -109,6 +114,9 @@ func NewMultiDatabase(client *bd.Client) Model {
 	m.databaseFactory = factory
 	m.databaseCache = cache
 	m.touchDatabase()
+	if root.GlobalMode && explicit == "" {
+		m.enterGlobal()
+	}
 	if selected == "" {
 		m.loading = false
 		m.boardErr = "No Beads databases found. Press ctrl+o, then R to rescan local workspaces."
@@ -129,6 +137,9 @@ func databaseIndexPath() string {
 func (m Model) databaseLabel() string {
 	if !m.multiDatabase {
 		return ""
+	}
+	if m.globalMode {
+		return " · global"
 	}
 	if m.database == "" {
 		return " · no database"
@@ -209,7 +220,7 @@ func (m Model) scopeDatabaseCmd(cmd tea.Cmd) tea.Cmd {
 		}
 		switch msg.(type) {
 		case boardMsg, graphMsg, statusMsg, detailMsg, prefetchMsg, commentsMsg, commentSubmitMsg,
-			crudResultMsg, editorReadyMsg, editorDoneMsg, boardRetryMsg, detailDebounceMsg:
+			crudResultMsg, editorReadyMsg, editorDoneMsg, boardRetryMsg, detailDebounceMsg, globalLoadMsg, globalStoreMsg:
 			return databaseScopedMsg{epoch: epoch, msg: msg}
 		}
 		return msg
@@ -221,6 +232,35 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 		return m, nil, false
 	}
 	switch msg := msg.(type) {
+	case globalLoadMsg:
+		cmd := m.beginGlobalLoad(msg)
+		return m, cmd, true
+	case globalStoreMsg:
+		if !m.globalMode || msg.backend != m.aggregate || msg.generation != m.boardGen || msg.view != m.view {
+			return m, nil, true
+		}
+		m.aggregate.mu.Lock()
+		m.aggregate.stores[msg.path] = msg.store
+		m.aggregate.mu.Unlock()
+		m.globalDone++
+		if msg.store.err != nil {
+			m.globalFailed++
+		}
+		if selected := m.selectedID(); selected != "" && !m.commentsOpen && !m.crudActive() && m.editorID == "" {
+			path, _, _ := strings.Cut(selected, "\x1f")
+			if path == msg.path {
+				m.invalidateDetail()
+			}
+		}
+		rows, _ := m.aggregate.List(context.Background(), m.view)
+		cmd := m.applyGlobalSnapshot(rows)
+		statuses, _ := m.aggregate.Statuses(context.Background())
+		m.vocab = NewVocab(statuses)
+		m.views = bd.ViewsFromStatuses(statuses)
+		if m.globalDone == m.globalTotal {
+			m.saveState()
+		}
+		return m, tea.Batch(cmd, m.aggregate.storeCmd(m.globalContext, msg.rest, m.view, m.boardGen)), true
 	case databaseScanStartMsg:
 		if m.databaseCache.Fresh(time.Now()) {
 			return m, nil, true
@@ -275,7 +315,14 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 			}
 			commands = append(commands, m.databaseMetadataCmd(metadataContext, queue, msg.generation))
 		}
-		if m.database == "" && len(m.databaseCache.Entries) > 0 {
+		if m.globalMode {
+			if m.globalCancel != nil {
+				m.globalCancel()
+			}
+			m.aggregate = newAggregate(m.databaseCache.Entries, m.databaseFactory, m.aggregate)
+			m.backend = m.aggregate
+			commands = append(commands, m.startBoardLoad())
+		} else if m.database == "" && len(m.databaseCache.Entries) > 0 {
 			commands = append(commands, m.beginDatabaseSwitch(m.databaseCache.Entries[0].Path))
 		}
 		return m, tea.Batch(commands...), true
@@ -309,8 +356,12 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		m.saveState()
+		if m.globalCancel != nil {
+			m.globalCancel()
+		}
 		fresh := newModel(msg.backend, msg.path)
 		fresh.databaseState = m.databaseState
+		fresh.globalMode = false
 		fresh.database = msg.path
 		fresh.databaseEpoch++
 		fresh.databasePicker = false
@@ -395,7 +446,10 @@ func (m Model) databaseMetadataCmd(parent context.Context, entries []dbindex.Ent
 }
 
 func (m *Model) beginDatabaseSwitch(path string) tea.Cmd {
-	if path == m.database || m.databaseSwitching != "" {
+	if path == "" {
+		return nil
+	}
+	if (path == m.database && !m.globalMode) || m.databaseSwitching != "" {
 		m.databasePicker = false
 		return nil
 	}
@@ -428,19 +482,23 @@ func (m Model) databaseKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "j", "down", "ctrl+n":
-		m.databaseIndex = min(m.databaseIndex+1, max(0, len(m.databaseCache.Entries)-1))
+		m.databaseIndex = min(m.databaseIndex+1, len(m.databaseCache.Entries))
 	case "k", "up", "ctrl+p":
 		m.databaseIndex = max(0, m.databaseIndex-1)
 	case "g", "home":
 		m.databaseIndex = 0
 	case "G", "end":
-		m.databaseIndex = max(0, len(m.databaseCache.Entries)-1)
+		m.databaseIndex = len(m.databaseCache.Entries)
 	case "R":
 		cmd := m.beginDatabaseScan()
 		return m, cmd
 	case "enter":
-		if m.databaseIndex < len(m.databaseCache.Entries) {
-			cmd := m.beginDatabaseSwitch(m.databaseCache.Entries[m.databaseIndex].Path)
+		if m.databaseIndex == 0 {
+			cmd := m.enterGlobal()
+			return m, cmd
+		}
+		if m.databaseIndex-1 < len(m.databaseCache.Entries) {
+			cmd := m.beginDatabaseSwitch(m.databaseCache.Entries[m.databaseIndex-1].Path)
 			return m, cmd
 		}
 	}
@@ -479,17 +537,32 @@ func (m Model) renderDatabases() string {
 	// Each entry uses two lines; keep the selected entry in the viewport.
 	visible := max(1, (m.height-len(lines)-3)/2)
 	start := max(0, m.databaseIndex-visible+1)
-	for i := start; i < len(entries) && i < start+visible; i++ {
-		e := entries[i]
+	for i := start; i <= len(entries) && i < start+visible; i++ {
+		if i == 0 {
+			row := "  " + workspaceChip("★ Global - all workspaces")
+			if m.globalMode {
+				row += " " + chip("active", chipLiveFG, chipLiveBG)
+			}
+			pathLine := "  " + styleDim.Render("Search every indexed Beads workspace · ctrl+e")
+			if m.databaseIndex == 0 {
+				row = colorize(focusBar, hudMagentaHex) + " " + strings.TrimPrefix(row, "  ")
+				d := RowDecor{Focused: true, Wipe: 1}
+				row = paintRowBackground(padRight(truncatePhys(row, inner), inner), d)
+				pathLine = paintRowBackground(padRight(truncatePhys(pathLine, inner), inner), d)
+			}
+			lines = append(lines, row, pathLine)
+			continue
+		}
+		e := entries[i-1]
 		selected := i == m.databaseIndex
 		name := e.Name()
 		if name == "" {
 			name = filepath.Base(filepath.Dir(e.Path))
 		}
 		// Workspace pill: teal family, distinct from assignee pink on the board.
-		namePill := chip(name, "159", "23")
+		namePill := workspaceChip(name)
 		var meta []string
-		if e.Path == m.database {
+		if e.Path == m.database && !m.globalMode {
 			meta = append(meta, chip("active", chipLiveFG, chipLiveBG))
 		}
 		if e.Path == m.explicitDatabase {

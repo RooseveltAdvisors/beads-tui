@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,13 +14,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+var editorIssueID = regexp.MustCompile(`^[a-zA-Z0-9_:\-]+$`)
+
 // External $EDITOR edit (vim-native). e opens a text form of the bead;
 // save+quit applies; quit without write cancels.
 
 type editorDoneMsg struct {
-	id      string
-	path    string
-	err     error
+	id       string
+	path     string
+	err      error
 	canceled bool
 }
 
@@ -69,7 +72,7 @@ func beadEditDocument(iss *bd.Issue) string {
 	b.WriteString("# id is read-only. due: human date (2026-09-14 15:04), +6h/+1d, or empty to clear\n")
 	b.WriteString("# priority: 0-4 (0=highest). status: open|in_progress|blocked|deferred|closed|hold\n")
 	b.WriteString("#\n")
-	fmt.Fprintf(&b, "id: %s\n", iss.ID)
+	fmt.Fprintf(&b, "id: %s\n", bd.LocalID(iss.ID))
 	fmt.Fprintf(&b, "title: %s\n", iss.Title)
 	fmt.Fprintf(&b, "status: %s\n", iss.Status)
 	fmt.Fprintf(&b, "assignee: %s\n", iss.Assignee)
@@ -224,11 +227,15 @@ func (m *Model) openEditorEdit() tea.Cmd {
 		if err != nil {
 			return editorDoneMsg{id: id, err: err}
 		}
+		localID := bd.LocalID(id)
+		if !editorIssueID.MatchString(localID) {
+			return editorDoneMsg{id: id, err: fmt.Errorf("invalid issue ID for editor")}
+		}
 		dir, err := os.MkdirTemp("", "beads-tui-edit-*")
 		if err != nil {
 			return editorDoneMsg{id: id, err: err}
 		}
-		path := filepath.Join(dir, id+".bead.txt")
+		path := filepath.Join(dir, localID+".bead.txt")
 		body := beadEditDocument(iss)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			return editorDoneMsg{id: id, err: err}
@@ -288,7 +295,7 @@ func (m *Model) applyEditorDone(msg editorDoneMsg) tea.Cmd {
 		m.crudErr = err.Error()
 		return nil
 	}
-	if after.ID != "" && after.ID != id {
+	if after.ID != "" && after.ID != bd.LocalID(id) {
 		m.crudErr = "id is read-only; do not change id:"
 		return nil
 	}

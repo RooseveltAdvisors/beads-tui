@@ -30,7 +30,7 @@ make test       # unit tests (parsing + view-model)
 
 ## Usage
 
-The interactive board restores the last selected database. A clean launch
+The interactive board restores the last scope (single workspace or global). A clean launch
 defaults to `/opt/ra/firstmate/.beads`; an explicit `BEADS_DIR` always wins.
 The `list` and `show` commands retain `bd`'s ambient workspace discovery.
 
@@ -52,6 +52,11 @@ The TUI is keyboard-driven:
   `j`/`k` select, `enter` switches, `R` rescans, and `esc` closes.
   Each entry shows its project name, home-relative path, issue count, prefix,
   and last-touched time. The active database stays visible in the board title.
+- `ctrl-e` toggles the global board; the picker also offers **Global - all workspaces**
+  as its first entry. `/` searches across every indexed workspace, and status tabs
+  apply across them all. Each global row shows a cyan workspace pill after
+  priority and before assignee. Details show the full source path; comments and
+  edits route to that source database. Select a workspace before creating an issue.
 - The default board is an indented hierarchy tree: `enter`/`tab` toggles a
   subtree, `h` (or `←`) collapses it, `l` (or `→`) unfolds a folded node or
   opens the detail pane, `*` expands every fold, and `T` toggles the flat list.
@@ -110,6 +115,11 @@ available. Board snapshots, view, filters, sort, layout, view options, and
 expanded rows are saved per database; a database with no saved state yet starts
 from the preferences saved before multi-database support. A failed switch keeps the previous board and displays an error.
 Close a comment thread or editor before switching databases.
+
+Global mode loads three workspaces at a time and paints partial results with a
+loading count. A failed workspace is skipped with a footer notice; `r` retries.
+Its per-workspace lists are cached for navigation and search. The last single
+workspace is retained when entering global mode, so `ctrl-e` returns to it.
 
 For a Herdr popup, use `command = "beads-tui"` without a `BEADS_DIR` pin.
 

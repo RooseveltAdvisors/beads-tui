@@ -219,8 +219,8 @@ func TestPickerKeyboardCachedOpenAndNoDatabaseView(t *testing.T) {
 		t.Fatal("no-database path rendered blank")
 	}
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil || updated.(Model).databaseSwitching != "" {
-		t.Fatal("empty picker initiated a switch")
+	if cmd == nil || !updated.(Model).globalMode || updated.(Model).databaseSwitching != "" {
+		t.Fatal("global entry missing from empty picker")
 	}
 }
 func TestExplicitDatabaseWinsOverSavedSelection(t *testing.T) {
@@ -263,6 +263,7 @@ func TestPickerEnterProbesThenCommitsDatabaseSwitch(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
 	m = updated.(Model)
 	m = sendKey(t, m, "down")
+	m = sendKey(t, m, "down")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	if cmd == nil || m.databaseSwitching != b {
@@ -301,7 +302,6 @@ func TestNoDatabaseBackendRejectsReloadAndCommentWrites(t *testing.T) {
 	}
 }
 
-
 func TestDatabasePickerUsesHUDColors(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	m, a, b, _, _ := databaseTestModel(t)
@@ -312,7 +312,7 @@ func TestDatabasePickerUsesHUDColors(t *testing.T) {
 	}}
 	m.database = a
 	m.databasePicker = true
-	m.databaseIndex = 0
+	m.databaseIndex = 1
 	m.width, m.height = 100, 30
 	view := m.View()
 	plain := stripANSI(view)
@@ -324,6 +324,9 @@ func TestDatabasePickerUsesHUDColors(t *testing.T) {
 	}
 	if !strings.Contains(view, "48;2;") {
 		t.Fatal("selected row missing truecolor background tint")
+	}
+	if !strings.Contains(view, colorSeq(hudCyanHex, false)) {
+		t.Fatal("workspace name pill missing HUD cyan")
 	}
 	if !strings.Contains(plain, "12 issues") || !strings.Contains(plain, "prefix fm") {
 		t.Fatalf("meta chips missing from plain text: %q", plain)

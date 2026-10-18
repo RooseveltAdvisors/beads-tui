@@ -73,6 +73,9 @@ func (v View) TabLabel() string {
 // fields (including description, parent, and the issue's inline dependency
 // edges); `bd show ID --json` returns the same shape for one bead.
 type Issue struct {
+	// SourcePath is set by the global board. ID is namespaced internally so
+	// equal local IDs never share selection, graph, or detail cache entries.
+	SourcePath  string `json:"source_path,omitempty"`
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -102,6 +105,15 @@ type Issue struct {
 	CommentCount    int       `json:"comment_count"`
 	Dependencies    []DepEdge `json:"dependencies"`
 	Comments        []Comment `json:"comments"`
+}
+
+// LocalID unwraps a global board key for display. Native IDs cannot contain
+// the unit separator; only the aggregate adapter creates these keys.
+func LocalID(id string) string {
+	if _, local, ok := strings.Cut(id, "\x1f"); ok {
+		return local
+	}
+	return id
 }
 
 // DepEdge is one inline dependency record embedded in `bd list/show --json`
