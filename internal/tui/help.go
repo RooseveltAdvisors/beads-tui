@@ -41,7 +41,7 @@ func (m Model) helpGroups() []helpGroup {
 			Name: "global",
 			Entries: []helpEntry{
 				{"?", "this help"},
-				{"q  Ctrl+C", "quit"},
+				{"q  esc  Ctrl+C", "quit"},
 				{"Esc", "back / clear filter / leave detail"},
 				{"r", "reload board (keep view/sort/search)"},
 				{"R", "reset to ready + defaults"},

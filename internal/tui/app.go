@@ -985,6 +985,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "esc":
+		// Progressive dismiss: nested modes first, then quit like q when
+		// already at the top-level board (captain muscle memory for popups).
 		if m.visualMode {
 			m.visualMode = false
 			return m, nil
@@ -998,8 +1000,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = FocusList
 			m.dOffset = 0
 			m.dFollowTail = false
+			return m, nil
 		}
-		return m, nil
+		m.quitting = true
+		m.saveState()
+		return m, tea.Quit
 	case "s":
 		m.sortMode = m.sortMode.Next()
 		m.saveState()
@@ -3069,8 +3074,8 @@ func (m Model) renderFooter(w int) string {
 		// Path sits ahead of the key hints so the active store is always on-screen.
 		status = styleDim.Render(hint) + styleDim.Render("  ") + status
 	}
-	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view a attach c comments C add comment ? help q quit")
-	shortHints := styleDim.Render("c comments C add ? help q quit")
+	defaultHints := styleDim.Render("r reload R reset s sort / search t tag o view a attach c comments C add comment ? help q/esc quit")
+	shortHints := styleDim.Render("c comments C add ? help q/esc quit")
 	hints := defaultHints
 	var left string
 	switch {
