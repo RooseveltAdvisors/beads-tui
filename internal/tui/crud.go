@@ -524,14 +524,14 @@ func (m Model) renderCrud() string {
 					b.WriteString(fmt.Sprintf("  … and %d more\n", len(m.crudDeleteIDs)-8))
 					break
 				}
-				b.WriteString(fmt.Sprintf("  %s\n", crudDisplayID(delID)))
+				fmt.Fprintf(&b, "  %s\n", crudDisplayID(delID))
 			}
 		} else {
 			delID := id
 			if len(m.crudDeleteIDs) == 1 {
 				delID = m.crudDeleteIDs[0]
 			}
-			b.WriteString(fmt.Sprintf("  %s\n", crudDisplayID(delID)))
+			fmt.Fprintf(&b, "  %s\n", crudDisplayID(delID))
 		}
 		b.WriteString("  y confirm · n/esc cancel\n")
 	default:

@@ -132,6 +132,7 @@ func databaseIndexPath() string {
 	}
 	return filepath.Join(filepath.Dir(path), "database-index.json")
 }
+
 // databaseLabel is the plain-text suffix used in titles and tests
 // (" · firstmate"). Colored chrome lives in databaseHeaderChrome.
 func (m Model) databaseLabel() string {
