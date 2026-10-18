@@ -124,6 +124,8 @@ func databaseIndexPath() string {
 	}
 	return filepath.Join(filepath.Dir(path), "database-index.json")
 }
+// databaseLabel is the plain-text suffix used in titles and tests
+// (" · firstmate"). Colored chrome lives in databaseHeaderChrome.
 func (m Model) databaseLabel() string {
 	if !m.multiDatabase {
 		return ""
@@ -132,6 +134,41 @@ func (m Model) databaseLabel() string {
 		return " · no database"
 	}
 	return " · " + (dbindex.Entry{Path: m.database}).Name()
+}
+
+// databaseHeaderChrome is the always-visible active-store badge on the board
+// header so the captain never has to open ctrl+o to learn which .beads is live.
+// Name is a teal pill (same family as the picker); path is dim home-relative.
+func (m Model) databaseHeaderChrome() string {
+	if !m.multiDatabase {
+		return ""
+	}
+	if m.database == "" {
+		return " " + chip("no database", chipOverdueFG, chipOverdueBG)
+	}
+	name := (dbindex.Entry{Path: m.database}).Name()
+	if name == "" {
+		name = filepath.Base(filepath.Dir(m.database))
+	}
+	home, err := os.UserHomeDir()
+	path := m.database
+	if err == nil {
+		path = (dbindex.Entry{Path: m.database}).DisplayPath(home)
+	}
+	return " " + chip(name, "159", "23") + " " + styleDim.Render(path)
+}
+
+// databaseFooterHint is a compact path reminder on the status line.
+func (m Model) databaseFooterHint() string {
+	if !m.multiDatabase || m.database == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	path := m.database
+	if err == nil {
+		path = (dbindex.Entry{Path: m.database}).DisplayPath(home)
+	}
+	return "db:" + path
 }
 func (m *Model) sortDatabases() {
 	dbindex.Sort(m.databaseCache.Entries, m.database, m.explicitDatabase)

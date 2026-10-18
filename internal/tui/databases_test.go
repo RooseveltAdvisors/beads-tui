@@ -71,8 +71,13 @@ func TestDatabaseSwitchReloadAndStateIsolation(t *testing.T) {
 	if len(m.detailCache) != 0 || m.detail != nil || m.expanded["alpha-only"] || m.sortMode != SortCreated {
 		t.Fatal("alpha state leaked into beta")
 	}
-	if !strings.Contains(stripANSI(m.View()), "ready board · beta") {
-		t.Fatal("active database missing from title")
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "ready board") || !strings.Contains(plain, "beta") {
+		t.Fatalf("active database missing from title: %q", plain)
+	}
+	// Path must be on the board (header and/or footer) without opening ctrl+o.
+	if !strings.Contains(plain, b) && !strings.Contains(plain, "db:") {
+		t.Fatalf("active database path missing from board chrome: %q", plain)
 	}
 	m = applyMsg(t, m, stale)
 	if _, ok := m.detailCache["late"]; ok {
@@ -322,5 +327,27 @@ func TestDatabasePickerUsesHUDColors(t *testing.T) {
 	}
 	if !strings.Contains(plain, "12 issues") || !strings.Contains(plain, "prefix fm") {
 		t.Fatalf("meta chips missing from plain text: %q", plain)
+	}
+}
+
+func TestActiveDatabaseVisibleWithoutPicker(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	m, a, _, _, _ := databaseTestModel(t)
+	m.width, m.height = 120, 30
+	m.database = a
+	m.multiDatabase = true
+	plain := stripANSI(m.View())
+	name := (dbindex.Entry{Path: a}).Name()
+	if !strings.Contains(plain, "ready board") || !strings.Contains(plain, name) {
+		t.Fatalf("header missing active name: %q", plain)
+	}
+	if !strings.Contains(plain, "db:") && !strings.Contains(plain, a) {
+		t.Fatalf("path missing from board without opening picker: %q", plain)
+	}
+	// Colored workspace pill on the header.
+	view := m.View()
+	if !strings.Contains(view, "48;5;23") && !strings.Contains(view, "48;2;") {
+		// chip uses 256 bg 23 for teal name pill
+		t.Fatalf("header missing workspace pill color: %q", view[:min(300, len(view))])
 	}
 }
