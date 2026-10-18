@@ -373,7 +373,7 @@ func (m Model) renderComments() string {
 	if inputLine != "" {
 		lines = append(lines, inputLine)
 	}
-	title := "Comments · esc/q back"
+	title := "Comments" + m.databaseLabel() + " · esc/q back"
 	return strings.Join(pane(title, lines, w, h), "\n")
 }
 

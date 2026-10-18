@@ -9,7 +9,7 @@ write: adding an issue comment. The exact invocation contract lives in
 `internal/bd/bd.go` (see `Client`): board/graph reads use `bd list --status
 STATUS --json -n 0`, `bd list --ready --json -n 0` (default view; reduced
 fields - parent/description/labels arrive via the graph snapshot),
-`bd list --all --json -n 0` (graph snapshot), `bd show ID --json`, `bd dep
+`bd list --all --json -n 0` (graph snapshot and index counts), `bd config get issue_prefix --json` (index prefix), `bd show ID --json`, `bd dep
 list ID --json [--direction up]`, and `bd statuses --json`; the comments view
 uses `bd comments ID --json` and `bd comment ID --stdin`. After a successful
 comment save, `PlanCommentNotify` in `internal/tui/notify.go` pings a live
@@ -21,7 +21,7 @@ flag surface or JSON field names must be mirrored there and in
 
 ## Build
 
-Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o beads-tui ./cmd/beads-tui` (also `make build`). The store is auto-discovered by `bd` itself - beads-tui just inherits the ambient environment (`.beads`, `BEADS_DIR`, `--db`), never hardcodes a path.
+Static single binary: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o beads-tui ./cmd/beads-tui` (also `make build`). CLI list/show inherit bd's ambient store discovery. The interactive switcher (`internal/tui/databases.go`) uses explicit `BEADS_DIR`, then the persisted choice, then `/opt/ra/firstmate/.beads`; each client targets its own store without changing the process environment.
 
 ## Runtime proof gate
 
