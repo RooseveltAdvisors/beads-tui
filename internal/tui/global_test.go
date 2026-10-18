@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	"github.com/RooseveltAdvisors/beads-tui/internal/dbindex"
@@ -286,5 +287,28 @@ func TestGlobalDeleteConfirmShowsReadableIDsWithWorkspace(t *testing.T) {
 	multi.applyCrudResult(crudResultMsg{kind: "delete", id: globalID(a, "same-id")})
 	if multi.statusFlash != "delete ok same-id" {
 		t.Fatalf("flash = %q", multi.statusFlash)
+	}
+}
+
+func TestGlobalFooterKeepsSortMode(t *testing.T) {
+	m, a, b, _, _ := databaseTestModel(t)
+	m.databaseCache = dbindex.Cache{Scanned: time.Now(), Entries: []dbindex.Entry{{Path: a}, {Path: b}}}
+	m.width, m.height = 140, 30
+	m.sortMode = SortPriority
+	m.globalMode = true
+	m.globalDone, m.globalTotal, m.globalFailed = 2, 2, 1 // notice active (skipped)
+	m.rows = []bd.Issue{{ID: "x", Title: "X", Status: "open", SourcePath: a}}
+	plain := stripANSI(m.renderFooter(m.width))
+	if !strings.Contains(plain, "sort:priority") && !strings.Contains(plain, "sort:pri") {
+		t.Fatalf("global notice hid sort mode: %q", plain)
+	}
+	if !strings.Contains(plain, "skipped") {
+		t.Fatalf("global notice missing: %q", plain)
+	}
+	// Cycling sort still reflects immediately.
+	m.sortMode = m.sortMode.Next()
+	plain = stripANSI(m.renderFooter(m.width))
+	if !strings.Contains(plain, "sort:"+m.sortMode.String()) && !strings.Contains(plain, "sort:"+truncate(m.sortMode.String(), 3)) {
+		t.Fatalf("sort cycle not visible in global footer: mode=%s footer=%q", m.sortMode.String(), plain)
 	}
 }
