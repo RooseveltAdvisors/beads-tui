@@ -32,5 +32,5 @@ jobs:
 
       - name: Verify deployed binary
         run: |
-          beads-tui --version
-          beads-tui --help | grep -Ei 'sort|filter'
+          /home/jon/.local/bin/beads-tui --version
+          /home/jon/.local/bin/beads-tui --help | grep -Ei 'sort|filter'
