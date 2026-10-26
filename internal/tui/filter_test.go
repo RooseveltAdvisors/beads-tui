@@ -558,8 +558,9 @@ func TestHelpWrapsEveryBindingIntoVisiblePane(t *testing.T) {
 	all := seen.String()
 	for _, want := range []string{
 		"move selection", "page down", "page up", "ready", "open", "in_progress",
-		"blocked", "closed", "sort:", "search", "status:open", "priority:P1",
+		"blocked", "closed", "sort", "search", "status:open", "priority:P1",
 		"label:x", "crud", "tui-lineage", "quit", "BEADS_ACTOR", "keybinds",
+		"ctrl+o", "ctrl+e",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("scrolled help missing %q", want)
@@ -577,9 +578,10 @@ func TestNarrowHelpScrollMakesEveryBindingReachable(t *testing.T) {
 		seen.WriteByte('\n')
 		m = sendKey(t, m, "j")
 	}
-	all := strings.Join(strings.Fields(seen.String()), " ")
+	all := strings.ToLower(strings.Join(strings.Fields(seen.String()), " "))
 	for _, want := range []string{
-		"Esc", "page down", "label:x", "quit", "tui-lineage", "crud", "filter",
+		"esc", "page down", "label:x", "quit", "tui-lineage", "crud", "filter",
+		"ctrl+o", "ctrl+e",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("scrollable help never exposed %q", want)

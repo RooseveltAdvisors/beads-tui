@@ -3160,15 +3160,42 @@ func footerStatus(w int, view, sortMode, filter, selected string, total, scroll,
 	}, " ")
 }
 
-// renderHelp overlays the key reference.
+// renderHelp overlays a Herdr-style keybind modal: header, searchable body, footer.
 func (m Model) renderHelp() string {
 	w, width, height := m.helpDimensions()
-	lines := m.helpLines(width)
+	body := m.helpLines(width - 2)
+	// Reserve header + footer chrome inside the pane.
+	chrome := 3 // title already in pane; footer line + blank handled in content
 	vis := max(1, height-2)
-	offset := min(m.helpOffset, max(0, len(lines)-vis))
-	end := min(len(lines), offset+vis)
-	title := fmt.Sprintf("keybinds · j/k scroll · esc close · %d/%d", offset+1, max(1, len(lines)-vis+1))
-	box := pane(title, lines[offset:end], width, height)
+	// Leave last content row for the footer strip.
+	bodyVis := max(1, vis-1)
+	offset := min(m.helpOffset, max(0, len(body)-bodyVis))
+	end := min(len(body), offset+bodyVis)
+	page := offset + 1
+	pages := max(1, len(body)-bodyVis+1)
+	title := fmt.Sprintf("keybinds · / search · j/k scroll · esc close · %d/%d", page, pages)
+
+	content := append([]string{}, body[offset:end]...)
+	for len(content) < bodyVis {
+		content = append(content, "")
+	}
+	// Footer mirrors Herdr: search · scroll · close.
+	footStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	keyFoot := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
+	var footer string
+	if m.helpFilterActive {
+		footer = footStyle.Render(" filter ") + keyFoot.Render("type/backspace") +
+			footStyle.Render(" · clear ") + keyFoot.Render("ctrl+u") +
+			footStyle.Render(" · scroll ") + keyFoot.Render("j/k pgup/pgdn") +
+			footStyle.Render(" · back ") + keyFoot.Render("esc")
+	} else {
+		footer = footStyle.Render(" search ") + keyFoot.Render("/") +
+			footStyle.Render(" · scroll ") + keyFoot.Render("j/k ↑↓ pgup/pgdn") +
+			footStyle.Render(" · close ") + keyFoot.Render("esc/enter/?")
+	}
+	content = append(content[:bodyVis-1], truncatePhys(footer, max(1, width-2)))
+	_ = chrome
+	box := pane(title, content, width, height)
 	out := make([]string, 0, height)
 	for _, line := range box {
 		out = append(out, strings.Repeat(" ", max(0, (w-displayWidth(line))/2))+line)
@@ -3184,20 +3211,25 @@ func (m Model) helpDimensions() (w, width, height int) {
 	if height <= 0 {
 		height = 24
 	}
-	width = w - 4
-	// Wider help so two-column key rows stay on one line.
-	if width > 88 {
-		width = 88
+	// Herdr modal is ~76 wide; keep a readable table without eating the full terminal.
+	width = w - 6
+	if width > 84 {
+		width = 84
 	}
-	if width < 56 {
-		width = min(w-2, 56)
+	if width < 52 {
+		width = min(w-2, 52)
 	}
-	return w, max(3, width), max(3, height)
+	// Cap height so the modal floats like Herdr (~22 rows content shell).
+	if height > 28 {
+		height = 28
+	}
+	return w, max(3, width), max(8, height)
 }
 
 func (m Model) helpMaxOffset() int {
 	_, width, height := m.helpDimensions()
-	return max(0, len(m.helpLines(width))-max(1, height-2))
+	bodyVis := max(1, height-3)
+	return max(0, len(m.helpLines(width-2))-bodyVis)
 }
 
 // splitPanes renders the list and detail panes for the current layout. In
