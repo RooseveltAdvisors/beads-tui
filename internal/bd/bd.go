@@ -381,8 +381,10 @@ func diagnosticLine(stderr string) string {
 	return ""
 }
 
-// truncateSoft shortens long diagnostics while keeping the tail (the part
-// that usually carries the reason) intact.
+// truncateSoft shortens one diagnostic line while keeping its tail (the
+// specific cause after a generic prefix) intact. Callers must pass a single
+// line - hint() narrows stderr with diagnosticLine first - because truncating
+// raw multi-line stderr keeps the advisory tail and cuts the Error line.
 func truncateSoft(s string, max int) string {
 	if len(s) <= max {
 		return s
