@@ -38,4 +38,3 @@ func TestUnmarshalRepeatStartEnd(t *testing.T) {
 		t.Fatal("IsRecurring false")
 	}
 }
-

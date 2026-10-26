@@ -350,13 +350,35 @@ func storeBusy(attemptCtx context.Context, err error, stderr string) bool {
 	return strings.Contains(msg, "lock") || strings.Contains(msg, "busy")
 }
 
-// hint picks a short, actionable diagnostic: bd's stderr when it has
-// something to say, otherwise the underlying error.
+// hint picks a short, actionable diagnostic: bd's primary stderr line (its
+// "Error:" line when present, else the first non-empty line), falling back
+// to the underlying error. Multi-line stderr never crosses this boundary:
+// one failure stays one line in the log and the board error panel, and bd's
+// advisory tails (Hint/To diagnose/Tip blocks, which can carry local config
+// detail such as sync.remote URLs) stay out of both.
 func (c *Client) hint(stderr string, err error) string {
-	if msg := strings.TrimSpace(stderr); msg != "" {
-		return truncateSoft(msg, 400)
+	if line := diagnosticLine(stderr); line != "" {
+		return truncateSoft(line, 400)
 	}
 	return truncateSoft(err.Error(), 400)
+}
+
+// diagnosticLine returns bd's primary stderr line. bd prints warnings and
+// blank lines before the failure and advisory blocks after it, so the
+// "Error:" line wins when one exists; otherwise the first non-empty line.
+func diagnosticLine(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	for _, l := range lines {
+		if s := strings.TrimSpace(l); strings.HasPrefix(s, "Error:") {
+			return s
+		}
+	}
+	for _, l := range lines {
+		if s := strings.TrimSpace(l); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // truncateSoft shortens long diagnostics while keeping the tail (the part

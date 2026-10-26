@@ -66,7 +66,7 @@ never log bead titles, descriptions, or other issue content.
   matches the graph snapshot (`mergeGraphMatches` in `internal/tui/app.go`),
   so beads claimed into another status stay findable from any tab. Keep
   that split: never leak cross-status rows into an unfiltered tab.
-- The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`).
+- The Graph never leaks: `bd` stdout/stderr failures are reduced to a single sanitized error (`jsonCall` in `internal/bd/bd.go`); tests assert raw output stays internal (`TestJsonCallNeverLeaksRawOutput`). The sanitized hint is one line: `diagnosticLine` picks bd's first `Error:` line (else the first non-empty line), so multi-line advisory tails (Hint/To diagnose/Tip, which can carry local config such as sync.remote URLs) never reach the log or the board error panel (`TestBdFailureSurfacesOnlyTheErrorLine`).
 - Board reloads never blank the screen: `applyBoard` keeps the last good rows on
   failure, shows a status-line notice, and retries with backoff (2/5/15 s, then
   capped) using an extended 60 s board deadline while a retry is in flight

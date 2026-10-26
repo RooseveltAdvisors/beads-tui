@@ -114,8 +114,14 @@ func TestEmptyWorkspaceUsesRealBdLoadingPath(t *testing.T) {
 		t.Errorf("workspace error %q missing the ready board load command", probe.BoardError)
 	}
 	lowerError := strings.ToLower(probe.BoardError)
-	if !strings.Contains(lowerError, "beads") || !strings.Contains(probe.BoardError, "BEADS_DIR") {
-		t.Errorf("workspace error %q missing a workspace cause and BEADS_DIR hint", probe.BoardError)
+	if !strings.Contains(lowerError, "beads") {
+		t.Errorf("workspace error %q missing a workspace cause", probe.BoardError)
+	}
+	// The surfaced error is bd's single diagnostic line; the actionable
+	// BEADS_DIR guidance comes from the board's own error panel, which
+	// RenderedError asserts below.
+	if strings.Contains(probe.BoardError, "\n") {
+		t.Errorf("workspace error %q spans multiple lines", probe.BoardError)
 	}
 	if !probe.RenderedError {
 		t.Fatalf("workspace error was not rendered as a loud actionable board error")

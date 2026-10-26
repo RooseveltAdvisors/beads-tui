@@ -293,6 +293,9 @@ func TestGlobalDeleteConfirmShowsReadableIDsWithWorkspace(t *testing.T) {
 func TestGlobalFooterKeepsSortMode(t *testing.T) {
 	m, a, b, _, _ := databaseTestModel(t)
 	m.databaseCache = dbindex.Cache{Scanned: time.Now(), Entries: []dbindex.Entry{{Path: a}, {Path: b}}}
+	// The footer hint renders the active database path; pin a short, realistic
+	// one so the assertion does not depend on the host's tmpdir length.
+	m.database = "/opt/ra/firstmate/.beads"
 	m.width, m.height = 140, 30
 	m.sortMode = SortPriority
 	m.globalMode = true

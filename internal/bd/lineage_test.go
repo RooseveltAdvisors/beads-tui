@@ -27,7 +27,7 @@ func TestFieldSnapshot(t *testing.T) {
 func TestUpdateIssueLineageIncludesActor(t *testing.T) {
 	var inputs []string
 	c := &Client{
-		Actor: "wiseman",
+		Actor:    "wiseman",
 		lookPath: func(string) (string, error) { return "bd", nil },
 		run: func(_ context.Context, _ string, args ...string) (string, string, error) {
 			// show or update
@@ -81,7 +81,7 @@ func TestDeleteIssuesBatch(t *testing.T) {
 	var runArgs []string
 	var commentInputs []string
 	c := &Client{
-		Actor: "wiseman",
+		Actor:    "wiseman",
 		lookPath: func(string) (string, error) { return "bd", nil },
 		run: func(_ context.Context, _ string, args ...string) (string, string, error) {
 			runArgs = append([]string(nil), args...)
@@ -105,4 +105,3 @@ func TestDeleteIssuesBatch(t *testing.T) {
 		t.Fatalf("unexpected delete args: %q", joined)
 	}
 }
-
