@@ -513,9 +513,63 @@ func TestBdFailureCarriesStderr(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{"bd list --status open --json -n 0", "No active beads workspace found", "BEADS_DIR"} {
+	for _, want := range []string{"bd list --status open --json -n 0", "No active beads workspace found"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	// The failure is one sanitized line: bd's advisory tail stays out of the
+	// error, the log, and the board error panel.
+	if strings.Contains(err.Error(), "BEADS_DIR") {
+		t.Errorf("error %q carries bd's advisory tail", err)
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("error %q spans multiple lines", err)
+	}
+}
+
+// bd prints warnings and blanks before the failure and advisory blocks after
+// it (Hint/To diagnose/Tip, sometimes carrying local config such as
+// sync.remote URLs). The surfaced error must be the single "Error:" line.
+func TestBdFailureSurfacesOnlyTheErrorLine(t *testing.T) {
+	stderr := "Warning: /ws/.beads has permissions 0775 (recommended: 0700).\n" +
+		"\n" +
+		"Error: failed to open database: database \"bt\" not found on Dolt server at 127.0.0.1:3308\n" +
+		"\n" +
+		"To diagnose:\n" +
+		"  bd doctor                  # Check server and database health\n" +
+		"\n" +
+		"Tip: sync.remote is configured (git+ssh://git@example.invalid/SECRET-REMOTE.git).\n"
+	c := stubClient(t, func(args []string) (string, string, error) {
+		return "", stderr, errors.New("exit status 1")
+	})
+	_, err := c.List(context.Background(), ViewOpen)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "Error: failed to open database: database \"bt\" not found on Dolt server at 127.0.0.1:3308") {
+		t.Errorf("error %q missing bd's Error line", err)
+	}
+	for _, leak := range []string{"Warning:", "To diagnose", "bd doctor", "SECRET-REMOTE", "\n"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("error %q leaks %q from bd's advisory output", err, leak)
+		}
+	}
+}
+
+func TestDiagnosticLinePrefersErrorLine(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{"error after warnings", "Warning: one\nWarning: two\nError: the reason\nHint: advice", "Error: the reason"},
+		{"first non-empty without error", "\n  \nsomething broke\nmore detail", "something broke"},
+		{"empty", "\n \n", ""},
+	}
+	for _, tc := range cases {
+		if got := diagnosticLine(tc.stderr); got != tc.want {
+			t.Errorf("%s: diagnosticLine(%q) = %q, want %q", tc.name, tc.stderr, got, tc.want)
 		}
 	}
 }
