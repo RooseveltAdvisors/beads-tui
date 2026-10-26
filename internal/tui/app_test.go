@@ -1241,17 +1241,26 @@ func TestHelpToggle(t *testing.T) {
 		seen.WriteByte('\n')
 	}
 	view := seen.String()
-	for _, want := range []string{"ready", "open", "in_progress", "blocked", "closed", "deferred", "Ctrl-d", "collapse", "unfold", "expand all", "tui-lineage", "crud", "⇣", "⇡", "keybinds"} {
-		if !strings.Contains(view, want) {
+	for _, want := range []string{
+		"ready", "open", "in_progress", "blocked", "closed", "deferred",
+		"ctrl+d", "collapse", "unfold", "expand all", "tui-lineage", "crud",
+		"⇣", "⇡", "keybinds", "ctrl+o", "ctrl+e", "databases", "KEY", "ACTION",
+	} {
+		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
 			t.Errorf("help missing %q", want)
 		}
 	}
 	if m.helpMaxOffset() < 1 {
 		t.Fatalf("expected scrollable help, maxOffset=%d", m.helpMaxOffset())
 	}
+	// Unmatched keys keep the modal open (Herdr style).
 	m = sendKey(t, m, "x")
+	if !m.help {
+		t.Error("unmatched key should keep help open")
+	}
+	m = sendKey(t, m, "esc")
 	if m.help {
-		t.Error("any key should close help")
+		t.Error("esc should close help")
 	}
 }
 

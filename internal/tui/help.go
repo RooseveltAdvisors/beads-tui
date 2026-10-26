@@ -5,17 +5,16 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/RooseveltAdvisors/beads-tui/internal/bd"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Help follows herdr's keybind help spirit:
-//   - named groups (lowercase)
-//   - key column width = max key width in the filtered set
-//   - bold keys, plain labels
-//   - / filters by key or label
-//   - scrollable modal body
+// Help follows Herdr's keybind help modal:
+//   - named lowercase groups
+//   - aligned key column (bold mauve) + plain labels
+//   - / opens filter; type to search keys or labels
+//   - j/k · pgup/pgdn scroll; esc closes (does not dismiss on random keys)
+//   - footer chrome: search · scroll · close
 
 type helpEntry struct {
 	Key   string
@@ -33,31 +32,43 @@ func (m Model) helpGroups() []helpGroup {
 		if i == 9 {
 			break
 		}
-		views = append(views, helpEntry{fmt.Sprintf("%d", i+1), view.Label()})
+		views = append(views, helpEntry{fmt.Sprintf("%d", i+1), "switch to " + view.Label()})
 	}
 
 	return []helpGroup{
 		{
 			Name: "global",
 			Entries: []helpEntry{
-				{"?", "this help"},
-				{"q  esc  Ctrl+C", "quit"},
-				{"Esc", "back / clear filter / leave detail"},
-				{"r", "reload board (keep view/sort/search)"},
-				{"R", "reset to ready + defaults"},
+				{"?", "open this help"},
+				{"/", "search help (when open) · board search (on board)"},
+				{"q  esc  ctrl+c", "quit beads-tui"},
+				{"esc", "back one layer · then quit on the plain board"},
+				{"r", "reload board (keep view / sort / search)"},
+				{"R", "reset to ready + default sort/filter"},
 				{"y", "yank menu (id · title · url)"},
-				{"a", "attach to assignee's live Herdr or tmux session"},
+				{"a", "attach to assignee Herdr / tmux session"},
+			},
+		},
+		{
+			Name: "databases",
+			Entries: []helpEntry{
+				{"ctrl+o", "database picker (switch workspace)"},
+				{"ctrl+e", "toggle global board (all workspaces)"},
+				{"enter", "open selected database (in picker)"},
+				{"R", "rescan local .beads stores (in picker)"},
+				{"j  k", "move in picker"},
+				{"esc", "close picker"},
 			},
 		},
 		{
 			Name: "navigation",
 			Entries: []helpEntry{
-				{"j  k   ↑ ↓", "move selection"},
+				{"j  k   ↑  ↓", "move selection"},
 				{"g", "top of list"},
 				{"G", "bottom · or open dependency graph"},
-				{"space  PgDn", "page down"},
-				{"b  PgUp", "page up"},
-				{"Ctrl-d  Ctrl-u", "half-page down / up"},
+				{"space  pgdn  ctrl+f", "page down"},
+				{"b  pgup  ctrl+b", "page up"},
+				{"ctrl+d  ctrl+u", "half-page down / up"},
 			},
 		},
 		{
@@ -69,7 +80,7 @@ func (m Model) helpGroups() []helpGroup {
 				{"L", "focus detail pane"},
 				{"*", "expand all folds"},
 				{"T", "flat list ↔ tree"},
-				{"|", "layout: side · stacked · auto"},
+				{"|", "layout: side · stacked · auto (cycle)"},
 			},
 		},
 		{
@@ -79,23 +90,21 @@ func (m Model) helpGroups() []helpGroup {
 		{
 			Name: "sort / filter",
 			Entries: []helpEntry{
-				{"ctrl+o", "switch database (Enter opens · R rescans · esc closes)"},
-				{"ctrl+e", "toggle global board (search all workspaces)"},
-				{"s", "sort: created · updated · alpha · deps · depends · priority"},
+				{"s", "cycle sort: created · updated · alpha · deps · depends · due · priority"},
 				{"t", "filter to selected bead's labels"},
-				{"o", "view options (row/detail fields)"},
-				{"/", "search prompt (board) · filter this help when open"},
+				{"o", "view options (row / detail fields)"},
+				{"/", "board search prompt"},
+				{"enter", "apply board filter"},
+				{"tab", "accept search completion"},
+				{"↑  ↓", "cycle search completions"},
 			},
 		},
 		{
 			Name: "search syntax",
 			Entries: []helpEntry{
-				{"Enter", "apply board filter"},
-				{"Tab", "accept completion"},
-				{"↑ ↓", "cycle completions"},
-				{"spaces", "AND"},
-				{"|", "OR"},
-				{"!", "NOT"},
+				{"word word", "AND"},
+				{"a | b", "OR"},
+				{"!word", "NOT"},
 				{"status:open", "by status"},
 				{"priority:P1", "by priority"},
 				{"label:x", "by label"},
@@ -112,28 +121,29 @@ func (m Model) helpGroups() []helpGroup {
 				{"c", "open comment thread"},
 				{"C", "open thread + focus composer"},
 				{"a", "add comment (in thread)"},
-				{"Enter", "submit comment"},
-				{"Esc  q", "back to board"},
+				{"enter", "submit comment"},
+				{"esc  q", "back to board"},
 			},
 		},
 		{
 			Name: "crud",
 			Entries: []helpEntry{
-				{"v  V", "visual multi-select (d batch delete)"},
+				{"v  V", "visual multi-select"},
 				{"n", "new issue (title; due +7d)"},
-				{"e", "edit bead in $EDITOR / vim (save applies)"},
-				{"x", "close with reason (in visual: delete)"},
+				{"e", "edit bead in $EDITOR"},
+				{"x", "close with reason (visual: delete)"},
 				{"d  D", "delete forever (y / n)"},
-				{"Enter", "commit field / create / close"},
-				{"Esc", "cancel visual / CRUD"},
+				{"enter", "commit field / create / close"},
+				{"esc", "cancel visual / CRUD"},
 			},
 		},
 		{
 			Name: "audit",
 			Entries: []helpEntry{
 				{"tui-lineage", "comment stamped on every write"},
-				{"actor=", "BEADS_ACTOR (agents) or git/$USER (you)"},
+				{"actor=", "BEADS_ACTOR (agents) or git/$USER"},
 				{"bd --actor", "same identity on events"},
+				{"BEADS_ACTOR", "override actor for agents"},
 			},
 		},
 		{
@@ -145,7 +155,7 @@ func (m Model) helpGroups() []helpGroup {
 				{m.vocab.Icon("closed") + " closed", "row status"},
 				{m.vocab.Icon("deferred") + " deferred", "row status"},
 				{m.vocab.Icon("hold") + " hold", "row status"},
-				{"●", "assignee has a live Herdr/tmux session"},
+				{"●", "assignee has live Herdr/tmux session"},
 				{"↻", "recurring"},
 				{"⚠", "overdue"},
 				{"⇣N", "blocked-by N"},
@@ -156,6 +166,7 @@ func (m Model) helpGroups() []helpGroup {
 	}
 }
 
+// filterHelpGroups matches keys, labels, and group names (group hit keeps all its rows).
 func filterHelpGroups(groups []helpGroup, query string) []helpGroup {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
@@ -163,14 +174,14 @@ func filterHelpGroups(groups []helpGroup, query string) []helpGroup {
 	}
 	var out []helpGroup
 	for _, g := range groups {
-		var entries []helpEntry
 		if strings.Contains(strings.ToLower(g.Name), q) {
-			entries = append(entries, g.Entries...)
-		} else {
-			for _, e := range g.Entries {
-				if strings.Contains(strings.ToLower(e.Key), q) || strings.Contains(strings.ToLower(e.Label), q) {
-					entries = append(entries, e)
-				}
+			out = append(out, g)
+			continue
+		}
+		var entries []helpEntry
+		for _, e := range g.Entries {
+			if strings.Contains(strings.ToLower(e.Key), q) || strings.Contains(strings.ToLower(e.Label), q) {
+				entries = append(entries, e)
 			}
 		}
 		if len(entries) > 0 {
@@ -181,7 +192,7 @@ func filterHelpGroups(groups []helpGroup, query string) []helpGroup {
 }
 
 func helpKeyWidth(groups []helpGroup) int {
-	w := 8
+	w := 10
 	for _, g := range groups {
 		for _, e := range g.Entries {
 			if n := displayWidth(e.Key); n > w {
@@ -189,8 +200,8 @@ func helpKeyWidth(groups []helpGroup) int {
 			}
 		}
 	}
-	if w > 22 {
-		w = 22
+	if w > 24 {
+		w = 24
 	}
 	return w
 }
@@ -198,7 +209,7 @@ func helpKeyWidth(groups []helpGroup) int {
 func padHelpKey(key string, width int) string {
 	n := displayWidth(key)
 	if n >= width {
-		return key
+		return truncate(key, width)
 	}
 	return key + strings.Repeat(" ", width-n)
 }
@@ -207,66 +218,79 @@ func (m Model) helpLines(width int) []string {
 	groups := filterHelpGroups(m.helpGroups(), m.helpFilter)
 	inner := max(1, width-2)
 
-	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("183")).Bold(true)  // mauve-ish
-	headStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Bold(true) // accent
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	// Herdr palette mapping: accent headings, mauve keys, body text labels.
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("183")).Bold(true)
+	headStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	ruleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 
 	if len(groups) == 0 {
-		msg := dimStyle.Render(" no matching keybinds")
-		return []string{msg}
+		var lines []string
+		if m.helpFilterActive {
+			lines = append(lines, keyStyle.Render(" / ")+styleBold.Render(m.helpFilter)+keyStyle.Render("█"))
+		} else if q := strings.TrimSpace(m.helpFilter); q != "" {
+			lines = append(lines, dimStyle.Render(" filter: ")+styleBold.Render(q))
+		}
+		lines = append(lines, dimStyle.Render(" no matching keybinds"))
+		return lines
 	}
 
 	kw := helpKeyWidth(groups)
 	var lines []string
 
-	title := styleBold.Render("beads-tui keybinds")
-	lines = append(lines, title)
+	// Search row (Herdr header second line).
 	if m.helpFilterActive {
-		lines = append(lines, keyStyle.Render(" / ")+styleBold.Render(m.helpFilter))
+		cursor := "█"
+		lines = append(lines, keyStyle.Render(" / ")+styleBold.Render(m.helpFilter)+keyStyle.Render(cursor))
+	} else if q := strings.TrimSpace(m.helpFilter); q != "" {
+		lines = append(lines, dimStyle.Render(" filter: ")+styleBold.Render(q)+dimStyle.Render("  ·  / edit · esc clear"))
 	} else {
-		lines = append(lines, dimStyle.Render(" press / to filter by command or shortcut · esc closes"))
+		lines = append(lines, dimStyle.Render(" press / to filter by command or shortcut"))
 	}
-	lines = append(lines, "")
+	lines = append(lines, ruleStyle.Render(strings.Repeat("─", inner)))
+
+	// Column header for the table.
+	colKey := dimStyle.Render(" " + padHelpKey("KEY", kw) + " ")
+	colAct := dimStyle.Render("ACTION")
+	lines = append(lines, colKey+colAct)
+	lines = append(lines, ruleStyle.Render(strings.Repeat("─", inner)))
 
 	for _, g := range groups {
 		lines = append(lines, headStyle.Render(" "+g.Name))
 		for _, e := range g.Entries {
-			row := keyStyle.Render(" "+padHelpKey(e.Key, kw)+" ") + labelStyle.Render(e.Label)
-			// wrap long labels under the key column
-			for _, wline := range wrapHelpRow(row, e.Key, e.Label, kw, inner, keyStyle, labelStyle) {
+			for _, wline := range wrapHelpRow(e.Key, e.Label, kw, inner, keyStyle, labelStyle) {
 				lines = append(lines, wline)
 			}
 		}
 		lines = append(lines, "")
 	}
 
-	// Priority pills on their own line at end when unfiltered
 	if strings.TrimSpace(m.helpFilter) == "" {
-		lines = append(lines, "Priority: "+strings.Join([]string{
+		lines = append(lines, ruleStyle.Render(strings.Repeat("─", inner)))
+		lines = append(lines, dimStyle.Render(" Priority: ")+strings.Join([]string{
 			priorityStyle(0).Render("P0"), priorityStyle(1).Render("P1"),
 			priorityStyle(2).Render("P2"), priorityStyle(3).Render("P3"),
 			priorityStyle(4).Render("P4"),
 		}, " "))
-		lines = append(lines, "Status:   "+strings.Join([]string{
+		lines = append(lines, dimStyle.Render(" Status:   ")+strings.Join([]string{
 			m.vocab.StatusPill("open"), m.vocab.StatusPill("in_progress"),
 			m.vocab.StatusPill("blocked"), m.vocab.StatusPill("closed"),
 			m.vocab.StatusPill("deferred"), m.vocab.StatusPill("hold"),
 		}, " "))
 	}
 
-	_ = bd.ViewReady // keep import if views empty edge - actually unused; leave vocab
 	return lines
 }
 
-func wrapHelpRow(full, key, label string, kw, inner int, keyStyle, labelStyle lipgloss.Style) []string {
-	if displayWidth(stripANSI(full)) <= inner {
-		return []string{full}
-	}
-	// first line: key + as much label as fits
+func wrapHelpRow(key, label string, kw, inner int, keyStyle, labelStyle lipgloss.Style) []string {
 	prefix := " " + padHelpKey(key, kw) + " "
 	prefixW := displayWidth(prefix)
 	budget := max(8, inner-prefixW)
+	full := keyStyle.Render(prefix) + labelStyle.Render(label)
+	if displayWidth(stripANSI(full)) <= inner {
+		return []string{full}
+	}
 	var out []string
 	rest := label
 	first := true
@@ -275,11 +299,9 @@ func wrapHelpRow(full, key, label string, kw, inner int, keyStyle, labelStyle li
 		if first {
 			out = append(out, keyStyle.Render(prefix)+labelStyle.Render(chunk))
 			first = false
-			budget = max(8, inner-prefixW)
-			rest = next
-			continue
+		} else {
+			out = append(out, strings.Repeat(" ", prefixW)+labelStyle.Render(chunk))
 		}
-		out = append(out, strings.Repeat(" ", prefixW)+labelStyle.Render(chunk))
 		rest = next
 	}
 	return out
@@ -295,7 +317,7 @@ func takeWidth(s string, width int) (chunk, rest string) {
 		if r == '\t' {
 			rw = 4
 		} else if r > unicode.MaxASCII {
-			rw = 2 // rough
+			rw = 2
 		}
 		if w+rw > width && i > 0 {
 			return s[:i], strings.TrimLeft(s[i:], " ")
@@ -331,26 +353,49 @@ func (m Model) helpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.helpFilter = ""
 			m.helpOffset = 0
 			return m, nil
+		case "j", "down", "ctrl+n":
+			m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
+			return m, nil
+		case "k", "up", "ctrl+p":
+			m.helpOffset = max(m.helpOffset-1, 0)
+			return m, nil
+		case "pgdown", "ctrl+f", " ":
+			m.helpOffset = min(m.helpOffset+m.helpPageStep(), m.helpMaxOffset())
+			return m, nil
+		case "pgup", "ctrl+b", "b":
+			m.helpOffset = max(m.helpOffset-m.helpPageStep(), 0)
+			return m, nil
 		}
 		if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
 			m.helpFilter += key
 			m.helpOffset = 0
 			return m, nil
 		}
-		// ignore other keys while filtering
 		return m, nil
 	}
 	switch key {
 	case "/":
 		m.helpFilterActive = true
 		return m, nil
-	case "j", "down":
+	case "j", "down", "ctrl+n":
 		m.helpOffset = min(m.helpOffset+1, m.helpMaxOffset())
 		return m, nil
-	case "k", "up":
+	case "k", "up", "ctrl+p":
 		m.helpOffset = max(m.helpOffset-1, 0)
 		return m, nil
-	case "esc", "q", "?":
+	case "pgdown", "ctrl+f", " ", "ctrl+d":
+		m.helpOffset = min(m.helpOffset+m.helpPageStep(), m.helpMaxOffset())
+		return m, nil
+	case "pgup", "ctrl+b", "b", "ctrl+u":
+		m.helpOffset = max(m.helpOffset-m.helpPageStep(), 0)
+		return m, nil
+	case "g", "home":
+		m.helpOffset = 0
+		return m, nil
+	case "G", "end":
+		m.helpOffset = m.helpMaxOffset()
+		return m, nil
+	case "esc", "q", "?", "enter":
 		m.help = false
 		m.helpOffset = 0
 		m.helpFilter = ""
@@ -361,10 +406,11 @@ func (m Model) helpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.saveState()
 		return m, tea.Quit
 	}
-	// any other key closes help (herdr: esc is primary; we keep one-shot dismiss for muscle memory)
-	m.help = false
-	m.helpOffset = 0
-	m.helpFilter = ""
-	m.helpFilterActive = false
+	// Herdr keeps the modal open on unmatched keys so / discovery is not punished.
 	return m, nil
+}
+
+func (m Model) helpPageStep() int {
+	_, _, height := m.helpDimensions()
+	return max(1, height-4)
 }
