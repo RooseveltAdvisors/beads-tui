@@ -81,6 +81,7 @@ func runTUI() error {
 	defer done()
 	defer logfile.Recover()
 
+	tui.BuildVersion = version
 	client := bd.New()
 	// Actor identity for tui-lineage stamps: agents set BEADS_ACTOR; humans use git/USER.
 	client.SetActor(bd.ResolveActor())

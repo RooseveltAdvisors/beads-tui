@@ -2796,8 +2796,26 @@ func (m Model) renderFilterPrompt(w int) string {
 }
 
 // renderHeader paints the title bar: view name and tabs.
+// BuildVersion is stamped from main at startup. Shown in the header so a
+// stale popup or a rogue unstamped build is visible at a glance.
+var BuildVersion string
+
+// buildLabel shortens a stamped sha for the header; an unstamped build
+// ("0.1.0") is shown as-is - that is exactly the tell we want to see.
+func buildLabel() string {
+	v := strings.TrimSpace(BuildVersion)
+	if len(v) >= 12 {
+		return v[:7]
+	}
+	return v
+}
+
 func (m Model) renderHeader(w int) string {
-	left := styleBold.Render("beads-tui") + "  " + styleDim.Render("·") + "  " + m.vocabViewLabel()
+	left := styleBold.Render("beads-tui")
+	if v := buildLabel(); v != "" {
+		left += styleDim.Render(" " + v)
+	}
+	left += "  " + styleDim.Render("·") + "  " + m.vocabViewLabel()
 	if m.multiDatabase {
 		// The database identity outranks tabs when the terminal is narrow.
 		if displayWidth(left) >= w {

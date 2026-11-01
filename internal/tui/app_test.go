@@ -1740,3 +1740,29 @@ func TestEscDismissesBeforeQuit(t *testing.T) {
 		t.Fatal("second esc at top level should quit")
 	}
 }
+
+func TestHeaderShowsBuildVersion(t *testing.T) {
+	orig := BuildVersion
+	t.Cleanup(func() { BuildVersion = orig })
+	m := New(nil)
+	m.width, m.height = 100, 30
+
+	BuildVersion = "ed10c2bca8d12400ea6578ead87fed25d8ba660d"
+	view := stripANSI(m.renderHeader(m.width))
+	if !strings.Contains(view, "ed10c2b") {
+		t.Fatalf("stamped sha missing from header: %q", view)
+	}
+
+	// An unstamped rogue build must also be visible - that is the tell.
+	BuildVersion = "0.1.0"
+	view = stripANSI(m.renderHeader(m.width))
+	if !strings.Contains(view, "0.1.0") {
+		t.Fatalf("unstamped version missing from header: %q", view)
+	}
+
+	BuildVersion = ""
+	view = stripANSI(m.renderHeader(m.width))
+	if strings.Contains(view, "sha") {
+		t.Fatalf("empty version should not render: %q", view)
+	}
+}
