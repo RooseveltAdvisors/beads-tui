@@ -122,6 +122,18 @@ func TestStructurallyValidAcceptsBdDefaultDatabaseShape(t *testing.T) {
 	if StructurallyValid(filepath.Join(root, "stray", ".beads")) {
 		t.Fatal("bare embeddeddolt/repo_state.json accepted - bd would auto-init it")
 	}
+	// Stray one level deeper: embeddeddolt/<db>/repo_state.json with no
+	// .dolt directory - bd never writes it and would auto-init beside it.
+	deep := filepath.Join(root, "stray2", ".beads", "embeddeddolt", "mydb")
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "repo_state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if StructurallyValid(filepath.Join(root, "stray2", ".beads")) {
+		t.Fatal("bare embeddeddolt/<db>/repo_state.json accepted - bd would auto-init it")
+	}
 	// Old default shape: embeddeddolt/<name>/.dolt as a DIRECTORY.
 	old := filepath.Join(root, "legacy", ".beads", "embeddeddolt", "beads", ".dolt")
 	if err := os.MkdirAll(old, 0o700); err != nil {

@@ -108,15 +108,15 @@ func StructurallyValid(beadsDir string) bool {
 	if err != nil {
 		return false
 	}
+	// dolt writes repo_state.json INSIDE .dolt/; accepting a bare
+	// embeddeddolt/<db>/repo_state.json (a shape bd never writes) lets bd
+	// auto-init a fresh database next to it during a "read-only" probe
+	// (critic iterations 5 and 6). Only the .dolt directory shape is real.
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		sub := filepath.Join(beadsDir, "embeddeddolt", e.Name())
-		if _, err := os.Stat(filepath.Join(sub, "repo_state.json")); err == nil {
-			return true
-		}
-		if fi, err := os.Stat(filepath.Join(sub, ".dolt")); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(filepath.Join(beadsDir, "embeddeddolt", e.Name(), ".dolt")); err == nil && fi.IsDir() {
 			return true
 		}
 	}
