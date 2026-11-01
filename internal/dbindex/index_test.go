@@ -101,16 +101,26 @@ func TestDiscoveryDeduplicatesStoreSymlinksWithoutFollowingPools(t *testing.T) {
 
 func TestStructurallyValidAcceptsBdDefaultDatabaseShape(t *testing.T) {
 	root := t.TempDir()
-	// wiseman-style: embeddeddolt/repo_state.json, no metadata.json.
+	// wiseman-style: embeddeddolt/<db>/.dolt dir, no metadata.json.
 	dir := filepath.Join(root, "wiseman", ".beads")
-	if err := os.MkdirAll(filepath.Join(dir, "embeddeddolt", "beads"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "embeddeddolt", "repo_state.json"), []byte("{}"), 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "embeddeddolt", "beads", ".dolt"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if !StructurallyValid(dir) {
 		t.Fatal("default-database store rejected")
+	}
+	// bd never writes embeddeddolt/repo_state.json; its probe auto-inits a
+	// fresh database inside such a directory (critic iteration 5), so the
+	// gate must reject it BEFORE any bd call.
+	stray := filepath.Join(root, "stray", ".beads", "embeddeddolt")
+	if err := os.MkdirAll(stray, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stray, "repo_state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if StructurallyValid(filepath.Join(root, "stray", ".beads")) {
+		t.Fatal("bare embeddeddolt/repo_state.json accepted - bd would auto-init it")
 	}
 	// Old default shape: embeddeddolt/<name>/.dolt as a DIRECTORY.
 	old := filepath.Join(root, "legacy", ".beads", "embeddeddolt", "beads", ".dolt")
