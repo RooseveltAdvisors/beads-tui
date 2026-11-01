@@ -209,6 +209,7 @@ type Model struct {
 	commentsLoading     bool
 	commentsPendingID   string
 	commentsOffset      int
+	commentsPendingG   bool
 	commentsGeneration  uint64
 	commentsInput       textinput.Model
 	commentsInputActive bool

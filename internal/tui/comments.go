@@ -140,15 +140,36 @@ func (m Model) commentsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.commentsOffset++
 	case "k", "up":
 		m.commentsOffset--
-	case "g":
+	case "ctrl+d", "ctrl+f", "pgdown", " ":
+		// Half/full page down: vim motions the board already honors.
+		m.commentsOffset += m.commentsPageStep(key)
+	case "ctrl+u", "ctrl+b", "pgup":
+		m.commentsOffset = max(0, m.commentsOffset-m.commentsPageStep(key))
+	case "g", "home":
+		// Top. Idempotent, so vim's gg lands here on either press.
 		m.commentsOffset = 0
-	case "G":
+	case "G", "end":
 		m.commentsOffset = m.commentsMaxOffset()
 	default:
 		return m, nil
 	}
 	m.commentsOffset = max(0, min(m.commentsOffset, m.commentsMaxOffset()))
 	return m, nil
+}
+
+// commentsPageStep sizes ctrl+d/u (half page) and ctrl+f/b (full page).
+func (m Model) commentsPageStep(key string) int {
+	_, h := m.width, m.height
+	if h <= 0 {
+		h = 24
+	}
+	visible := max(1, h-2)
+	switch key {
+	case "ctrl+d", "ctrl+u":
+		return max(1, visible/2)
+	default:
+		return visible
+	}
 }
 
 func (m Model) loadCommentsCmd(id string, generation uint64) tea.Cmd {
