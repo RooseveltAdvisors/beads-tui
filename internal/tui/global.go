@@ -387,7 +387,7 @@ func (m Model) partitionGlobalEntries() (probe []dbindex.Entry, skipped []string
 			// GAP-1 residual) and the rewrite reads as success, wiping the
 			// mark that should protect it. Mark structurally dead instead.
 			e.FailedAt = time.Now().UTC()
-			e.Error = "missing metadata.json (not a beads store)"
+			e.Error = "not a complete beads store (no metadata.json or embeddeddolt database)"
 			e.FailureClass = dbindex.FailureStructural
 			m.markDatabaseEntry(e)
 			skipped = append(skipped, e.Path)

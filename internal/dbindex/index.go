@@ -86,14 +86,44 @@ func ClassifyFailure(errMsg string) string {
 }
 
 // StructurallyValid reports whether a .beads directory plausibly holds a
-// store: metadata.json present. Probing anything else invites bd's
-// auto-init to rewrite the directory during what must be a read-only scan.
+// store, using the layouts bd 1.3.1 actually writes:
+//
+//	metadata.json at the root (newer stores), or
+//	embeddeddolt/repo_state.json (default-database stores), or
+//	embeddeddolt/<name>/ holding a repo_state.json or a .dolt directory.
+//
+// Probing anything else invites bd's auto-init to rewrite the directory
+// during what must be a read-only scan. A directory-shaped .dolt FILE
+// (garbage fixture) never passes, and a store with only formulas/ never
+// passes.
 func StructurallyValid(beadsDir string) bool {
 	if beadsDir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(beadsDir, "metadata.json"))
-	return err == nil
+	if fi, err := os.Stat(filepath.Join(beadsDir, "metadata.json")); err == nil && !fi.IsDir() {
+		return true
+	}
+	ed := filepath.Join(beadsDir, "embeddeddolt")
+	if _, err := os.Stat(filepath.Join(ed, "repo_state.json")); err == nil {
+		return true
+	}
+	entries, err := os.ReadDir(ed)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sub := filepath.Join(ed, e.Name())
+		if _, err := os.Stat(filepath.Join(sub, "repo_state.json")); err == nil {
+			return true
+		}
+		if fi, err := os.Stat(filepath.Join(sub, ".dolt")); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func (e Entry) Name() string { return filepath.Base(filepath.Dir(e.Path)) }

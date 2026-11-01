@@ -470,7 +470,7 @@ func (m Model) databaseMetadataCmd(parent context.Context, entries []dbindex.Ent
 		// rewrite the directory during a scan (critic GAP-1).
 		if !dbindex.StructurallyValid(entry.Path) {
 			entry.FailedAt = time.Now().UTC()
-			entry.Error = "missing metadata.json (not a beads store)"
+			entry.Error = "not a complete beads store (no metadata.json or embeddeddolt database)"
 			entry.FailureClass = dbindex.FailureStructural
 			return tea.Batch(func() tea.Msg { return databaseMetadataMsg{entry: entry, generation: generation} }, m.databaseMetadataCmd(parent, rest, generation))()
 		}
