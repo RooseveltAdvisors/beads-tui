@@ -451,13 +451,21 @@ func TestRescanResetsPreSkippedAndRRepartitions(t *testing.T) {
 		}
 	}
 	m.globalPreSkipped = []string{b}
-	// databaseScanMsg resets the stale pre-skip list.
+	// databaseScanMsg re-evaluates the partition instead of trusting the
+	// stale list: with the mark cleared and beta structurally valid, the
+	// store returns to the probe set and the pre-skip list empties.
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	updated, _ := m.Update(databaseScanMsg{entries: m.databaseCache.Entries, generation: m.databaseScanGeneration})
 	m = updated.(Model)
 	if len(m.globalPreSkipped) != 0 {
 		t.Fatalf("scan left stale pre-skip: %v", m.globalPreSkipped)
 	}
-	// r in global repartitions: dead beta leaves the probe set.
+	// r is an explicit retry: a marked but structurally valid store must
+	// return to the probe set (marks cleared, not trusted).
 	for i := range m.databaseCache.Entries {
 		if m.databaseCache.Entries[i].Path == b {
 			m.databaseCache.Entries[i].FailedAt = time.Now().UTC().Add(-time.Minute)
@@ -465,10 +473,14 @@ func TestRescanResetsPreSkippedAndRRepartitions(t *testing.T) {
 		}
 	}
 	m.repartitionGlobal()
+	found := false
 	for _, p := range m.aggregate.paths {
 		if p == b {
-			t.Fatal("r repartition kept the dead store in the probe set")
+			found = true
 		}
+	}
+	if !found {
+		t.Fatal("r retry kept the marked store out of the probe set")
 	}
 	_ = a
 }
@@ -618,5 +630,45 @@ func TestGlobalRetryClearsMarksAndReprobes(t *testing.T) {
 		if e.Path == b && e.FailedAt != (time.Time{}) {
 			t.Fatal("r retry did not clear failure marks")
 		}
+	}
+}
+
+func TestScanWhileGlobalRepartitionsInsteadOfProbingInvalid(t *testing.T) {
+	m, a, b, _, _ := databaseTestModel(t)
+	_ = b
+	m.width, m.height = 120, 30
+	if err := os.WriteFile(filepath.Join(a, "metadata.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(t.TempDir(), "dead", ".beads")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	base := m.databaseFactory
+	m.databaseFactory = func(path string) Backend {
+		calls++
+		return base(path)
+	}
+	m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: bad})
+	m = applyMsg(t, m, m.enterGlobal())
+	// R while global: the scan handler must repartition, so the invalid
+	// store is re-marked instead of probed.
+	m.beginDatabaseScan()
+	updated, _ := m.Update(databaseScanMsg{entries: append([]dbindex.Entry(nil), m.databaseCache.Entries...), generation: m.databaseScanGeneration})
+	m = updated.(Model)
+	for _, p := range m.aggregate.paths {
+		if p == bad {
+			t.Fatal("scan-while-global probed the invalid store")
+		}
+	}
+	var marked dbindex.Entry
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == bad {
+			marked = e
+		}
+	}
+	if !marked.Unavailable() || marked.FailureClass != dbindex.FailureStructural {
+		t.Fatalf("invalid store not re-marked after scan: %+v", marked)
 	}
 }

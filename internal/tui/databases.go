@@ -368,8 +368,11 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 			if m.globalCancel != nil {
 				m.globalCancel()
 			}
-			m.aggregate = newAggregate(m.databaseCache.Entries, m.databaseFactory, m.aggregate)
-			m.backend = m.aggregate
+			// Rebuild through the same partition the scan just cleared the
+			// marks for: an invalid directory must be re-marked structurally
+			// dead here, not handed to bd whose auto-init rewrites it and
+			// whose success then wipes the mark (critic iter-3 GAP-1).
+			m.repartitionGlobal()
 			commands = append(commands, m.startBoardLoad())
 		} else if m.database == "" && len(m.databaseCache.Entries) > 0 {
 			commands = append(commands, m.beginDatabaseSwitch(m.databaseCache.Entries[0].Path))
