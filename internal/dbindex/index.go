@@ -65,11 +65,18 @@ func ClassifyFailure(errMsg string) string {
 	for _, marker := range []string{
 		"incomplete database directory",
 		"cannot create database",
+		"cannot create db",
+		"creating_database",
 		"not found on dolt server",
 		"schema version mismatch",
 		"no such file or directory",
 		"interrupted create",
 		"invalid database directory",
+		// "no beads database found" is bd's most common structural death
+		// signal (critic iteration 2: 4 of the misclassified entries).
+		"no beads database found",
+		// embeddeddolt init-schema failures do not self-heal on retry.
+		"failed to open database: embeddeddolt",
 	} {
 		if strings.Contains(s, marker) {
 			return FailureStructural

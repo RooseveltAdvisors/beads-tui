@@ -18,6 +18,13 @@ import (
 func globalTestModel(t *testing.T) (Model, string, string, *fakeClient, *fakeClient) {
 	t.Helper()
 	m, a, b, fa, fb := databaseTestModel(t)
+	// Real stores carry metadata.json; the structural gate in
+	// partitionGlobalEntries treats its absence as death.
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	m.width, m.height = 160, 40
 	for _, f := range []*fakeClient{fa, fb} {
 		f.commentsByID = map[string][]bd.Comment{}
@@ -177,9 +184,21 @@ func TestGlobalCommentUsesDirectoryClientNotAmbientDatabase(t *testing.T) {
 func TestGlobalPartialResultsFailuresBoundedChainsAndStaleDelivery(t *testing.T) {
 	m, a, b, _, fb := databaseTestModel(t)
 	fb.failList = errors.New("database unavailable")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// More stores than workers ensure the remainder stays in command chains.
 	for i := 0; i < 3; i++ {
-		m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: filepath.Join(t.TempDir(), ".beads")})
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".beads", "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: filepath.Join(dir, ".beads")})
 	}
 	start := m.enterGlobal()
 	updated, load := m.Update(start())
@@ -504,4 +523,100 @@ func TestStructurallyInvalidStoreMarkedWithoutBd(t *testing.T) {
 		t.Fatalf("bd invoked for invalid store: %d calls", calls)
 	}
 	_ = b
+}
+
+func TestPartitionMarksInvalidStoresWithoutProbing(t *testing.T) {
+	m, a, b, _, _ := databaseTestModel(t)
+	_ = a
+	bad := filepath.Join(t.TempDir(), "dead", ".beads")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	base := m.databaseFactory
+	m.databaseFactory = func(path string) Backend {
+		calls++
+		return base(path)
+	}
+	// databaseTestModel's fixture dirs also lack metadata.json; give the
+	// healthy pair real markers so only `bad` is invalid.
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: bad})
+	probe, skipped := m.partitionGlobalEntries()
+	for _, p := range probe {
+		if p.Path == bad {
+			t.Fatal("invalid store in probe set")
+		}
+	}
+	if len(skipped) != 1 || skipped[0] != bad {
+		t.Fatalf("skipped=%v", skipped)
+	}
+	if calls != 0 {
+		t.Fatalf("factory called during partition: %d", calls)
+	}
+	var marked dbindex.Entry
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == bad {
+			marked = e
+		}
+	}
+	if !marked.Unavailable() || marked.FailureClass != dbindex.FailureStructural {
+		t.Fatalf("invalid store not marked: %+v", marked)
+	}
+}
+
+func TestClassifierCoversBd131StructuralMessages(t *testing.T) {
+	structural := []string{
+		"bd list --status open --json -n 0: Error: no beads database found",
+		"Error: failed to open database: embeddeddolt: init schema: embeddeddolt: creating_database: Error 1105: incomplete database directory from an interrupted create",
+		"Error: failed to open database: database \"bt\" not found on Dolt server at 127.0.0.1:3308",
+	}
+	for _, s := range structural {
+		if dbindex.ClassifyFailure(s) != dbindex.FailureStructural {
+			t.Errorf("misclassified as transient: %s", s)
+		}
+	}
+	transient := []string{
+		"bd list --ready --json -n 0: timed out; the beads store is busy or locked",
+		"context deadline exceeded",
+	}
+	for _, s := range transient {
+		if dbindex.ClassifyFailure(s) != dbindex.FailureTransient {
+			t.Errorf("misclassified as structural: %s", s)
+		}
+	}
+}
+
+func TestGlobalRetryClearsMarksAndReprobes(t *testing.T) {
+	m, a, b, _, fb := databaseTestModel(t)
+	_ = a
+	m.width, m.height = 120, 30
+	if err := os.WriteFile(filepath.Join(a, "metadata.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, "metadata.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fb.failList = errors.New("store busy or locked")
+	// A live probe failure marks beta; a manual retry must clear and re-probe.
+	m.markDatabaseFailure(b, errors.New("Error: no beads database found"))
+	m.repartitionGlobal()
+	found := false
+	for _, p := range m.aggregate.paths {
+		if p == b {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("r retry kept the marked store filtered out of the probe set")
+	}
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == b && e.FailedAt != (time.Time{}) {
+			t.Fatal("r retry did not clear failure marks")
+		}
+	}
 }
