@@ -354,3 +354,25 @@ func TestActiveDatabaseVisibleWithoutPicker(t *testing.T) {
 		t.Fatalf("header missing workspace pill color: %q", view[:min(300, len(view))])
 	}
 }
+
+func TestPickerMarksUnavailableStores(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	m, a, b, _, _ := databaseTestModel(t)
+	m.database = a
+	m.databasePicker = true
+	m.databaseIndex = 0
+	m.width, m.height = 100, 30
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == b {
+			m.databaseCache.Entries[i].FailedAt = time.Now().UTC().Add(-time.Minute)
+			m.databaseCache.Entries[i].Error = "interrupted create already exists"
+		}
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "unavailable") {
+		t.Fatalf("picker missing unavailable chip: %q", view)
+	}
+	if strings.Contains(view, "? issues") && strings.Count(view, "? issues") > 0 && !strings.Contains(view, b) {
+		t.Fatal("picker lost the dead entry entirely")
+	}
+}

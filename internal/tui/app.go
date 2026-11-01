@@ -1077,6 +1077,11 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		// Reload the current view/sort/filter in place. A failed or slow
 		// reload never discards the board that is already on screen.
+		if m.globalMode {
+			// The aggregate dropped cached-dead stores at entry; a manual
+			// retry must re-evaluate the cache so recovered stores return.
+			m.repartitionGlobal()
+		}
 		return m, m.startBoardLoad()
 	case "R":
 		wasReady := m.view == bd.ViewReady
@@ -3464,5 +3469,43 @@ func fitLine(left, right string, w int) string {
 
 // displayWidth reports the cell width of ANSI-styled text.
 func displayWidth(s string) int {
-	return runewidth.StringWidth(stripANSI(s))
+	return visualWidth(stripANSI(s))
+}
+
+// visualWidth extends runewidth with the two terminal behaviours it gets
+// wrong for real-world emoji: U+FE0F emoji-presentation sequences render as
+// a 2-cell glyph, and regional-indicator pairs render as one 2-cell flag.
+// Counting them naively (0 or 1 per rune) under-measures rows, pushes the
+// pane border off, and misaligns every column after the glyph.
+func visualWidth(s string) int {
+	w := 0
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case r == 0xFE0F:
+			// Presentation selector: the sequence already counted its base;
+			// widen the base by one to the 2-cell presentation.
+			if i > 0 && isEmojiBase(runes[i-1]) {
+				w++
+			}
+		case r >= 0x1F1E6 && r <= 0x1F1FF:
+			// Regional indicator: consume the pair as a single 2-cell flag.
+			if i+1 < len(runes) && runes[i+1] >= 0x1F1E6 && runes[i+1] <= 0x1F1FF {
+				w += 2
+				i++
+			} else {
+				w += runewidth.RuneWidth(r)
+			}
+		default:
+			w += runewidth.RuneWidth(r)
+		}
+	}
+	return w
+}
+
+func isEmojiBase(r rune) bool {
+	// Bases that render as 2 cells once VS16 attaches: misc symbols and
+	// dingbats blocks are the common ones in titles (❤ ☀ ✂ ➡).
+	return (r >= 0x2600 && r <= 0x27BF) || (r >= 0x1F300 && r <= 0x1FAFF) || r == 0x203C || r == 0x2049
 }

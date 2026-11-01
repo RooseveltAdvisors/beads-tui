@@ -18,6 +18,13 @@ import (
 func globalTestModel(t *testing.T) (Model, string, string, *fakeClient, *fakeClient) {
 	t.Helper()
 	m, a, b, fa, fb := databaseTestModel(t)
+	// Real stores carry metadata.json; the structural gate in
+	// partitionGlobalEntries treats its absence as death.
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	m.width, m.height = 160, 40
 	for _, f := range []*fakeClient{fa, fb} {
 		f.commentsByID = map[string][]bd.Comment{}
@@ -177,9 +184,21 @@ func TestGlobalCommentUsesDirectoryClientNotAmbientDatabase(t *testing.T) {
 func TestGlobalPartialResultsFailuresBoundedChainsAndStaleDelivery(t *testing.T) {
 	m, a, b, _, fb := databaseTestModel(t)
 	fb.failList = errors.New("database unavailable")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// More stores than workers ensure the remainder stays in command chains.
 	for i := 0; i < 3; i++ {
-		m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: filepath.Join(t.TempDir(), ".beads")})
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".beads", "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: filepath.Join(dir, ".beads")})
 	}
 	start := m.enterGlobal()
 	updated, load := m.Update(start())
@@ -313,5 +332,343 @@ func TestGlobalFooterKeepsSortMode(t *testing.T) {
 	plain = stripANSI(m.renderFooter(m.width))
 	if !strings.Contains(plain, "sort:"+m.sortMode.String()) && !strings.Contains(plain, "sort:"+truncate(m.sortMode.String(), 3)) {
 		t.Fatalf("sort cycle not visible in global footer: mode=%s footer=%q", m.sortMode.String(), plain)
+	}
+}
+
+func TestGlobalNegativeCacheSkipsDeadStoresWithoutReprobing(t *testing.T) {
+	// Build from the single-scope fixture: globalTestModel already entered
+	// global once, and enterGlobal is a no-op while already global.
+	m, a, b, fa, fb := databaseTestModel(t)
+	m.width, m.height = 120, 30
+	probes := map[string]int{}
+	base := m.databaseFactory
+	m.databaseFactory = func(path string) Backend {
+		probes[path]++
+		return base(path)
+	}
+	_ = fa
+	fb.failList = errors.New("dead store")
+	// Mark beta dead inside the TTL.
+	failed := time.Now().UTC().Add(-time.Minute)
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == b {
+			m.databaseCache.Entries[i].FailedAt, m.databaseCache.Entries[i].Error = failed, "interrupted create"
+		}
+	}
+	m = applyMsg(t, m, m.enterGlobal())
+	if len(m.aggregate.paths) != 1 || m.aggregate.paths[0] != a {
+		t.Fatalf("dead store probed anyway: paths=%v", m.aggregate.paths)
+	}
+	if probes[b] != 0 {
+		t.Fatalf("factory constructed dead backend: probes=%v", probes)
+	}
+	if len(m.globalPreSkipped) != 1 || m.globalPreSkipped[0] != b {
+		t.Fatalf("pre-skipped not recorded: %v", m.globalPreSkipped)
+	}
+	// Drive the load chain so the footer counters include the pre-skip.
+	updated, cmd := m.Update(globalLoadMsg{view: m.view, generation: m.boardGen})
+	m = updated.(Model)
+	if cmd != nil {
+		m = applyMsg(t, m, cmd)
+	}
+	if m.globalFailed != 1 || m.globalTotal != 2 {
+		t.Fatalf("skip counters wrong: failed=%d total=%d", m.globalFailed, m.globalTotal)
+	}
+	if !strings.Contains(stripANSI(m.View()), "skipped") {
+		t.Fatal("footer missing skip notice")
+	}
+}
+
+func TestGlobalNegativeCacheNeverFiltersActiveOrExplicit(t *testing.T) {
+	m, a, b, _, _ := globalTestModel(t)
+	failed := time.Now().UTC()
+	m.database, m.explicitDatabase = a, b
+	m.explicitDatabase = b
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == a || m.databaseCache.Entries[i].Path == b {
+			m.databaseCache.Entries[i].FailedAt, m.databaseCache.Entries[i].Error = failed, "x"
+		}
+	}
+	probe, skipped := m.partitionGlobalEntries()
+	if len(skipped) != 0 || len(probe) != 2 {
+		t.Fatalf("active/explicit filtered: probe=%v skipped=%v", probe, skipped)
+	}
+}
+
+func TestGlobalStoreResultMarksAndClearsFailure(t *testing.T) {
+	m, _, b, _, fb := globalTestModel(t)
+	fb.failList = errors.New("store busy or locked")
+	m = applyMsg(t, m, m.enterGlobal())
+	// Drive the store result through the production path.
+	st := m.aggregate
+	msg := st.storeCmd(context.Background(), []string{b}, m.view, m.boardGen)
+	updated, _ := m.Update(msg())
+	mm := updated.(Model)
+	var marked dbindex.Entry
+	for _, e := range mm.databaseCache.Entries {
+		if e.Path == b {
+			marked = e
+		}
+	}
+	if !marked.Unavailable() || marked.Error == "" {
+		t.Fatalf("failure not marked: %+v", marked)
+	}
+	// A later clean store result clears the mark through the same handler.
+	updated2, _ := mm.Update(globalStoreMsg{backend: st, path: b, store: aggregateStore{view: m.view}, view: m.view, generation: m.boardGen})
+	mm = updated2.(Model)
+	for _, e := range mm.databaseCache.Entries {
+		if e.Path == b && (e.FailedAt != (time.Time{}) || e.Error != "") {
+			t.Fatalf("success did not clear mark: %+v", e)
+		}
+	}
+}
+
+func TestEmojiPresentationAndFlagWidths(t *testing.T) {
+	cases := map[string]int{
+		"❤️ heart":        8,  // base 1 + VS16 widen = 2 cells + " heart"=6
+		"🇺🇸 flag":        7,  // RI pair = 2 cells + " flag"=5
+		"T1 ❤️ vs16":      10,
+		"café 中文 🚀":      12, // cafe(5, é combining-safe) + space + CJK 4 + space + rocket 2
+		"plain ascii":     11,
+	}
+	for s, want := range cases {
+		if got := displayWidth(s); got != want {
+			t.Errorf("displayWidth(%q) = %d, want %d", s, got, want)
+		}
+	}
+}
+
+func TestRescanResetsPreSkippedAndRRepartitions(t *testing.T) {
+	m, a, b, _, fb := databaseTestModel(t)
+	m.width, m.height = 120, 30
+	fb.failList = errors.New("store busy or locked")
+	// Enter global with beta healthy; then mark beta dead and rescan.
+	m = applyMsg(t, m, m.enterGlobal())
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == b {
+			m.databaseCache.Entries[i].FailedAt = time.Now().UTC()
+			m.databaseCache.Entries[i].FailureClass = dbindex.FailureStructural
+		}
+	}
+	m.globalPreSkipped = []string{b}
+	// databaseScanMsg re-evaluates the partition instead of trusting the
+	// stale list: with the mark cleared and beta structurally valid, the
+	// store returns to the probe set and the pre-skip list empties.
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updated, _ := m.Update(databaseScanMsg{entries: m.databaseCache.Entries, generation: m.databaseScanGeneration})
+	m = updated.(Model)
+	if len(m.globalPreSkipped) != 0 {
+		t.Fatalf("scan left stale pre-skip: %v", m.globalPreSkipped)
+	}
+	// r is an explicit retry: a marked but structurally valid store must
+	// return to the probe set (marks cleared, not trusted).
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == b {
+			m.databaseCache.Entries[i].FailedAt = time.Now().UTC().Add(-time.Minute)
+			m.databaseCache.Entries[i].FailureClass = dbindex.FailureStructural
+		}
+	}
+	m.repartitionGlobal()
+	found := false
+	for _, p := range m.aggregate.paths {
+		if p == b {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("r retry kept the marked store out of the probe set")
+	}
+	_ = a
+}
+
+func TestTransientFailureExpiresFast(t *testing.T) {
+	e := dbindex.Entry{FailedAt: time.Now().UTC().Add(-2 * time.Minute), FailureClass: dbindex.FailureTransient}
+	if e.Unavailable() {
+		t.Fatal("transient failure still cached after 2 minutes")
+	}
+	s := dbindex.Entry{FailedAt: time.Now().UTC().Add(-2 * time.Minute), FailureClass: dbindex.FailureStructural}
+	if !s.Unavailable() {
+		t.Fatal("structural failure expired too early")
+	}
+	if dbindex.ClassifyFailure("bd list: timed out; the beads store is busy or locked") != dbindex.FailureTransient {
+		t.Fatal("busy/locked misclassified as structural")
+	}
+	if dbindex.ClassifyFailure("Error 1105: incomplete database directory from an interrupted create") != dbindex.FailureStructural {
+		t.Fatal("interrupted create misclassified as transient")
+	}
+}
+
+func TestStructurallyInvalidStoreMarkedWithoutBd(t *testing.T) {
+	m, a, b, _, _ := databaseTestModel(t)
+	_ = a
+	bad := filepath.Join(t.TempDir(), "dead", ".beads")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	base := m.databaseFactory
+	m.databaseFactory = func(path string) Backend {
+		calls++
+		return base(path)
+	}
+	m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: bad})
+	cmd := m.databaseMetadataCmd(context.Background(), []dbindex.Entry{{Path: bad}}, 1)
+	var got dbindex.Entry
+	switch msg := cmd().(type) {
+	case databaseMetadataMsg:
+		got = msg.entry
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if m2, ok := c().(databaseMetadataMsg); ok && m2.entry.Path == bad {
+				got = m2.entry
+			}
+		}
+	}
+	if got.Path != bad || !got.Unavailable() || got.FailureClass != dbindex.FailureStructural {
+		t.Fatalf("invalid store not marked: %+v", got)
+	}
+	if calls != 0 {
+		t.Fatalf("bd invoked for invalid store: %d calls", calls)
+	}
+	_ = b
+}
+
+func TestPartitionMarksInvalidStoresWithoutProbing(t *testing.T) {
+	m, a, b, _, _ := databaseTestModel(t)
+	_ = a
+	bad := filepath.Join(t.TempDir(), "dead", ".beads")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	base := m.databaseFactory
+	m.databaseFactory = func(path string) Backend {
+		calls++
+		return base(path)
+	}
+	// databaseTestModel's fixture dirs also lack metadata.json; give the
+	// healthy pair real markers so only `bad` is invalid.
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(p, "metadata.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: bad})
+	probe, skipped := m.partitionGlobalEntries()
+	for _, p := range probe {
+		if p.Path == bad {
+			t.Fatal("invalid store in probe set")
+		}
+	}
+	if len(skipped) != 1 || skipped[0] != bad {
+		t.Fatalf("skipped=%v", skipped)
+	}
+	if calls != 0 {
+		t.Fatalf("factory called during partition: %d", calls)
+	}
+	var marked dbindex.Entry
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == bad {
+			marked = e
+		}
+	}
+	if !marked.Unavailable() || marked.FailureClass != dbindex.FailureStructural {
+		t.Fatalf("invalid store not marked: %+v", marked)
+	}
+}
+
+func TestClassifierCoversBd131StructuralMessages(t *testing.T) {
+	structural := []string{
+		"bd list --status open --json -n 0: Error: no beads database found",
+		"Error: failed to open database: embeddeddolt: init schema: embeddeddolt: creating_database: Error 1105: incomplete database directory from an interrupted create",
+		"Error: failed to open database: database \"bt\" not found on Dolt server at 127.0.0.1:3308",
+	}
+	for _, s := range structural {
+		if dbindex.ClassifyFailure(s) != dbindex.FailureStructural {
+			t.Errorf("misclassified as transient: %s", s)
+		}
+	}
+	transient := []string{
+		"bd list --ready --json -n 0: timed out; the beads store is busy or locked",
+		"context deadline exceeded",
+	}
+	for _, s := range transient {
+		if dbindex.ClassifyFailure(s) != dbindex.FailureTransient {
+			t.Errorf("misclassified as structural: %s", s)
+		}
+	}
+}
+
+func TestGlobalRetryClearsMarksAndReprobes(t *testing.T) {
+	m, a, b, _, fb := databaseTestModel(t)
+	_ = a
+	m.width, m.height = 120, 30
+	if err := os.WriteFile(filepath.Join(a, "metadata.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, "metadata.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fb.failList = errors.New("store busy or locked")
+	// A live probe failure marks beta; a manual retry must clear and re-probe.
+	m.markDatabaseFailure(b, errors.New("Error: no beads database found"))
+	m.repartitionGlobal()
+	found := false
+	for _, p := range m.aggregate.paths {
+		if p == b {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("r retry kept the marked store filtered out of the probe set")
+	}
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == b && e.FailedAt != (time.Time{}) {
+			t.Fatal("r retry did not clear failure marks")
+		}
+	}
+}
+
+func TestScanWhileGlobalRepartitionsInsteadOfProbingInvalid(t *testing.T) {
+	m, a, b, _, _ := databaseTestModel(t)
+	_ = b
+	m.width, m.height = 120, 30
+	if err := os.WriteFile(filepath.Join(a, "metadata.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(t.TempDir(), "dead", ".beads")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	base := m.databaseFactory
+	m.databaseFactory = func(path string) Backend {
+		calls++
+		return base(path)
+	}
+	m.databaseCache.Entries = append(m.databaseCache.Entries, dbindex.Entry{Path: bad})
+	m = applyMsg(t, m, m.enterGlobal())
+	// R while global: the scan handler must repartition, so the invalid
+	// store is re-marked instead of probed.
+	m.beginDatabaseScan()
+	updated, _ := m.Update(databaseScanMsg{entries: append([]dbindex.Entry(nil), m.databaseCache.Entries...), generation: m.databaseScanGeneration})
+	m = updated.(Model)
+	for _, p := range m.aggregate.paths {
+		if p == bad {
+			t.Fatal("scan-while-global probed the invalid store")
+		}
+	}
+	var marked dbindex.Entry
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == bad {
+			marked = e
+		}
+	}
+	if !marked.Unavailable() || marked.FailureClass != dbindex.FailureStructural {
+		t.Fatalf("invalid store not re-marked after scan: %+v", marked)
 	}
 }

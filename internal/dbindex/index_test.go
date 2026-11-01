@@ -98,3 +98,67 @@ func TestDiscoveryDeduplicatesStoreSymlinksWithoutFollowingPools(t *testing.T) {
 		t.Fatalf("canonical discovery: %+v", entries)
 	}
 }
+
+func TestStructurallyValidAcceptsBdDefaultDatabaseShape(t *testing.T) {
+	root := t.TempDir()
+	// wiseman-style: embeddeddolt/<db>/.dolt dir, no metadata.json.
+	dir := filepath.Join(root, "wiseman", ".beads")
+	if err := os.MkdirAll(filepath.Join(dir, "embeddeddolt", "beads", ".dolt"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !StructurallyValid(dir) {
+		t.Fatal("default-database store rejected")
+	}
+	// bd never writes embeddeddolt/repo_state.json; its probe auto-inits a
+	// fresh database inside such a directory (critic iteration 5), so the
+	// gate must reject it BEFORE any bd call.
+	stray := filepath.Join(root, "stray", ".beads", "embeddeddolt")
+	if err := os.MkdirAll(stray, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stray, "repo_state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if StructurallyValid(filepath.Join(root, "stray", ".beads")) {
+		t.Fatal("bare embeddeddolt/repo_state.json accepted - bd would auto-init it")
+	}
+	// Stray one level deeper: embeddeddolt/<db>/repo_state.json with no
+	// .dolt directory - bd never writes it and would auto-init beside it.
+	deep := filepath.Join(root, "stray2", ".beads", "embeddeddolt", "mydb")
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "repo_state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if StructurallyValid(filepath.Join(root, "stray2", ".beads")) {
+		t.Fatal("bare embeddeddolt/<db>/repo_state.json accepted - bd would auto-init it")
+	}
+	// Old default shape: embeddeddolt/<name>/.dolt as a DIRECTORY.
+	old := filepath.Join(root, "legacy", ".beads", "embeddeddolt", "beads", ".dolt")
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !StructurallyValid(filepath.Join(root, "legacy", ".beads")) {
+		t.Fatal("legacy .dolt-dir store rejected")
+	}
+	// Garbage: .dolt is a FILE, nothing else.
+	bad := filepath.Join(root, "dead", ".beads", "embeddeddolt", "incomplete")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, ".dolt"), []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if StructurallyValid(filepath.Join(root, "dead", ".beads")) {
+		t.Fatal("garbage store accepted")
+	}
+	// formulas-only directory.
+	fo := filepath.Join(root, "formulas", ".beads", "formulas")
+	if err := os.MkdirAll(fo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if StructurallyValid(filepath.Join(root, "formulas", ".beads")) {
+		t.Fatal("formulas-only store accepted")
+	}
+}

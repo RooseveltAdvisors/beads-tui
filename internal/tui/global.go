@@ -235,7 +235,13 @@ func (m *Model) enterGlobal() tea.Cmd {
 		return nil
 	}
 	m.saveState()
-	a := newAggregate(m.databaseCache.Entries, m.databaseFactory, m.aggregate)
+	// Negative cache: stores whose last probe failed inside dbindex.UnavailableTTL
+	// are excluded instead of re-probed. Every global entry today paid a full
+	// bd-list timeout for structurally dead stores (~/.beads, stale Dolt dirs).
+	// The active database and an explicit BEADS_DIR always stay in.
+	probe, skipped := m.partitionGlobalEntries()
+	m.globalPreSkipped = skipped
+	a := newAggregate(probe, m.databaseFactory, m.aggregate)
 	fresh := newModel(a, globalStateKey)
 	fresh.databaseState = m.databaseState
 	fresh.globalMode = true
@@ -262,7 +268,8 @@ func (m *Model) beginGlobalLoad(msg globalLoadMsg) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.globalContext = ctx
 	m.globalCancel = cancel
-	m.globalDone, m.globalTotal, m.globalFailed = 0, len(m.aggregate.paths), 0
+	m.globalDone, m.globalTotal, m.globalFailed = 0, len(m.aggregate.paths)+len(m.globalPreSkipped), len(m.globalPreSkipped)
+	m.globalDone = len(m.globalPreSkipped)
 	rows, _ := m.aggregate.List(ctx, m.view)
 	initial := m.applyGlobalSnapshot(rows)
 	var cmds []tea.Cmd
@@ -363,4 +370,70 @@ func (a *aggregateBackend) SetLabels(ctx context.Context, key string, labels []s
 }
 func (a *aggregateBackend) CreateIssue(context.Context, string, string) (*bd.Issue, error) {
 	return nil, fmt.Errorf("select a workspace with ctrl+o before creating an issue")
+}
+
+// partitionGlobalEntries splits indexed stores into (probe, preSkipped) using
+// the persisted failure state. The active and explicit stores are never
+// filtered: a transient failure must not hide the store the captain is on.
+func (m Model) partitionGlobalEntries() (probe []dbindex.Entry, skipped []string) {
+	for _, e := range m.databaseCache.Entries {
+		if e.Path == m.database || e.Path == m.explicitDatabase {
+			probe = append(probe, e)
+			continue
+		}
+		if !dbindex.StructurallyValid(e.Path) {
+			// A directory without metadata.json must never reach bd from an
+			// automatic aggregate load: bd's auto-init rewrites it (critic
+			// GAP-1 residual) and the rewrite reads as success, wiping the
+			// mark that should protect it. Mark structurally dead instead.
+			e.FailedAt = time.Now().UTC()
+			e.Error = "not a complete beads store (no metadata.json or embeddeddolt database)"
+			e.FailureClass = dbindex.FailureStructural
+			m.markDatabaseEntry(e)
+			skipped = append(skipped, e.Path)
+			continue
+		}
+		if e.Unavailable() {
+			skipped = append(skipped, e.Path)
+			continue
+		}
+		probe = append(probe, e)
+	}
+	return probe, skipped
+}
+
+// markDatabaseEntry writes one entry's failure state into the cache and index.
+func (m Model) markDatabaseEntry(e dbindex.Entry) {
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == e.Path {
+			keep := m.databaseCache.Entries[i].Used
+			m.databaseCache.Entries[i] = e
+			m.databaseCache.Entries[i].Used = keep
+			dbindex.Write(databaseIndexPath(), m.databaseCache)
+			return
+		}
+	}
+}
+
+// repartitionGlobal rebuilds the aggregate's probe set from the current
+// cache, so a manual retry (r) or a rescan re-evaluates stores that were
+// negative-cached when global mode was entered. Cached healthy stores are
+// carried over by newAggregate(previous).
+func (m *Model) repartitionGlobal() {
+	// A manual retry is explicit intent to re-probe: clear failure marks
+	// first, otherwise every retry candidate is by definition still
+	// Unavailable() and partition would filter it again (critic GAP-5).
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].FailedAt != (time.Time{}) || m.databaseCache.Entries[i].Error != "" {
+			m.databaseCache.Entries[i].FailedAt, m.databaseCache.Entries[i].Error = time.Time{}, ""
+			m.databaseCache.Entries[i].FailureClass = ""
+		}
+	}
+	dbindex.Write(databaseIndexPath(), m.databaseCache)
+	probe, skipped := m.partitionGlobalEntries()
+	m.globalPreSkipped = skipped
+	previous := m.aggregate
+	a := newAggregate(probe, m.databaseFactory, previous)
+	m.aggregate = a
+	m.backend = a
 }

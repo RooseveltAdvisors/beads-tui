@@ -21,6 +21,106 @@ type Entry struct {
 	Prefix  string    `json:"prefix,omitempty"`
 	Touched time.Time `json:"last_touched,omitempty"`
 	Used    time.Time `json:"last_used,omitempty"`
+	// Failure state for negative caching: a store whose last probe failed is
+	// not re-probed until its class TTL or the user forces a rescan.
+	FailedAt time.Time `json:"last_failed_at,omitempty"`
+	Error    string    `json:"last_error,omitempty"`
+	// FailureClass separates structural death (interrupted create, missing
+	// Dolt database, schema skew) from transient contention (store busy,
+	// lock timeout). Transient failures expire fast so a briefly busy
+	// workspace is not exiled for minutes.
+	FailureClass string `json:"failure_class,omitempty"`
+}
+
+const (
+	FailureStructural  = "structural"
+	FailureTransient   = "transient"
+)
+
+// TTLs per failure class: structural death is stable for minutes; transient
+// contention (busy/locked/timeout) can clear within seconds.
+const (
+	UnavailableTTL      = 10 * time.Minute
+	TransientFailureTTL = 45 * time.Second
+)
+
+// Unavailable reports whether the entry carries a recent probe failure.
+func (e Entry) Unavailable() bool {
+	if e.FailedAt == (time.Time{}) {
+		return false
+	}
+	ttl := UnavailableTTL
+	if e.FailureClass == FailureTransient {
+		ttl = TransientFailureTTL
+	}
+	return time.Since(e.FailedAt) < ttl
+}
+
+// ClassifyFailure sorts a bd probe error into structural vs transient.
+// Structural errors cannot self-heal (interrupted create, missing database,
+// schema skew, invalid directory); everything else - notably "busy or
+// locked" and timeouts - is contention a retry can clear.
+func ClassifyFailure(errMsg string) string {
+	s := strings.ToLower(errMsg)
+	for _, marker := range []string{
+		"incomplete database directory",
+		"cannot create database",
+		"cannot create db",
+		"creating_database",
+		"not found on dolt server",
+		"schema version mismatch",
+		"no such file or directory",
+		"interrupted create",
+		"invalid database directory",
+		// "no beads database found" is bd's most common structural death
+		// signal (critic iteration 2: 4 of the misclassified entries).
+		"no beads database found",
+		// embeddeddolt init-schema failures do not self-heal on retry.
+		"failed to open database: embeddeddolt",
+	} {
+		if strings.Contains(s, marker) {
+			return FailureStructural
+		}
+	}
+	return FailureTransient
+}
+
+// StructurallyValid reports whether a .beads directory plausibly holds a
+// store, using the layouts bd 1.3.1 actually writes:
+//
+//	metadata.json at the root, or
+//	embeddeddolt/<name>/ holding a repo_state.json or a .dolt directory.
+//
+// Probing anything else invites bd's auto-init to rewrite the directory
+// during what must be a read-only scan - including a bare
+// embeddeddolt/repo_state.json, which bd never writes and whose probe
+// creates a fresh empty database that then masks as healthy (critic
+// iteration 5). A .dolt FILE (garbage fixture) and a formulas-only
+// directory never pass.
+func StructurallyValid(beadsDir string) bool {
+	if beadsDir == "" {
+		return false
+	}
+	if fi, err := os.Stat(filepath.Join(beadsDir, "metadata.json")); err == nil && !fi.IsDir() {
+		return true
+	}
+	entries, err := os.ReadDir(filepath.Join(beadsDir, "embeddeddolt"))
+	if err != nil {
+		return false
+	}
+	// dolt writes repo_state.json INSIDE .dolt/; accepting a bare
+	// embeddeddolt/<db>/repo_state.json (a shape bd never writes) lets bd
+	// auto-init a fresh database next to it during a "read-only" probe
+	// (critic iterations 5 and 6). Only the .dolt directory shape is real.
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(beadsDir, "embeddeddolt", e.Name(), ".dolt")); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func (e Entry) Name() string { return filepath.Base(filepath.Dir(e.Path)) }
