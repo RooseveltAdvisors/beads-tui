@@ -21,6 +21,72 @@ type Entry struct {
 	Prefix  string    `json:"prefix,omitempty"`
 	Touched time.Time `json:"last_touched,omitempty"`
 	Used    time.Time `json:"last_used,omitempty"`
+	// Failure state for negative caching: a store whose last probe failed is
+	// not re-probed until its class TTL or the user forces a rescan.
+	FailedAt time.Time `json:"last_failed_at,omitempty"`
+	Error    string    `json:"last_error,omitempty"`
+	// FailureClass separates structural death (interrupted create, missing
+	// Dolt database, schema skew) from transient contention (store busy,
+	// lock timeout). Transient failures expire fast so a briefly busy
+	// workspace is not exiled for minutes.
+	FailureClass string `json:"failure_class,omitempty"`
+}
+
+const (
+	FailureStructural  = "structural"
+	FailureTransient   = "transient"
+)
+
+// TTLs per failure class: structural death is stable for minutes; transient
+// contention (busy/locked/timeout) can clear within seconds.
+const (
+	UnavailableTTL      = 10 * time.Minute
+	TransientFailureTTL = 45 * time.Second
+)
+
+// Unavailable reports whether the entry carries a recent probe failure.
+func (e Entry) Unavailable() bool {
+	if e.FailedAt == (time.Time{}) {
+		return false
+	}
+	ttl := UnavailableTTL
+	if e.FailureClass == FailureTransient {
+		ttl = TransientFailureTTL
+	}
+	return time.Since(e.FailedAt) < ttl
+}
+
+// ClassifyFailure sorts a bd probe error into structural vs transient.
+// Structural errors cannot self-heal (interrupted create, missing database,
+// schema skew, invalid directory); everything else - notably "busy or
+// locked" and timeouts - is contention a retry can clear.
+func ClassifyFailure(errMsg string) string {
+	s := strings.ToLower(errMsg)
+	for _, marker := range []string{
+		"incomplete database directory",
+		"cannot create database",
+		"not found on dolt server",
+		"schema version mismatch",
+		"no such file or directory",
+		"interrupted create",
+		"invalid database directory",
+	} {
+		if strings.Contains(s, marker) {
+			return FailureStructural
+		}
+	}
+	return FailureTransient
+}
+
+// StructurallyValid reports whether a .beads directory plausibly holds a
+// store: metadata.json present. Probing anything else invites bd's
+// auto-init to rewrite the directory during what must be a read-only scan.
+func StructurallyValid(beadsDir string) bool {
+	if beadsDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(beadsDir, "metadata.json"))
+	return err == nil
 }
 
 func (e Entry) Name() string { return filepath.Base(filepath.Dir(e.Path)) }

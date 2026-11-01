@@ -235,7 +235,13 @@ func (m *Model) enterGlobal() tea.Cmd {
 		return nil
 	}
 	m.saveState()
-	a := newAggregate(m.databaseCache.Entries, m.databaseFactory, m.aggregate)
+	// Negative cache: stores whose last probe failed inside dbindex.UnavailableTTL
+	// are excluded instead of re-probed. Every global entry today paid a full
+	// bd-list timeout for structurally dead stores (~/.beads, stale Dolt dirs).
+	// The active database and an explicit BEADS_DIR always stay in.
+	probe, skipped := m.partitionGlobalEntries()
+	m.globalPreSkipped = skipped
+	a := newAggregate(probe, m.databaseFactory, m.aggregate)
 	fresh := newModel(a, globalStateKey)
 	fresh.databaseState = m.databaseState
 	fresh.globalMode = true
@@ -262,7 +268,8 @@ func (m *Model) beginGlobalLoad(msg globalLoadMsg) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.globalContext = ctx
 	m.globalCancel = cancel
-	m.globalDone, m.globalTotal, m.globalFailed = 0, len(m.aggregate.paths), 0
+	m.globalDone, m.globalTotal, m.globalFailed = 0, len(m.aggregate.paths)+len(m.globalPreSkipped), len(m.globalPreSkipped)
+	m.globalDone = len(m.globalPreSkipped)
 	rows, _ := m.aggregate.List(ctx, m.view)
 	initial := m.applyGlobalSnapshot(rows)
 	var cmds []tea.Cmd
@@ -363,4 +370,31 @@ func (a *aggregateBackend) SetLabels(ctx context.Context, key string, labels []s
 }
 func (a *aggregateBackend) CreateIssue(context.Context, string, string) (*bd.Issue, error) {
 	return nil, fmt.Errorf("select a workspace with ctrl+o before creating an issue")
+}
+
+// partitionGlobalEntries splits indexed stores into (probe, preSkipped) using
+// the persisted failure state. The active and explicit stores are never
+// filtered: a transient failure must not hide the store the captain is on.
+func (m Model) partitionGlobalEntries() (probe []dbindex.Entry, skipped []string) {
+	for _, e := range m.databaseCache.Entries {
+		if e.Unavailable() && e.Path != m.database && e.Path != m.explicitDatabase {
+			skipped = append(skipped, e.Path)
+			continue
+		}
+		probe = append(probe, e)
+	}
+	return probe, skipped
+}
+
+// repartitionGlobal rebuilds the aggregate's probe set from the current
+// cache, so a manual retry (r) or a rescan re-evaluates stores that were
+// negative-cached when global mode was entered. Cached healthy stores are
+// carried over by newAggregate(previous).
+func (m *Model) repartitionGlobal() {
+	probe, skipped := m.partitionGlobalEntries()
+	m.globalPreSkipped = skipped
+	previous := m.aggregate
+	a := newAggregate(probe, m.databaseFactory, previous)
+	m.aggregate = a
+	m.backend = a
 }

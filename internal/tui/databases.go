@@ -22,6 +22,7 @@ type databaseState struct {
 	globalCancel                          context.CancelFunc
 	globalContext                         context.Context
 	globalDone, globalTotal, globalFailed int
+	globalPreSkipped                    []string
 	multiDatabase                         bool
 	database                              string
 	explicitDatabase                      string
@@ -185,6 +186,45 @@ func (m Model) databaseFooterHint() string {
 	}
 	return "db:" + path
 }
+// markDatabaseFailure persists a probe failure so the store is skipped (not
+// re-probed) until UnavailableTTL or an explicit rescan.
+func (m *Model) markDatabaseFailure(path string, err error) {
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == path {
+			m.databaseCache.Entries[i].FailedAt = time.Now().UTC()
+			if err != nil {
+				m.databaseCache.Entries[i].Error = shortProbeError(err.Error())
+				m.databaseCache.Entries[i].FailureClass = dbindex.ClassifyFailure(err.Error())
+			}
+			dbindex.Write(databaseIndexPath(), m.databaseCache)
+			return
+		}
+	}
+}
+
+// markDatabaseSuccess clears any stale failure mark after a clean probe.
+func (m *Model) markDatabaseSuccess(path string) {
+	for i := range m.databaseCache.Entries {
+		if m.databaseCache.Entries[i].Path == path {
+			if m.databaseCache.Entries[i].FailedAt != (time.Time{}) || m.databaseCache.Entries[i].Error != "" {
+				m.databaseCache.Entries[i].FailedAt, m.databaseCache.Entries[i].Error = time.Time{}, ""
+				m.databaseCache.Entries[i].FailureClass = ""
+				dbindex.Write(databaseIndexPath(), m.databaseCache)
+			}
+			return
+		}
+	}
+}
+
+// shortProbeError collapses multi-line bd diagnostics to one bounded line.
+func shortProbeError(msg string) string {
+	msg = strings.TrimSpace(strings.SplitN(msg, "\n", 2)[0])
+	if len(msg) > 96 {
+		msg = msg[:93] + "..."
+	}
+	return msg
+}
+
 func (m *Model) sortDatabases() {
 	dbindex.Sort(m.databaseCache.Entries, m.database, m.explicitDatabase)
 }
@@ -249,6 +289,9 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 		m.globalDone++
 		if msg.store.err != nil {
 			m.globalFailed++
+			m.markDatabaseFailure(msg.path, msg.store.err)
+		} else {
+			m.markDatabaseSuccess(msg.path)
 		}
 		if selected := m.selectedID(); selected != "" && !m.commentsOpen && !m.crudActive() && m.editorID == "" {
 			path, _, _ := strings.Cut(selected, "\x1f")
@@ -276,6 +319,8 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		m.databaseScanning = false
+		// A rescan cleared the failure marks, so the pre-skip list is stale.
+		m.globalPreSkipped = nil
 		// Keep MRU and known metadata until fresh metadata arrives.
 		old := map[string]dbindex.Entry{}
 		for _, e := range m.databaseCache.Entries {
@@ -366,9 +411,11 @@ func (m Model) updateDatabase(msg tea.Msg) (Model, tea.Cmd, bool) {
 		fresh := newModel(msg.backend, msg.path)
 		fresh.databaseState = m.databaseState
 		fresh.globalMode = false
+		fresh.globalPreSkipped = nil
 		fresh.database = msg.path
 		fresh.databaseEpoch++
 		fresh.databasePicker = false
+	fresh.globalPreSkipped = nil
 		fresh.databaseError = ""
 		fresh.width, fresh.height = m.width, m.height
 		fresh.liveSessions = m.liveSessions
@@ -415,6 +462,15 @@ func (m Model) databaseMetadataCmd(parent context.Context, entries []dbindex.Ent
 		if parent.Err() != nil {
 			return nil
 		}
+		// Read-only guarantee: a directory without metadata.json is marked
+		// structurally dead WITHOUT invoking bd, whose auto-init would
+		// rewrite the directory during a scan (critic GAP-1).
+		if !dbindex.StructurallyValid(entry.Path) {
+			entry.FailedAt = time.Now().UTC()
+			entry.Error = "missing metadata.json (not a beads store)"
+			entry.FailureClass = dbindex.FailureStructural
+			return tea.Batch(func() tea.Msg { return databaseMetadataMsg{entry: entry, generation: generation} }, m.databaseMetadataCmd(parent, rest, generation))()
+		}
 		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 		defer cancel()
 		backend := m.databaseFactory(entry.Path)
@@ -424,7 +480,10 @@ func (m Model) databaseMetadataCmd(parent context.Context, entries []dbindex.Ent
 			issues, err := all.ListAll(ctx)
 			if err != nil {
 				log.Printf("database metadata unavailable (path=%s): %v", entry.Path, err)
+				entry.FailedAt, entry.Error = time.Now().UTC(), shortProbeError(err.Error())
+				entry.FailureClass = dbindex.ClassifyFailure(err.Error())
 			} else {
+				entry.FailedAt, entry.Error, entry.FailureClass = time.Time{}, "", ""
 				count := len(issues)
 				entry.Count = &count
 				for _, issue := range issues {
@@ -572,11 +631,15 @@ func (m Model) renderDatabases() string {
 		if e.Path == m.explicitDatabase {
 			meta = append(meta, chip("BEADS_DIR", chipFilterOnFG, chipFilterOnBG))
 		}
-		count := "?"
-		if e.Count != nil {
-			count = fmt.Sprint(*e.Count)
+		if e.Unavailable() {
+			meta = append(meta, chip("unavailable", chipOverdueFG, chipOverdueBG))
+		} else {
+			count := "?"
+			if e.Count != nil {
+				count = fmt.Sprint(*e.Count)
+			}
+			meta = append(meta, chip(count+" issues", chipLabelFG, chipLabelBG))
 		}
-		meta = append(meta, chip(count+" issues", chipLabelFG, chipLabelBG))
 		if e.Prefix != "" {
 			meta = append(meta, chip("prefix "+e.Prefix, chipDueFG, chipDueBG))
 		} else {
@@ -597,6 +660,9 @@ func (m Model) renderDatabases() string {
 			row += " " + strings.Join(meta, " ")
 		}
 		pathLine := "  " + styleDim.Render(e.DisplayPath(home))
+		if selected && e.Unavailable() && e.Error != "" {
+			pathLine = "  " + styleError.Render(truncate("✗ "+e.Error, max(20, m.width-6)))
+		}
 		if selected {
 			// Same magenta-tint beam as board focus so the picker cursor
 			// matches the rest of beads-tui instead of a monochrome bar.
